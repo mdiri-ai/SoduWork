@@ -272,3 +272,13 @@ settings.read/settings.write provide account/application/origin-isolated encrypt
 - Use argv commands and repository-contained working directories.
 - Complete import preflight, real-environment simulation, and upgrade impact review.
 - Exercise both success and failure/recovery paths; local debugging alone is not organization-publication acceptance.
+
+## File identity and signature upgrade
+
+Plugin and imported Skill identities use `sha256-file-tree-v2`, retaining the 64-character hexadecimal API format. SHA-256 covers the ASCII domain `soduwork.file-tree/v2` followed by a NUL byte, an unsigned 64-bit big-endian file count, then each file in Unicode code-point path order: unsigned 64-bit big-endian UTF-8 path byte length, path bytes, unsigned 64-bit big-endian content byte length, and content bytes. Paths use `/`; directory entries, ZIP ordering, timestamps and compression do not affect identity. Signature content excludes only `soduwork/signature.json`; package identity includes it. Length framing prevents binary payloads from impersonating file boundaries.
+
+New publisher proofs use `soduwork.plugin-signature/v2` with Ed25519. The Hub's signature preparation endpoint, desktop signer and package parser must be upgraded together. A v1 proof is rejected even if its old signature is mathematically valid; changing its schema label is not a valid upgrade.
+
+Upgrades preserve original packages, Skill directories and historical index/database entries. Legacy plugin identities cannot load archive resources or bundled Skills, and legacy verified publisher metadata is shown as `legacy-signature`. Obtain the original source from the publisher, inspect its complete file tree, increment the plugin's semantic version, remove the old signature, sign the newly prepared v2 payload and import/review the new version. Unsigned packages also need a higher version and reimport. Existing immutable versions are never rewritten.
+
+Legacy imported Skills remain listed with an actionable identity error, but cannot be executed, shared or transferred. Reimport the reviewed complete original Skill package; this updates only its active pointer and preserves the former directory. Re-submit a shared Skill for review. Hub and Runner skill caches use a separate `v2` namespace, so old ready markers and reopened runs cannot supply legacy cache contents. Do not delete retained files as part of this upgrade; keep them for inspection and backups.

@@ -3,7 +3,7 @@
 // Only native file selection and external platform login replies are fixtures.
 const fs = require('node:fs');
 const path = require('node:path');
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('./trusted-electron.cjs');
 const personal = require('../../main/personal-plugins');
 const drafts = require('../../main/pi-session/plugin-draft');
 const outputs = require('../../main/pi-session/outputs');

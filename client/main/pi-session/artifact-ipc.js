@@ -194,13 +194,7 @@ async function _attachmentImage(handle, ref, token) {
     const outputs = require('./outputs');
     if (!outputs.inside(s.cwd, target)) return { ok: false, reason: '这个文件不在这条对话的工作目录里' };
     try {
-      const st = fs.statSync(target);
-      const CAP = 2 * 1024 * 1024;
-      if (st.size > CAP) {
-        return { ok: true, tooBig: true, size: st.size,
-                 text: fs.readFileSync(target, 'utf8').slice(0, 20000) };
-      }
-      return { ok: true, size: st.size, text: fs.readFileSync(target, 'utf8') };
+      return await require('./read-output-text.cjs').readOutputText(target);
     } catch (e) {
       return { ok: false, reason: String((e && e.message) || e) };
     }

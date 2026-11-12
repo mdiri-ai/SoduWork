@@ -1,4 +1,6 @@
 """Public module behavior and service contracts."""
+from types import SimpleNamespace
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,18 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..db import get_session
 from ..deps import require_perm
 from ..models import Integration, Repo, RepoBinding, Task, User
-from ..services import audit, rbac
+from ..services import audit, repo_management_scope
 
 router = APIRouter(prefix="/api/v1/admin", tags=["repo-map"])
 
 
-async def _repo_in_scope(session: AsyncSession, user: User, repo: Repo) -> bool:
-    scope = await rbac.scope_org_ids(session, user)
-    return scope is None or repo.org_id is None or repo.org_id in scope
-
-
-async def _assert_repo_scope(session: AsyncSession, user: User, repo: Repo) -> None:
-    if not await _repo_in_scope(session, user, repo):
+def _assert_repo_scope(scope: repo_management_scope.ManagementScope, repo: Repo | None) -> None:
+    if not scope.allows_repo(repo):
         raise HTTPException(status_code=403, detail="无权管理该工程")
 
 
@@ -37,10 +34,11 @@ async def list_bindings(
     if integrationId:
         q = q.where(RepoBinding.integration_id == integrationId)
     rows = (await session.execute(q)).scalars().all()
+    scope = await repo_management_scope.load(session, user)
     out = []
     for b in rows:
         repo = await session.get(Repo, b.repo_id)
-        if repo is not None and await _repo_in_scope(session, user, repo):
+        if repo is not None and scope.allows_repo(repo):
             out.append(_api(b, repo))
     return {"items": out}
 
@@ -64,10 +62,22 @@ async def upsert_binding(
     repo = await session.get(Repo, rid)
     if repo is None:
         raise HTTPException(status_code=404, detail="SoduWork 这边没有这个工程")
-    await _assert_repo_scope(session, user, repo)
+    scope = await repo_management_scope.load(session, user)
+    _assert_repo_scope(scope, repo)
     rows = (await session.execute(
         select(RepoBinding).where(RepoBinding.integration_id == iid))).scalars().all()
     b = next((x for x in rows if (x.external_repo or "").strip().lower() == ext.lower()), None)
+    if b is not None:
+        _assert_repo_scope(scope, await session.get(Repo, b.repo_id))
+    # Authorize the entire backfill before adding or changing any mapping.
+    # The integration/repository key is global, so silently updating only some
+    # affected tasks would make a partial cross-organization mapping change.
+    rows = (await session.execute(
+        select(Task).where(Task.integration_id == iid))).scalars().all()
+    backfill = [t for t in rows if not (t.repo_id or "").strip()
+                and (t.ext_repo or "").strip().lower() == ext.lower()]
+    if any(not scope.allows_task(t) for t in backfill):
+        raise HTTPException(status_code=403, detail="无权调整该映射关联的需求")
     if b is None:
         b = RepoBinding(integration_id=iid, external_repo=ext, repo_id=rid,
                         note=str(body.get("note") or "")[:200])
@@ -78,18 +88,11 @@ async def upsert_binding(
     # Apply new mappings to existing unmapped issues as well as future imports.
     # Otherwise configuring a mapping would leave previously blocked issues unresolved.
     # Fill only missing ownership; preserve manual assignments.
-    rows = (await session.execute(
-        select(Task).where(Task.integration_id == iid))).scalars().all()
-    fixed = 0
-    for t in rows:
-        if (getattr(t, "repo_id", "") or "").strip():
-            continue
-        if (getattr(t, "ext_repo", "") or "").strip().lower() != ext.lower():
-            continue
+    for t in backfill:
         t.repo_id = rid
         if not t.project_id:
             t.project_id = repo.project_id
-        fixed += 1
+    fixed = len(backfill)
     await session.commit()
     await session.refresh(b)
     await audit.log(session, user, "repo_binding.upsert", "repo_binding", b.id,
@@ -108,8 +111,8 @@ async def delete_binding(
     if b is None:
         return {"ok": False, "reason": "not_found"}
     repo = await session.get(Repo, b.repo_id)
-    if repo is not None:
-        await _assert_repo_scope(session, user, repo)
+    scope = await repo_management_scope.load(session, user)
+    _assert_repo_scope(scope, repo)
     external_repo = b.external_repo
     integration_id = b.integration_id
     repo_id = b.repo_id
@@ -132,8 +135,9 @@ async def pending(
     rows = (await session.execute(
         select(Task).where(Task.integration_id.is_not(None),
                            Task.status.in_(("todo", "doing"))))).scalars().all()
+    scope = await repo_management_scope.load(session, user)
     stuck = [t for t in rows
-             if not (getattr(t, "repo_id", "") or "").strip()
+             if scope.allows_task(t) and not (getattr(t, "repo_id", "") or "").strip()
              and (getattr(t, "ext_repo", "") or "").strip()]
     groups: dict[tuple[str, str], dict] = {}
     for t in stuck:
@@ -146,7 +150,7 @@ async def pending(
     # Include available SoduWork repositories so the mapping form needs no additional request.
     repos = (await session.execute(select(Repo))).scalars().all()
     visible_repos = [repo for repo in repos
-                     if await _repo_in_scope(session, user, repo)]
+                     if scope.allows_repo(repo)]
     return {"items": sorted(groups.values(), key=lambda x: -x["count"]), "total": len(stuck),
             "repos": [{"id": r.id, "name": r.name, "projectId": r.project_id,
                        "ready": bool((r.server_dir or "").strip() and (r.merge_branch or "").strip())}
@@ -159,15 +163,31 @@ async def autobatch_preview(
     user: User = Depends(require_perm("task.dispatch")),
     session: AsyncSession = Depends(get_session),
 ):
-    """Preview automatic task batches and their routing reasons. Dispatch requires both run=true
-    and AUTOBATCH_ENABLED=true.
-    """
-    from ..config import get_settings
+    """Always read-only; retain the legacy run parameter without GET side effects."""
     from ..services import autobatch
-    # Require both the request flag and the global automatic-batching switch.
-    # The endpoint must not bypass the global switch.
-    dry = not (run and bool(get_settings().autobatch_enabled))
-    out = await autobatch.run_once(session, dry=dry)
-    if run and dry:
+    out = await autobatch.run_once(session, dry=True, actor=user)
+    if run:
+        out["note"] = "GET 仅预览；执行请使用 POST /api/v1/admin/autobatch"
+    return out
+
+
+@router.post("/autobatch")
+async def autobatch_run(
+    user: User = Depends(require_perm("task.dispatch")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Dispatch only the caller's groups when automatic batching is enabled."""
+    from ..services import autobatch
+    # A failed group rolls back its session, which expires ORM principals.
+    # Preserve attribution even when no batch can be dispatched successfully.
+    actor = SimpleNamespace(id=user.id, username=user.username,
+                            display_name=user.display_name, org_id=user.org_id)
+    out = await autobatch.run_once(session, actor=user)
+    await audit.log(session, actor, "autobatch.run", detail={
+        "dry": out["dry"], "groups": out["groups"], "ready": out["ready"],
+        "batchIds": [item["batchId"] for item in out["results"] if item.get("batchId")],
+        "dispatched": sum(bool(item.get("dispatched")) for item in out["results"]),
+    })
+    if out["dry"]:
         out["note"] = "总开关没开（AUTOBATCH_ENABLED=false），这次只是预览"
     return out

@@ -10,7 +10,7 @@ import os
 import re
 import time
 
-from . import skill_content, skill_frontmatter, skill_packages
+from . import package_digests, skill_content, skill_frontmatter, skill_packages
 
 
 class Conflict(ValueError):
@@ -53,7 +53,7 @@ def files(row: dict) -> dict[str, bytes]:
         raise ValueError("Skill 版本路径不安全")
     content = skill_content.read_files(folder)
     if skill_packages._canonical_digest(content) != checksum:
-        raise Conflict("Skill 包完整性校验失败，不能预览或发布")
+        raise Conflict(package_digests.SKILL_IDENTITY_ERROR)
     return content
 
 

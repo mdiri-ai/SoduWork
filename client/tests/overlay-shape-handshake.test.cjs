@@ -8,6 +8,7 @@ const { EventEmitter } = require('node:events');
 
 function bridgeHarness() {
   const ipcRenderer = new EventEmitter();
+  ipcRenderer.sendSync = channel => channel === 'client-preload-trust';
   const sent = [];
   const replies = [];
   ipcRenderer.send = (...args) => sent.push(args);

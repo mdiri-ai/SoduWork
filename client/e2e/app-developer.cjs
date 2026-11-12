@@ -1,7 +1,7 @@
 'use strict';
 // Production authoring/resources/install/export and native app bridge. Composer
 // admission is deterministic here; this test does not claim model execution.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE;
   const run = require('node:child_process').spawnSync(electron, [__filename, '--disable-gpu'], { env, windowsHide: true, stdio: 'inherit', timeout: 60000 });

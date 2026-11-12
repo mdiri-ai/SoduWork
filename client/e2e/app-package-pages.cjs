@@ -1,6 +1,6 @@
 'use strict';
 // Three real Electron launches: install, process restart, then import on another profile.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
 if (typeof electron === 'string') {
   const evidence = process.env.SODUWORK_PACKAGE_EVIDENCE;

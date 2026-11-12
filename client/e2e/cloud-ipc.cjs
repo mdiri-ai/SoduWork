@@ -1,7 +1,7 @@
 'use strict';
 // Real preload -> Electron IPC -> production cloud registration. An isolated,
 // signed-out profile proves interface availability without using user secrets.
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs/promises'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
 const output = process.argv[2];

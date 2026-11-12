@@ -2,7 +2,7 @@
 // Page -> real preload/IPC -> real HTTP/device auth -> PostgreSQL -> page.
 // Each phase is a fresh Electron process/profile, not a cache masquerading as another device.
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
-const electron=require('electron'),accountsFile=process.argv[2];
+const electron=require('./fixtures/trusted-electron.cjs'),accountsFile=process.argv[2];
 if(typeof electron==='string'){
   const root=path.dirname(accountsFile),phases=['write','second-device','other-account','reopen-upgraded'];
   for(const phase of phases){

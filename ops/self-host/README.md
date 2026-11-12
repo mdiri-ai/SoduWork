@@ -57,6 +57,8 @@ python3 ops/self-host/deploy.py up --no-build
 
 ## Team access and execution
 
+The launcher ignores inherited `JIYONG_*` environment variables. By default, Jiyong cloud applications use this instance's database. To explicitly use a separate application database, stop the instance, set `jiyongDatabaseUrl` in its private `deployment.json` to a PostgreSQL async URL (`postgresql+asyncpg://...`), then run `up --no-build`. This URL can contain credentials: protect and back up the configuration. Existing configuration files without this field use the instance database. Application provisioning may create schemas and tables in the selected database; use a dedicated database and account with the required permissions.
+
 Hub binds to loopback; PostgreSQL has no published host port. For team access, configure your own HTTPS reverse proxy to `127.0.0.1:18989`, supporting WebSockets and long-lived streaming. Set the public origin when first initializing:
 
 ```sh

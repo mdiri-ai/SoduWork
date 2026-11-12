@@ -1,5 +1,5 @@
 'use strict';
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-auto-memory-e2e-'));

@@ -1,5 +1,5 @@
 'use strict';
-const electron=require('electron'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
+const electron=require('./fixtures/trusted-electron.cjs'),fs=require('node:fs'),path=require('node:path'),os=require('node:os'),assert=require('node:assert/strict');
 if(typeof electron==='string'){
  const env={...process.env};for(const k of ['ELECTRON_RUN_AS_NODE','NODE_OPTIONS','NODE_TEST_CONTEXT','CHROME_CRASHPAD_PIPE_NAME','CHROME_CRASHPAD_PIPE_HANDLE'])delete env[k];
  const r=require('node:child_process').spawnSync(electron,[__filename],{env,windowsHide:true,stdio:'inherit',timeout:60000});process.exit(r.status??1);

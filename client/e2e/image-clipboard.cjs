@@ -1,7 +1,7 @@
 'use strict';
 // Production preview + preload + IPC + native system clipboard, without model,
 // backend, live account, or changes to the running SoduWork process.
-const {app,BrowserWindow,ipcMain,clipboard,ClipboardItem,nativeImage}=require('electron');
+const {app,BrowserWindow,ipcMain,clipboard,ClipboardItem,nativeImage}=require('./fixtures/trusted-electron.cjs');
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
 const root=process.argv[2],mode=process.argv[3]||'verify';

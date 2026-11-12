@@ -48,13 +48,14 @@ def digests(parsed):
         json.dumps(normalized, ensure_ascii=False, sort_keys=True).encode()).hexdigest())
 
 
-# Captured from the original package parser before extracting manifest policy.
+# v2 framed file-tree digests; the original normalized-manifest golden remains
+# unchanged, so upgrading package identity cannot silently change policy.
 EXPECTED = {
-    False: ("56849f85d28fe71c21d5e0c1557e2fa99ccb90e5d14d497a3c45ba1a765b577b",
-            "56849f85d28fe71c21d5e0c1557e2fa99ccb90e5d14d497a3c45ba1a765b577b",
+    False: ("9190c856053799cf0faf8ed7130a1169b34e787a419c1b281a868b4110d6776a",
+            "9190c856053799cf0faf8ed7130a1169b34e787a419c1b281a868b4110d6776a",
             "e9e244b038a35dcc44a02a11fc3101fb4e8668196295d8ba2f75410a68bc2179"),
-    True: ("f9a2034deb012b2e69de219ca3b3a390a106498d352d228339e5b61201349083",
-           "f9a2034deb012b2e69de219ca3b3a390a106498d352d228339e5b61201349083",
+    True: ("40dddda2fd73137e0ee179c262856507e7aa5dff97045b4c5dfb678c12391d97",
+           "40dddda2fd73137e0ee179c262856507e7aa5dff97045b4c5dfb678c12391d97",
            "2433a568700d6d4b680cf5e5a805e03ba8ab65bbd0d3b69eb51d306102095914"),
 }
 

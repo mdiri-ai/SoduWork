@@ -52,6 +52,8 @@ Run `npm test` for unit/contract tests and `npm run check:layout` for source bou
 
 To verify summary export against a disposable authenticated Hub, run `node e2e/acceptance-summary-export.cjs /absolute/evidence/directory /path/to/test/python`. The Python environment needs the backend test dependencies. This exercises native IPC and saved bytes with injected save-dialog choices, not a real model or production account.
 
+Run `node e2e/renderer-boundary.cjs /absolute/evidence/directory` to verify desktop navigation, preload/IPC trust and bounded text previews in sandboxed Electron. It uses isolated entry pages and synthetic files with the production boundary, preload, Markdown renderer and artifact handler; no Hub or model is required.
+
 ## Packaging
 
 Before distributing native installers, complete the outstanding [distribution materials](../third-party/README.md) and platform acceptance.

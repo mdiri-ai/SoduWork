@@ -1,5 +1,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+// The main process checks the live WebContents, exact entry and main frame.
+// A remote page or generated preview must never inherit the desktop bridge.
+if (ipcRenderer.sendSync('client-preload-trust') === true) {
+
 const pageIpcEvents = [];
 let pageIpcEpoch = 0;
 const pageIpcClock = () => typeof performance === 'undefined' ? Date.now() : performance.now();
@@ -579,3 +583,4 @@ const soduWorkBridge = {
 
 // Expose the single canonical SoduWork bridge.
 contextBridge.exposeInMainWorld('soduWorkAPI', soduWorkBridge);
+}

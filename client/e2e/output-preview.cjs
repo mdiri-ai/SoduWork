@@ -1,7 +1,7 @@
 'use strict';
 // Real renderer modules, production preload/IPC, safe artifact reader and native
 // image decoder. Isolated profile, synthetic files, no model or live user data.
-const {app,BrowserWindow,ipcMain,nativeImage}=require('electron');
+const {app,BrowserWindow,ipcMain,nativeImage}=require('./fixtures/trusted-electron.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const root=process.argv[2];
 if(!root||!path.isAbsolute(root))throw Error('Absolute evidence directory required');

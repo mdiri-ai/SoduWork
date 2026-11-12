@@ -71,6 +71,10 @@ python3 quality_gate.py --list
   - `GET /api/v1/admin/clients`、`GET /api/v1/admin/tasks`（需 `Authorization: Bearer <token>`）
   - `POST /api/v1/admin/dispatch` `{title,...,targets:[设备ID]}` → 平台建任务下发（origin=dispatch）
 
+自动归堆通过 `GET /api/v1/admin/autobatch` 只读预览，通过同路径 `POST` 执行。两者均要求 `task.dispatch`，并限制在调用者管理范围内。旧版 `GET ?run=true` 仍可预览；执行调用应迁移到 `POST`。执行还要求 `AUTOBATCH_ENABLED=true`，审计日志记录发起管理员。后台调度器显式使用系统范围。
+
+工程映射要求 `binding.manage`。修改映射时，在任何写入前检查旧工程、新工程和所有待回填需求；存在越界回填时整笔请求拒绝。待映射数量和样例标题只包含可管理需求。既有共享工程和未绑定账号设备的政策不变；无归属设备的需求仍要求超级管理员。
+
 ## 客户端接入
 
 设备长期密钥只由 Electron 主进程持有。客户端通过 `POST /api/v1/clients/enroll` 登记并轮换短期会话，

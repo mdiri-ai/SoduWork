@@ -1,7 +1,7 @@
 'use strict';
 // Production menu, WorkspaceShell, preload and app-info/quit handlers. Navigation,
 // external launch and native quit confirmation are isolated to protect user work.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE', 'CHROME_CRASHPAD_PIPE_NAME', 'CHROME_CRASHPAD_PIPE_HANDLE']) delete env[key];

@@ -1,6 +1,6 @@
 if (require('./main/app-preflight-entry.cjs').dispatch()) return;
 
-const { app, BrowserWindow, WebContentsView, webContents, ipcMain, screen, Tray, Menu, nativeImage, globalShortcut, Notification, shell, safeStorage, dialog, net, powerMonitor } = require('electron');
+const { app, BrowserWindow, WebContentsView, webContents, ipcMain: electronIpcMain, screen, Tray, Menu, nativeImage, globalShortcut, Notification, shell, safeStorage, dialog, net, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -12,6 +12,8 @@ const _distribution = require('./main/distribution.cjs');
  */
 require('./main/userdata-path.cjs').initializeUserData(app);
 if (require('./main/keychain-startup.cjs').dispatch({ app, BrowserWindow, shell, nativeImage })) return;
+const _rendererBoundary = require('./main/renderer-boundary.cjs').create({ ipcMain: electronIpcMain, root: __dirname });
+const { ipcMain } = _rendererBoundary;
 const _hubEndpoint = require('./main/hub-endpoint.cjs');
 _hubEndpoint.initialize(app);
 const _lifecycleDiagnostics = require('./main/lifecycle-diagnostics').install({ app });
@@ -55,6 +57,7 @@ const _attachmentFiles = require('./main/attachment-files');
 const _libraryExternal = require('./main/library-external.cjs');
 const _personalPlugins = require('./main/personal-plugins');
 const _desktopOverlay = require('./main/desktop-overlay.cjs').create({
+  protectRenderer: _rendererBoundary.protect,
   app, BrowserWindow, ipcMain, screen, globalShortcut, Notification, powerMonitor,
   getRendererRoot: rendererRoot, getIcon: _appIcon, translate: _nativeText,
 });
@@ -164,6 +167,7 @@ _clientUpdater.install({ app, ipcMain, dialog: require('electron').dialog, Brows
   stopLocalWorkload: (ref) => _updateWorkloads.stop(_piSessions, ref),
   setLocalDrain: (value) => _updateWorkloads.setDraining(value) });
 _workPreview.install({ ipcMain, BrowserWindow, WebContentsView, screen, shell, app, appIcon: _appIcon,
+  protectRenderer: _rendererBoundary.protect,
   authorizeAI: _authorizeAI,
   identityOf: _deviceAuth.identity, authenticatedIdentityOf: _deviceAuth.authenticatedIdentity });
 require('./main/app-settings-ipc.cjs').install({ app, ipcMain, safeStorage,
@@ -343,6 +347,7 @@ function openDeskWindow(payload, sourceWin) {
     }
   });
   _workWindows.set(windowKey, win);
+  _rendererBoundary.protect(win.webContents);
   win.setMenuBarVisibility(false);
   _workspaceTitlebar.attach(win, titlebarOptions);
   /*

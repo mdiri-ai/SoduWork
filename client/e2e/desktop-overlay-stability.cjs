@@ -1,7 +1,7 @@
 'use strict';
 // Real Windows regions, focus changes and production preload/shape/dock code.
 // This isolated fixture does not verify system mouse input or the user's client.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

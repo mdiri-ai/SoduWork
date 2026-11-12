@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services import plugin_packages, plugin_skill_cache, runner_skills
+from app.services import plugin_packages, plugin_skill_cache, runner_skills, skill_packages
 
 
 GOOD = b'---\nname: debug-radar\ndescription: "Gather evidence: preserve logs"\n---\nKeep instructions.\n'
@@ -57,7 +57,7 @@ class RuntimeValidationTests(unittest.TestCase):
                 data = self.runner_bundle(content)
                 with self.assertRaisesRegex(ValueError, 'SKILL.md'):
                     runner_skills.install(data)
-                target = self.root / 'runner-plugin-skills' / hashlib.sha256(data).hexdigest()
+                target = self.root / 'runner-plugin-skills' / 'v2' / hashlib.sha256(data).hexdigest()
                 self.assertFalse(target.exists())
 
     def test_runner_rechecks_legacy_ready_cache_without_rewriting(self):
@@ -73,7 +73,7 @@ class RuntimeValidationTests(unittest.TestCase):
     def test_runner_rejects_incorrect_ready_marker_without_rewriting(self):
         data = self.runner_bundle()
         runner_skills.install(data)
-        marker = self.root / 'runner-plugin-skills' / hashlib.sha256(data).hexdigest() / '.ready'
+        marker = self.root / 'runner-plugin-skills' / 'v2' / hashlib.sha256(data).hexdigest() / '.ready'
         marker.write_text('wrong-checksum')
         with self.assertRaisesRegex(ValueError, '缓存校验'):
             runner_skills.install(data)
@@ -88,14 +88,15 @@ class RuntimeValidationTests(unittest.TestCase):
                 data = stream.getvalue()
                 with self.assertRaisesRegex(ValueError, '重复|冲突'):
                     runner_skills.install(data)
-                target = self.root / 'runner-plugin-skills' / hashlib.sha256(data).hexdigest()
+                target = self.root / 'runner-plugin-skills' / 'v2' / hashlib.sha256(data).hexdigest()
                 self.assertFalse(target.exists())
 
     def test_runner_build_checks_source_even_after_memory_cache_hit(self):
         skill = self.root / 'source' / 'SKILL.md'
         skill.parent.mkdir()
         skill.write_bytes(GOOD)
-        items = [{'name': 'debug-radar', 'path': str(skill.parent), 'bundled': True, 'packageChecksum': 'a' * 64}]
+        items = [{'name': 'debug-radar', 'path': str(skill.parent), 'bundled': True,
+                  'packageChecksum': skill_packages._canonical_digest({'SKILL.md': GOOD})}]
         self.assertTrue(runner_skills.build(items))
         skill.write_bytes(BAD)
         with self.assertRaisesRegex(ValueError, 'SKILL.md'):
@@ -105,7 +106,7 @@ class RuntimeValidationTests(unittest.TestCase):
         package, checksum, report = self.plugin_bundle(BAD)
         with self.assertRaisesRegex(ValueError, 'SKILL.md'):
             self.plugin_install(package, checksum, report)
-        self.assertFalse((self.root / 'plugin-skills' / checksum).exists())
+        self.assertFalse((self.root / 'plugin-skills' / 'v2' / checksum).exists())
 
     def test_plugin_rechecks_legacy_ready_cache_without_rewriting(self):
         package, checksum, report = self.plugin_bundle()

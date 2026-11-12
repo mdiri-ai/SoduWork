@@ -1,7 +1,7 @@
 'use strict';
 // Actual Electron, production preload and renderer. History and directory picker
 // are isolated fixtures: no business data, model calls or settings are changed.
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain } = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), assert = require('node:assert/strict');
 const output = process.argv[2];
 if (!output || !path.isAbsolute(output)) throw Error('Absolute evidence path required');

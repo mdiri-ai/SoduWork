@@ -1,6 +1,6 @@
 // Real task attachment cards -> production preload/IPC -> loopback download -> viewer/save.
 // Only OS application handoff and save-dialog choices are captured; no business Hub is used.
-const {app,BrowserWindow,ipcMain,net,session}=require('electron');
+const {app,BrowserWindow,ipcMain,net,session}=require('./fixtures/trusted-electron.cjs');
 const {pathToFileURL}=require('node:url');
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http');
 const assert=require('node:assert/strict');

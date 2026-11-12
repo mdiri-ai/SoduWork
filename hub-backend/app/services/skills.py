@@ -251,7 +251,8 @@ def public_view(item: dict, *, enabled: bool = False) -> dict:
         "sourceKey": source_key,
         "version": (checksum or str(item.get("version") or ""))[:12],
         "checksum": checksum,
-        "downloadable": bool(item.get("bundled") and checksum),
+        "downloadable": bool(item.get("bundled") and checksum and not item.get("identityError")),
+        "identityError": str(item.get("identityError") or ""),
         "enabled": bool(enabled),
         "hasScripts": bool(item.get("hasScripts")),
         "resourceKinds": list(item.get("resourceKinds") or [])[:20],
@@ -513,6 +514,8 @@ async def resolve(session, repo_id: str = "", client=None) -> list[dict]:
         item = by_name.get(name)
         if not item:
             continue
+        if item.get("identityError"):
+            raise ValueError(item["identityError"])
         if item.get("scope") == "local":
             out.append(item)
             continue
@@ -553,6 +556,8 @@ async def resolve_named(session, names, client=None) -> list[dict]:
         if item is None:
             missing.append(name)
             continue
+        if item.get("identityError"):
+            raise ValueError(item["identityError"])
         if item.get("scope") == "local":
             out.append(item)
             continue

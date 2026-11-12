@@ -1,7 +1,7 @@
 'use strict';
 // Real mouse -> production renderer/preload/IPC -> real Python HTTP approval
 // broker. ACP envelopes and the gated agent output are isolated fixtures.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE', 'CHROME_CRASHPAD_PIPE_NAME', 'CHROME_CRASHPAD_PIPE_HANDLE', 'CHROME_DEVEL_SANDBOX']) delete env[key];

@@ -31,7 +31,7 @@ const productIncubator = require('./product-incubator-plugin');
 // connections and must not put a local plugin into a misleading "needs
 // binding" state.
 const VIRTUAL_MCP_SERVERS = new Set(['soduwork-media']);
-const SIGNATURE_SCHEMA = 'soduwork.plugin-signature/v1';
+const SIGNATURE_SCHEMA = 'soduwork.plugin-signature/v2';
 const SIGNATURE_ALGORITHM = 'Ed25519';
 const PUBLISHER_SCHEMA = 1;
 const SIGNING_FIELDS = [

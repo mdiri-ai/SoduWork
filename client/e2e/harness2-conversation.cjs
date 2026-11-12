@@ -1,7 +1,7 @@
 'use strict';
 // Real Runner adapter, NativeChat, preload, approval IPC and artifact pipeline.
 // Runner RPC is deterministic and local; no account, model or installation is used.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-harness2-conversation-')));

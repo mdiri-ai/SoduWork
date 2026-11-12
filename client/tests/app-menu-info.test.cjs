@@ -51,6 +51,7 @@ test('application metadata uses the running version and only bundled published h
 test('real preload exposes only the two narrow menu invocations and reaches the production handlers', async () => {
   const f = fixture(), requester = f.owner(), exposed = {}, calls = [];
   const ipcRenderer = new EventEmitter();
+  ipcRenderer.sendSync = channel => channel === 'client-preload-trust';
   ipcRenderer.invoke = async (channel, ...args) => {
     calls.push({ channel, args }); return f.handlers.get(channel)(requester.event, ...args);
   };

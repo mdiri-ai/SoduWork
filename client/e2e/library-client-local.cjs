@@ -1,7 +1,7 @@
 'use strict';
 // Real Electron/preload/IPC/local filesystem and renderer code. Identity and the
 // loopback HTTP receiver are isolated fixtures, not a live Hub or NFS server.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-library-client-local-'));

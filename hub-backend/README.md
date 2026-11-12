@@ -70,6 +70,10 @@ The PostgreSQL value is a placeholder. Use a dedicated database and a minimally 
 - Administrators sign in at `/api/v1/admin/login` and use bearer tokens for administrator APIs, including clients, tasks, and dispatch.
 - Long-term device keys must not enter renderers, logs, or URLs. Server state is authoritative; offline client caches must not overwrite it.
 
+Automatic batching uses `GET /api/v1/admin/autobatch` for a read-only preview and `POST` on the same path for execution. Both require `task.dispatch` and are limited to the caller's management scope. Legacy `GET ?run=true` remains a preview; migrate execution callers to `POST`. Execution also requires `AUTOBATCH_ENABLED=true` and records the initiating administrator in the audit log. The background scheduler explicitly uses system scope.
+
+Repository mapping requires `binding.manage`. Changing a mapping checks both its previous and new repository and every task needing backfill before any write; a cross-scope backfill rejects the whole request. Pending counts and sample titles include only manageable tasks. Existing shared repositories and unassigned-device policies are unchanged; ownerless tasks require a super administrator.
+
 Account conversation directory and source projections include `contentLocation`: `hub` for legacy Hub content, `source` for content retained by the original endpoint, `replica` for a valid migrated copy at the current source revision, or `unknown` when the reference cannot be established. The field does not expose private replica identifiers or grant access; clients must retain existing account, Hub, and execution checks. An unknown location must not be used to discard a potentially independent local copy.
 
 See [OAuth deployment and validation](CONNECTOR_OAUTH.en.md) for connector credentials and authorization.

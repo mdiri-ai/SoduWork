@@ -1,5 +1,5 @@
 'use strict';
-const electron=require('electron'), fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
+const electron=require('./fixtures/trusted-electron.cjs'), fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 if(typeof electron==='string') {
   const root=path.resolve(path.join(process.env.SODUWORK_JIYONG_EVIDENCE || require('node:os').tmpdir(),'soduwork-jiyong-native-'+Date.now()));fs.mkdirSync(root,{recursive:true});
   const env={...process.env};for(const key of ['ELECTRON_RUN_AS_NODE','NODE_OPTIONS','ELECTRON_NO_ATTACH_CONSOLE','CHROME_CRASHPAD_PIPE_NAME','CHROME_CRASHPAD_PIPE_HANDLE'])delete env[key];

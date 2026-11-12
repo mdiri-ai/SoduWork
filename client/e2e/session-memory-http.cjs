@@ -2,7 +2,7 @@
 // Real Electron/preload/main IPC -> private local imports. A real migrated Hub
 // verifies that confirmed personal evidence is never uploaded automatically.
 // Only file selection and the new-conversation host are deterministic adapters.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'CHROME_CRASHPAD_PIPE_NAME',

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models
 from ..config import get_settings
-from . import ai_prompts
+from . import ai_prompts, repo_management_scope
 
 log = logging.getLogger("uvicorn.error")
 
@@ -94,10 +94,12 @@ async def _busy_repos(session: AsyncSession) -> set[str]:
     return busy
 
 
-async def group(session: AsyncSession) -> list[dict]:
+async def group(session: AsyncSession, *, actor: models.User | None = None,
+                system: bool = False) -> list[dict]:
     """Read-only grouping of pending external bugs by owner and repository, including dispatch
     eligibility.
     """
+    scope = await repo_management_scope.load(session, actor, system=system)
     enabled, min_n, wait_min = _cfg()
     skip = await _dispatched_ids(session)
     busy = await _busy_repos(session)
@@ -106,10 +108,16 @@ async def group(session: AsyncSession) -> list[dict]:
                                   models.Task.integration_id.is_not(None),
                                   models.Task.owner_client_id.is_not(None))
         .order_by(models.Task.created_at))).scalars().all()
+    rids = {(t.repo_id or "").strip() for t in rows if scope.allows_task(t)} - {""}
+    repos = {r.id: r for r in (await session.execute(
+        select(models.Repo).where(models.Repo.id.in_(rids)))).scalars().all()} if rids else {}
     now = datetime.now(timezone.utc)
     buckets: dict[tuple[str, str], dict] = {}
     for t in rows:
         rid = (getattr(t, "repo_id", "") or "").strip()
+        repo = repos.get(rid)
+        if not scope.allows_task(t) or (repo is not None and not scope.allows_repo(repo)):
+            continue
         if t.id in skip:
             continue
         if not rid:
@@ -129,9 +137,6 @@ async def group(session: AsyncSession) -> list[dict]:
             created = created.replace(tzinfo=timezone.utc)
         g["oldestAgeMin"] = max(g["oldestAgeMin"], int((now - created) / timedelta(minutes=1)))
     # Check whether an AI workspace is configured for automatic dispatch.
-    rids = {g["repoId"] for g in buckets.values()}
-    repos = {r.id: r for r in (await session.execute(
-        select(models.Repo).where(models.Repo.id.in_(rids)))).scalars().all()} if rids else {}
     out = []
     for g in buckets.values():
         n = len(g["taskIds"])
@@ -255,24 +260,36 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
     return {**g, "dispatched": True, "batchId": batch.id, "runId": run.id, "flow": True}
 
 
-async def run_once(session: AsyncSession, dry: bool | None = None) -> dict:
+async def run_once(session: AsyncSession, dry: bool | None = None, *,
+                   actor: models.User | None = None, system: bool = False) -> dict:
     """Dispatch each eligible group once. With dry=None, a disabled global switch selects preview
     mode.
     """
     enabled, min_n, wait_min = _cfg()
     if dry is None:
         dry = not enabled
-    groups = await group(session)
+    scope = await repo_management_scope.load(session, actor, system=system)
+    groups = await group(session, actor=actor, system=system)
     ready = [g for g in groups if g["ready"]]
     done = []
     for g in ready:
         if dry:
             done.append({**g, "dispatched": False, "dry": True})
             continue
-        client = await session.get(models.Client, g["ownerClientId"])
-        repo = await session.get(models.Repo, g["repoId"])
+        client = await session.get(models.Client, g["ownerClientId"], populate_existing=True)
+        repo = await session.get(models.Repo, g["repoId"], populate_existing=True)
         if client is None or repo is None:
             done.append({**g, "dispatched": False, "error": "负责人或工程不在了"})
+            continue
+        # Recheck the exact source rows and the execution account before either
+        # dispatch path. A device account switch must not transfer old work.
+        from .task_access import is_owner
+        source = [await session.get(models.Task, tid, populate_existing=True)
+                  for tid in g["taskIds"]]
+        if not scope.allows_repo(repo) or any(
+                t is None or not scope.allows_task(t) or not is_owner(t, client)
+                or t.repo_id != repo.id for t in source):
+            done.append({**g, "dispatched": False, "error": "需求归属或管理范围已变更"})
             continue
         # Use a bound delivery plugin when available; otherwise use direct batch dispatch.
         if g.get("flowBindingId"):
@@ -342,7 +359,7 @@ async def tick_loop() -> None:
     while True:
         try:
             async with SessionLocal() as session:
-                out = await run_once(session)
+                out = await run_once(session, system=True)
             if out["ready"]:
                 log.info("自动合并派活一轮：%s 堆够条件，%s",
                          out["ready"], [r.get("batchId") or r.get("error") for r in out["results"]])

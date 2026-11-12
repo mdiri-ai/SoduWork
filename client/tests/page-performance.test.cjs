@@ -131,6 +131,7 @@ function preload() {
   let now = 1000;
   const exposed = {}, pending = [];
   const ipcRenderer = { invoke: (name, ...args) => new Promise((resolve, reject) => pending.push({ name, args, resolve, reject })), on() {}, removeListener() {}, send() {} };
+  ipcRenderer.sendSync = channel => channel === 'client-preload-trust';
   vm.runInNewContext(read('preload.js'), { require: name => {
     assert.equal(name, 'electron'); return { ipcRenderer, contextBridge: { exposeInMainWorld: (key, value) => { exposed[key] = value; } } };
   }, Date: { now: () => now }, performance: { now: () => now }, console });

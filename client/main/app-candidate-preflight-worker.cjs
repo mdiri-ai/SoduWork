@@ -1,8 +1,11 @@
 'use strict';
 // Run by app-candidate-preflight.cjs, never as a user's normal desktop client.
 const fs=require('node:fs'),path=require('node:path');
-const electron=require('electron'),{app,BrowserWindow,WebContentsView,ipcMain}=electron;
+const electron=require('electron'),{app,BrowserWindow,WebContentsView}=electron;
 const folder=path.resolve(process.env.APP_CANDIDATE_PREFLIGHT_FOLDER||process.argv[2]),report={ok:false,executed:true,isolated:true,checks:[],errors:[],businessTested:false};
+const boundary=require('./renderer-boundary.cjs').create({ipcMain:electron.ipcMain,root:path.resolve(__dirname,'..'),
+  pages:['host.html','composer.html'].map(name=>path.join(folder,name))});
+const {ipcMain}=boundary;
 let phase='starting';Object.defineProperty(report,'stage',{enumerable:true,get:()=>phase,set:value=>{phase=value;fs.writeFileSync(path.join(folder,'progress.json'),JSON.stringify({stage:value}));}});
 app.setPath('userData',path.join(folder,'profile'));app.disableHardwareAcceleration();
 app.on('window-all-closed',()=>{});
@@ -60,7 +63,7 @@ app.whenReady().then(async()=>{
   fs.writeFileSync(path.join(folder,'host.html'),'<!doctype html><title>App startup check</title>');
   fs.writeFileSync(path.join(folder,'composer.html'),'<!doctype html><meta charset="utf-8"><style>body{margin:0}footer{position:fixed;bottom:6px;left:8px;right:8px;color:#8b8b93;font:12px/16px "Segoe UI",sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}</style><footer title="AI业务未在隔离预检中执行">AI业务未在隔离预检中执行</footer><script>soduWorkAPI.workPreview.onComposerSubmit(p=>soduWorkAPI.workPreview.composerSubmitResult({id:p.id,ok:false,reason:"隔离预检不执行真实AI，请通过页面操作实测"}));</script>');
   let observed=Promise.resolve(),contentReady=Promise.resolve(),composerReady=Promise.resolve(),composerContent;
-  require('./work-preview').install({app,ipcMain,
+  require('./work-preview').install({app,ipcMain,protectRenderer:boundary.protect,
     BrowserWindow:Object.assign(function(options){const win=new BrowserWindow({...options,show:false,webPreferences:{...options.webPreferences,offscreen:true}});win.show=()=>{};win.maximize=()=>{};windows.push(win);return win;},{fromWebContents:wc=>BrowserWindow.fromWebContents(wc)}),
     WebContentsView:function(options){
       const view=new WebContentsView({...options,webPreferences:{...options.webPreferences,offscreen:true,backgroundThrottling:false}}),load=view.webContents.loadFile.bind(view.webContents);
@@ -84,6 +87,7 @@ app.whenReady().then(async()=>{
       return view;
     },shell:{openExternal:async()=>{throw Error('隔离预检不打开外部页面');}}});
   host=new BrowserWindow({show:false,webPreferences:{preload:path.resolve(__dirname,'../preload.js'),contextIsolation:true,sandbox:true}});
+  boundary.protect(host.webContents);
   report.stage='host-load';
   await host.loadFile(path.join(folder,'host.html'));
   // Context travels through the real preload/IPC/origin/capability checks. This

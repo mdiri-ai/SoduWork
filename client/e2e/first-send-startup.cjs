@@ -2,7 +2,7 @@
 // Diagnostic for direct engine loading in an isolated Electron process.
 // Production hosts the SDK in utilityProcess; verify that boundary with
 // agent-runtime-process.cjs. Keep this diagnostic's latency assertions strict.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'CHROME_CRASHPAD_PIPE_NAME', 'CHROME_CRASHPAD_PIPE_HANDLE']) delete env[key];

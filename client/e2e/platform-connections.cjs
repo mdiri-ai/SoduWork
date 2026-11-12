@@ -1,7 +1,7 @@
 // Isolated Electron + real preload + real connection IPC. Platform replies are fixtures.
 // Set SODUWORK_E2E_FEISHU_PREFIX to a disposable npm prefix containing the exact
 // packages in runtime.provider('feishu'); never read an installed user's tools.
-const {app,BrowserWindow,ipcMain,safeStorage}=require('electron');
+const {app,BrowserWindow,ipcMain,safeStorage}=require('./fixtures/trusted-electron.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const evidence=process.argv[2];if(!evidence||!path.isAbsolute(evidence))throw Error('Explicit evidence directory required');
 fs.mkdirSync(evidence,{recursive:true});

@@ -103,6 +103,7 @@ function harness(t, { readyDuringLoad = false, synchronousBlur = false } = {}) {
     showInactive() { this.show(); }
     focus() { this.focusCount++; }
     loadFile(file) {
+      assert.equal(this.webContents.boundaryRegistered, true, 'register the overlay before its first preload runs');
       this.file = file;
       this.webContents.emit('did-start-loading');
       if (readyDuringLoad) ready(this);
@@ -112,6 +113,7 @@ function harness(t, { readyDuringLoad = false, synchronousBlur = false } = {}) {
     close() { this.destroyed = true; this.emit('closed'); }
   }
   const controller = create({ app, screen, ipcMain, BrowserWindow, globalShortcut, Notification,
+    protectRenderer: contents => { contents.boundaryRegistered = true; },
     powerMonitor, timers, now: () => timers.time, getRendererRoot: () => 'C:/SoduWork/client',
     getIcon: () => 'icon', translate: (value) => value });
   t.after(() => controller.dispose());

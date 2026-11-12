@@ -655,7 +655,8 @@
     // Conversation markup shares the app DOM. DOMPurify's defaults still allow
     // nested styles and style attributes, which can hide the composer or alter
     // other chats when history is rendered. Webpage previews have their own host.
-    const policy = { FORBID_TAGS: ['style', 'link', 'meta', 'base', 'video', 'audio', 'source', 'picture'], FORBID_ATTR: ['style'] };
+    const policy = { FORBID_TAGS: ['style', 'link', 'meta', 'base', 'video', 'audio', 'source', 'picture',
+      'form', 'input', 'button', 'textarea', 'select', 'option'], FORBID_ATTR: ['style', 'action', 'formaction'] };
     if (!/<img\b|href\s*=\s*["'](?:file:|sandbox:|[a-z]:[\\/])/i.test(html)) return purifier.sanitize(html, policy);
     // Retain local Markdown destinations as inert data BEFORE the sanitizer
     // strips file:/drive-letter hrefs. They still require an index match to open.

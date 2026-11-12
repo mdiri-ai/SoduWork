@@ -275,6 +275,7 @@ test('shortcut state and menu popups remain restricted to a managed trusted wind
 
 test('real preload subscribes before readiness, filters commands and unsubscribes only its own listener', async () => {
   const ipcRenderer = new EventEmitter(), calls = [], exposed = {};
+  ipcRenderer.sendSync = channel => channel === 'client-preload-trust';
   ipcRenderer.invoke = async (...args) => { calls.push(args); return {}; };
   ipcRenderer.send = channel => { calls.push([channel]); ipcRenderer.emit('window-menu-command', {}, 'new'); };
   vm.runInNewContext(fs.readFileSync(path.resolve(__dirname, '../preload.js'), 'utf8'), {

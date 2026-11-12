@@ -1,5 +1,5 @@
 "use strict";
-const electron=require("electron");
+const electron=require('./fixtures/trusted-electron.cjs');
 if(typeof electron==="string"){
  const {spawnSync}=require("node:child_process");
  const result=spawnSync(electron,[__filename,...process.argv.slice(2)],{stdio:"inherit"});

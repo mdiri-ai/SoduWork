@@ -1,7 +1,7 @@
 'use strict';
 // Chromium drag data contains real filesystem File objects. The production
 // attachment component/preload and runtime staging are used; no model is called.
-const fs = require('node:fs'), path = require('node:path'), electron = require('electron');
+const fs = require('node:fs'), path = require('node:path'), electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

@@ -1,6 +1,6 @@
 'use strict';
 // Production sandboxed preload and Chromium timing; synthetic IPC, no network.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 if (typeof electron === 'string') {
   const env = { ...process.env };

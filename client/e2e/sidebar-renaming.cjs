@@ -1,7 +1,7 @@
 'use strict';
 // Real Electron preload, production sidebar/header and production title/history IPC.
 // Session inventories are fixtures; no agents, business records or network are used.
-const { app, BrowserWindow, ipcMain, net } = require('electron');
+const { app, BrowserWindow, ipcMain, net } = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = process.argv[2];
 if (!root || !path.isAbsolute(root)) throw Error('Absolute evidence directory required');

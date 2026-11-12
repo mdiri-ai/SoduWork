@@ -1,7 +1,7 @@
 'use strict';
 // Production chat/compose DOM and CSS in a hidden Electron window. Session data
 // is synthetic; no live model, business service or user profile is used.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

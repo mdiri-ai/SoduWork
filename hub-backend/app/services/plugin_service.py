@@ -10,7 +10,7 @@ from sqlalchemy import inspect as sa_inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am, models
-from . import product_brand
+from . import package_digests, product_brand
 from . import (approval_routing, plugin_audience, plugin_compat,
                plugin_identity, plugin_marketplace, plugin_packages,
                plugin_route_readiness, plugin_runtime, plugin_signatures, rbac,
@@ -31,6 +31,9 @@ def _ms(dt):
 def provenance_api(value: dict | None, checksum: str = "") -> dict:
     """Public, bounded source proof. Package paths and credentials never enter it."""
     row = dict(value or {})
+    signature_state = str(row.get("signatureState") or "unsigned")
+    if signature_state == "verified" and row.get("digestAlgorithm") != package_digests.ALGORITHM:
+        signature_state = "legacy-signature"
     return {
         "publisherId": str(row.get("publisherId") or "")[:64],
         "publisherName": product_brand.publisher_display(row)[:120],
@@ -39,7 +42,8 @@ def provenance_api(value: dict | None, checksum: str = "") -> dict:
         "sourceName": str(row.get("sourceName") or "")[:180],
         "sourceKind": str(row.get("sourceKind") or "")[:24],
         "checksum": str(row.get("checksum") or checksum or "")[:64],
-        "signatureState": str(row.get("signatureState") or "unsigned")[:24],
+        "signatureState": signature_state[:24],
+        "digestAlgorithm": str(row.get("digestAlgorithm") or "")[:32],
         "signatureKeyId": str(row.get("signatureKeyId") or "")[:120],
         "signatureFingerprint": str(row.get("signatureFingerprint") or "")[:64],
         "signatureSignedAt": str(row.get("signatureSignedAt") or "")[:40],
@@ -79,6 +83,7 @@ def _provenance(parsed: dict, user, channel: str, source_name: str,
         "sourceKind": str(parsed.get("sourceKind") or ""),
         "checksum": str(parsed.get("checksum") or ""),
         "contentChecksum": str(parsed.get("contentChecksum") or ""),
+        "digestAlgorithm": package_digests.ALGORITHM,
         "signatureState": "platform" if system else str(proof.get("state") or "unsigned"),
         "signatureKeyId": str(proof.get("keyId") or ""),
         "signatureFingerprint": str(proof.get("fingerprint") or ""),
@@ -385,8 +390,7 @@ async def approve_version(session: AsyncSession, version: am.PluginVersion, enab
                 raise ValueError("签名插件的原始包已缺失，不能发布")
             from . import file_io
             parsed = await file_io.run(plugin_packages.parse_file, version.package_path)
-            if parsed.get("checksum") != version.checksum:
-                raise ValueError("插件包内容与不可变版本不一致")
+            package_digests.assert_plugin_checksum(parsed, version.checksum)
             plugin = await session.get(am.Plugin, version.plugin_id)
             proof = await plugin_signatures.inspect(
                 session, parsed, plugin.org_id if plugin is not None else None)
@@ -398,6 +402,7 @@ async def approve_version(session: AsyncSession, version: am.PluginVersion, enab
                 "publisherType": proof.get("publisherType"),
                 "checksum": parsed.get("checksum"),
                 "contentChecksum": parsed.get("contentChecksum"),
+                "digestAlgorithm": package_digests.ALGORITHM,
                 "signatureState": proof.get("state"),
                 "signatureKeyId": proof.get("keyId"),
                 "signatureFingerprint": proof.get("fingerprint"),

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am, models
-from . import product_brand
+from . import package_digests, product_brand
 from . import plugin_covers
 from . import (mcp_servers, plugin_audience, plugin_compat,
                plugin_identity, plugin_installations, plugin_marketplace,
@@ -53,13 +53,17 @@ def _submitted_version_key(version: am.PluginVersion) -> tuple:
 
 def _provenance(version: am.PluginVersion) -> dict:
     row = dict(version.provenance or {})
+    signature_state = str(row.get("signatureState") or "unsigned")
+    if signature_state == "verified" and row.get("digestAlgorithm") != package_digests.ALGORITHM:
+        signature_state = "legacy-signature"
     return {
         "publisherName": product_brand.publisher_display(row)[:120],
         "publisherType": str(row.get("publisherType") or "member")[:24],
         "channel": str(row.get("channel") or "unknown")[:32],
         "sourceKind": str(row.get("sourceKind") or "")[:24],
         "checksum": str(row.get("checksum") or version.checksum or "")[:64],
-        "signatureState": str(row.get("signatureState") or "unsigned")[:24],
+        "signatureState": signature_state[:24],
+        "digestAlgorithm": str(row.get("digestAlgorithm") or "")[:32],
         "signatureKeyId": str(row.get("signatureKeyId") or "")[:64],
         "signatureFingerprint": str(row.get("signatureFingerprint") or "")[:64],
     }

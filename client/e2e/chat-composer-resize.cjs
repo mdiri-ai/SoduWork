@@ -1,7 +1,7 @@
 'use strict';
 // Real NativeChat, production preload, controls and pointer splitter. Only IPC
 // session/model/file responses are synthetic; no model or user data is touched.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from .immutable_cache import publish_immutable_tree
 from .local_base import _data_root
 from .skill_frontmatter import quote_scalar
+from . import package_digests
 
 _MAX_PACKAGE = 10 * 1024 * 1024
 _MAX_UNPACKED = 30 * 1024 * 1024
@@ -102,13 +103,7 @@ def _frontmatter(text: str | bytes, *, source: str = "SKILL.md") -> dict:
 
 
 def _canonical_digest(files: dict[str, bytes]) -> str:
-    digest = hashlib.sha256()
-    for name in sorted(files):
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(files[name])
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return package_digests.file_tree_digest(files, files.__getitem__)
 
 
 def read_package_files(data: bytes) -> tuple[dict[str, bytes], str]:
@@ -251,6 +246,8 @@ def install(parsed: dict, scope: str, owner_client_id: str = "") -> dict:
     if scope == "personal" and not owner:
         raise ValueError("个人 Skill 必须绑定一台 SoduWork")
     checksum, name = str(parsed["checksum"]), str(parsed["name"])
+    if _canonical_digest(parsed["files"]) != checksum:
+        raise ValueError(package_digests.SKILL_IDENTITY_ERROR)
     from . import skills as skill_service
     if any(item.get("name") == name for item in skill_service.scan_root(
             skill_service.bundled_root())):
@@ -275,10 +272,17 @@ def install(parsed: dict, scope: str, owner_client_id: str = "") -> dict:
         finally:
             if os.path.isdir(temp):
                 shutil.rmtree(temp, ignore_errors=True)
+    from . import skill_content
+    with open(ready, "r", encoding="utf-8") as marker:
+        if marker.read().strip() != checksum:
+            raise ValueError(package_digests.SKILL_IDENTITY_ERROR)
+    if _canonical_digest(skill_content.read_files(target)) != checksum:
+        raise ValueError(package_digests.SKILL_IDENTITY_ERROR)
     row = {
         "name": name, "description": parsed["description"],
         "compatibility": parsed.get("compatibility") or "", "scope": scope,
         "ownerClientId": owner, "packageChecksum": checksum, "path": target,
+        "digestAlgorithm": package_digests.ALGORITHM,
         "root": os.path.dirname(target), "dir": name, "bundled": True,
         "hasScripts": bool(parsed.get("hasScripts")),
         "resourceKinds": list(parsed.get("resourceKinds") or []),
@@ -346,6 +350,9 @@ def active(*, owner_client_id: str = "", include_company: bool = True,
             continue
         path = str(item.get("path") or "")
         if path and os.path.isfile(os.path.join(path, "SKILL.md")):
-            rows.append(dict(item))
+            row = dict(item)
+            if row.get("digestAlgorithm") != package_digests.ALGORITHM:
+                row["identityError"] = package_digests.SKILL_IDENTITY_ERROR
+            rows.append(row)
     return sorted(rows, key=lambda item: (
         item.get("name") or "", item.get("scope") or "", item.get("ownerClientId") or ""))

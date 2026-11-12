@@ -1,7 +1,7 @@
 'use strict';
 // NativeChat and the Runner adapter are production code. Runner replies and
 // non-execution IPC inventory are isolated; no real model or account is used.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = {...process.env};
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

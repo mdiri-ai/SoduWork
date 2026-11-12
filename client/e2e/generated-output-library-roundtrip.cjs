@@ -1,7 +1,7 @@
 'use strict';
 // Real renderer -> production preload/IPC -> actual packaging and PC library.
 // Isolated account/workspace; no model, production account or Hub is used.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-output-save-'));

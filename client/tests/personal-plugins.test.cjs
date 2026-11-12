@@ -273,12 +273,13 @@ test('publisher identity stays local, is stable, and signs only canonical plugin
     assert.match(storedText, /privateKeyCipher/);
 
     const payload = {
-      schema: 'soduwork.plugin-signature/v1', algorithm: 'Ed25519',
+      schema: 'soduwork.plugin-signature/v2', algorithm: 'Ed25519',
       keyId: first.keyId, contentChecksum: 'a'.repeat(64),
       pluginKey: 'weekly-report', version: '0.1.0',
       signedAt: new Date().toISOString(),
     };
     const envelope = (await signCall(null, payload)).signature;
+    assert.throws(() => personal.signPayload(f.app, { ...payload, schema: 'soduwork.plugin-signature/v1' }));
     assert.equal(Buffer.from(envelope.signature, 'base64').length, 64);
     const publicKey = crypto.createPublicKey({
       key: {

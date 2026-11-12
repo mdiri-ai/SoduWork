@@ -66,6 +66,8 @@ def initialize(state: Path, *, create: bool, port: int | None, origin: str | Non
                 raise ValueError("Invalid deployment settings")
             if public_url(config["publicUrl"], config["port"]) != config["publicUrl"]:
                 raise ValueError("Invalid public URL")
+            if not isinstance(config.get("jiyongDatabaseUrl", ""), str):
+                raise ValueError("Invalid Jiyong database URL")
         except (ValueError, KeyError, TypeError) as exc:
             raise StartupError("Cannot read deployment.json; restore its private backup. No credentials were reset.") from exc
         if ((port is not None and port != config["port"])
@@ -78,7 +80,7 @@ def initialize(state: Path, *, create: bool, port: int | None, origin: str | Non
         raise StartupError("The directory is not empty and is not a SoduWork self-host instance.")
     chosen_port = 18989 if port is None else port
     config = {"schema": SCHEMA, "project": "soduwork-" + secrets.token_hex(6), "port": chosen_port,
-              "publicUrl": public_url(origin or "", chosen_port),
+              "publicUrl": public_url(origin or "", chosen_port), "jiyongDatabaseUrl": "",
               "databasePassword": secrets.token_urlsafe(36), "adminPassword": secrets.token_urlsafe(24),
               "authSecret": secrets.token_urlsafe(48), "oauthKey": base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()}
     secure_directory(state)
@@ -93,11 +95,12 @@ def environment(config: dict) -> dict:
     # Docker client configuration and ordinary network proxy settings are retained.
     # Compose variables, inherited production DBs and credentials are not accepted.
     env = {key: value for key, value in os.environ.items()
-           if not key.upper().startswith(("COMPOSE_", "SODUWORK_", "DATABASE_", "AUTH_", "ADMIN_"))}
+           if not key.upper().startswith(("COMPOSE_", "SODUWORK_", "DATABASE_", "AUTH_", "ADMIN_", "JIYONG_"))}
     env.update({"SODUWORK_DB_PASSWORD": config["databasePassword"],
                 "SODUWORK_ADMIN_PASSWORD": config["adminPassword"],
                 "SODUWORK_AUTH_SECRET": config["authSecret"], "SODUWORK_OAUTH_KEY": config["oauthKey"],
-                "SODUWORK_HTTP_PORT": str(config["port"]), "SODUWORK_PUBLIC_URL": config["publicUrl"]})
+                "SODUWORK_HTTP_PORT": str(config["port"]), "SODUWORK_PUBLIC_URL": config["publicUrl"],
+                "JIYONG_DATABASE_URL": config.get("jiyongDatabaseUrl", "")})
     return env
 
 

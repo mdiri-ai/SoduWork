@@ -2,7 +2,7 @@
 
 // Real Electron/preload, send IPC, personal workflow controller, Pi transcript
 // and archive. Only workflow node execution/model transport use local fixtures.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

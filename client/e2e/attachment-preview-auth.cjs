@@ -2,7 +2,7 @@
 // Isolated authenticated Hub -> production preload/IPC -> right native preview.
 // The private file protocol serves a fixture at the trusted workspace URL; no
 // application profile, business data, external model or production Hub is used.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS']) delete env[key];

@@ -29,13 +29,14 @@ def _cache_hit(item):
     # Reopened runs may name an already verified immutable bundle. Derive the
     # cache location from its digest, never from an incoming path/root/dir.
     from .local_base import _data_root
+    from . import package_digests
     name = str(item.get("name") or "")
     for field, directory in (("bundleChecksum", "runner-plugin-skills"),
                              ("pluginChecksum", "plugin-skills")):
         digest = str(item.get(field) or "")
         if not re.fullmatch(r"[0-9a-f]{64}", digest):
             continue
-        root = os.path.join(_data_root(), directory, digest)
+        root = os.path.join(_data_root(), directory, package_digests.CACHE_VERSION, digest)
         try:
             with open(os.path.join(root, ".ready"), encoding="utf-8") as handle:
                 if handle.read().strip() != digest:
@@ -79,6 +80,9 @@ def localize(items, catalog=None):
             if item.get("packageChecksum") and (hit or {}).get("packageChecksum") != item["packageChecksum"]:
                 hit = None
         if hit:
+            if hit.get("packageChecksum"):
+                from . import skill_sharing
+                skill_sharing.files(hit)
             result.append(TrustedSkill(hit))
     return result
 

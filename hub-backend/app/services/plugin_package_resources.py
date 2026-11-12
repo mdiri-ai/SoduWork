@@ -10,7 +10,7 @@ import io
 import os
 import zipfile
 
-from . import plugin_resources
+from . import package_digests, plugin_resources
 
 PREFIX = "references/plugin-package/"
 METADATA = {
@@ -92,8 +92,7 @@ def for_version(version) -> dict:
     with open(path, "rb") as stream:
         data = stream.read(plugin_packages._MAX_PACKAGE + 1)
     parsed = plugin_packages.parse(data)
-    if parsed["checksum"] != version.checksum:
-        raise ValueError("插件原始包校验失败，禁止加载被修改的资源")
+    package_digests.assert_plugin_checksum(parsed, version.checksum)
     return parsed["resourceBundle"]
 
 
@@ -117,8 +116,7 @@ def ui_for_version(version) -> dict:
         raise ValueError('插件原始包缺失，请重新发布完整版本')
     with open(path, 'rb') as stream:
         parsed = plugin_packages.parse(stream.read(plugin_packages._MAX_PACKAGE + 1))
-    if parsed['checksum'] != version.checksum:
-        raise ValueError('插件原始包校验失败，禁止加载被修改的资源')
+    package_digests.assert_plugin_checksum(parsed, version.checksum)
     ui = dict(version.manifest or {}).get('ui') or {}
     files = [row for row in parsed.get('resources', []) if row['kind'] in ('ui', 'asset')]
     plugin_app_contracts.validate_resources(ui, files)

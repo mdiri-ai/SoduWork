@@ -60,6 +60,8 @@ python3 ops/self-host/deploy.py up --no-build
 
 ## 团队访问与执行环境
 
+启动器忽略终端继承的 `JIYONG_*` 环境变量。默认情况下，即用云端应用使用当前实例的数据库。若需明确使用独立的应用数据库，先停止实例，在私有 `deployment.json` 中设置 `jiyongDatabaseUrl` 为 PostgreSQL 异步连接地址（`postgresql+asyncpg://...`），然后运行 `up --no-build`。地址可能包含凭据，必须保护并备份此配置。旧配置没有此字段时使用当前实例的数据库。应用配置过程可能在所选数据库创建 schema 和表，应使用专用数据库及具有所需权限的账号。
+
 Hub 与 PostgreSQL 默认都不会裸露在局域网：Hub 仅映射 `127.0.0.1`，PostgreSQL 不映射主机端口。需要团队使用时，在这台服务器配置自己的 HTTPS 反向代理，将其转发到 `127.0.0.1:18989`，支持 WebSocket 和长时间流式响应。首次初始化时设置公开地址：
 
 ```sh

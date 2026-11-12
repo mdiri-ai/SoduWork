@@ -584,7 +584,16 @@ my-team-flow.soduwork-plugin
 
 应用可引入公共 `client/sdk/soduwork-app.js`，通过 `soduWorkApp.chat.send({text,requestId})` 向自己的原生侧栏发送业务任务。跨域直接 iframe 用 postMessage，顶层显式授权精确来源，子页指定 parentOrigin；使用说明、发送回执与刷新事件见 [H5 SDK](../client/sdk/README.zh-CN.md)。无需增加面向用户的技能选择器，页面业务动作携带上下文，插件按自然语言匹配技能。`conversation.send` 与 `composer.control` 必须由插件的 source.bridge.capabilities 明确声明。
 
-
 ### 应用专属设置与 ukey
 
 本机应用在 `source.bridge.capabilities` 声明 `settings.read` / `settings.write` 后，可通过公共 SDK `soduWorkApp.settings.get/update` 同步任意 JSON 业务参数。与应用设置面板共用按账号/应用/来源隔离的加密存储；显式读取自己应用的 ukey 可恢复业务登录，退出页面保留壳内凭据。原生顶层自有 MCP 使用 `credentialKey:'ukey'` 引用设置，技能继续走每轮受控 MCP，不接触密钥。跨域 iframe、凭据读写、CAS 与换号旧授权失效的完整合同见 [H5 SDK](../client/sdk/README.zh-CN.md)。凭据不属于草稿 setup，不随版本/导出包或提示词分发；没有两套用户的 SSO 同步。
+
+## 文件身份与签名升级
+
+插件和导入 Skill 使用 `sha256-file-tree-v2`，API 仍返回 64 位十六进制摘要。SHA-256 的输入依次为 ASCII 域标识 `soduwork.file-tree/v2`、一个 NUL 字节、64 位大端无符号文件数，再按路径的 Unicode 码点顺序逐文件写入：64 位大端 UTF-8 路径字节数、路径字节、64 位大端内容字节数、内容字节。路径使用 `/`；目录条目、ZIP 顺序、时间戳和压缩方式不影响身份。签名内容只排除 `soduwork/signature.json`，完整包身份仍包含它。明确的长度边界防止二进制内容冒充其他文件条目。
+
+新发布者证明使用 `soduwork.plugin-signature/v2` 和 Ed25519。Hub 签名准备接口、桌面签名器和包解析器应一同升级。即使旧签名在数学上有效，v1 证明也会被拒绝；仅修改 schema 标签不能完成升级。
+
+升级保留原始插件包、Skill 目录以及历史索引和数据库记录。旧版插件身份不能加载包资源或内置 Skill，历史已验证发布者证明显示为 `legacy-signature`。请向发布者获取原始来源，核对完整文件树，提升插件语义版本号，去除旧签名，对新准备的 v2 载荷重新签名，再导入并审核新版本。未签名插件也须提升版本号重新导入；旧不可变版本不会被重写。
+
+旧版导入 Skill 仍在列表中显示，并提供需要重新导入的身份错误；执行、共享和传输会被阻止。核对完整原始 Skill 包后重新导入，只更新生效指针并保留旧目录；共享 Skill 需重新提交审核。Hub 和 Runner 技能缓存使用独立 `v2` 命名空间，旧就绪标记和恢复的会话不能提供旧缓存内容。升级时不要删除保留的原文件，应留作检查和备份。

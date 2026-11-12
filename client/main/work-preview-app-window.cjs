@@ -384,6 +384,7 @@ function create({ owners: OWNERS, getDeps, ownerFor, ownerSession, safeWebUrl,
         },
       });
       view.setBackgroundColor('#00000000'); // Keep the view transparent outside its card surface.
+      DEPS.protectRenderer?.(view.webContents);
       view.setVisible(!item.embeddedHost);
       hostFor(item).contentView.addChildView(view);
       if (item.appBridge) appOwner.associate(view.webContents, item);

@@ -1,6 +1,6 @@
 'use strict';
 // Real Electron fixed-Hub login/settings, storage and IPC. Only explicit loopback fixtures can make HTTP calls.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   env.SODUWORK_HUB_E2E_RUN_ID = require('node:crypto').randomUUID();

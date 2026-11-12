@@ -3,7 +3,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const assert = require('node:assert/strict');
 const { spawn, spawnSync } = require('node:child_process');
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 const client = path.resolve(__dirname, '..');
 

@@ -1,6 +1,6 @@
 // Isolated real IPC/Runner/CLI/model test. Reuses existing device identity
 // read-only for short-lived model access. Never enrolls a second device/Runner.
-const {app,BrowserWindow,ipcMain,safeStorage}=require('electron');
+const {app,BrowserWindow,ipcMain,safeStorage}=require('./trusted-electron.cjs');
 const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn}=require('node:child_process');
 const [root,profile]=process.argv.slice(2);

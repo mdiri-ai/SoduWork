@@ -12,7 +12,7 @@ const NATIVE_SHAPE = process.platform === 'win32' || process.platform === 'linux
 // Owns only the desktop pet/dock overlay. Work windows remain independent.
 function create({ app, BrowserWindow, ipcMain, screen, globalShortcut, Notification,
   powerMonitor, getRendererRoot: rendererRoot, getIcon: _appIcon, translate: _nativeText,
-  timers = globalThis, now = Date.now }) {
+  timers = globalThis, now = Date.now, protectRenderer = () => {} }) {
   const setTimeout = timers.setTimeout.bind(timers), clearTimeout = timers.clearTimeout.bind(timers);
   const setInterval = timers.setInterval.bind(timers), clearInterval = timers.clearInterval.bind(timers);
   let mainWindow = null;
@@ -543,6 +543,7 @@ function create({ app, BrowserWindow, ipcMain, screen, globalShortcut, Notificat
      * on reload.
      */
     const owner = mainWindow;
+    protectRenderer(owner.webContents);
     _initialPaintReady = false;
     _initialRevealPending = true;
     parkOverlayShape();

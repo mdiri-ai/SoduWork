@@ -21,6 +21,7 @@ from . import (execution_capabilities, execution_policy, plugin_adapters,
 from . import plugin_platforms
 from . import plugin_app_contracts
 from . import plugin_covers
+from . import package_digests
 from .plugin_builtin import is_virtual_mcp
 from .plugin_manifest import (
     _KEY,
@@ -77,16 +78,10 @@ def _portable_zip_name(name: str) -> str:
 def _canonical_digest(zf: zipfile.ZipFile, names: dict[str, zipfile.ZipInfo],
                       excluded: set[str] | None = None) -> str:
     """Package identity ignores zip timestamps, compression and entry order."""
-    digest = hashlib.sha256()
     skipped = excluded or set()
-    for name in sorted(names):
-        if name in skipped:
-            continue
-        digest.update(name.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(zf.read(names[name]))
-        digest.update(b"\0")
-    return digest.hexdigest()
+    return package_digests.file_tree_digest(
+        (name for name in names if name not in skipped),
+        lambda name: zf.read(names[name]))
 
 
 def parse_file(filename: str) -> dict:

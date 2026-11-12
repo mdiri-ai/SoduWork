@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 
 SIGNATURE_PATH = "soduwork/signature.json"
-SCHEMA = "soduwork.plugin-signature/v1"
+SCHEMA = "soduwork.plugin-signature/v2"
 ALGORITHM = "Ed25519"
 KEY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$")
 SIGNATURE_STATES = {
@@ -96,6 +96,9 @@ def parse_envelope(raw: bytes | None, content_checksum: str, manifest: dict) -> 
     key_id = str(value.get("keyId") or "")
     signed_at = str(value.get("signedAt") or "")[:40]
     signature = str(value.get("signature") or "")
+    if schema == "soduwork.plugin-signature/v1":
+        raise ValueError("旧版 v1 插件签名无法证明文件树完整性；原包已保留，"
+                         "请发布者核对原始来源、提升版本号并重新签发 v2 签名后导入")
     if schema != SCHEMA or algorithm != ALGORITHM:
         raise ValueError("插件签名协议或算法不受支持")
     if not KEY_ID_RE.fullmatch(key_id):
@@ -284,7 +287,7 @@ async def register_candidate(session: AsyncSession, version: am.PluginVersion,
     """
     from sqlalchemy import select
     from .. import automation_models as am
-    from . import plugin_packages
+    from . import package_digests, plugin_packages
 
     candidate = publisher_candidate(version)
     if not candidate:
@@ -295,8 +298,7 @@ async def register_candidate(session: AsyncSession, version: am.PluginVersion,
         raise ValueError("插件原始包已缺失，不能核对发布身份")
     from . import file_io
     parsed = await file_io.run(plugin_packages.parse_file, version.package_path)
-    if parsed.get("checksum") != version.checksum:
-        raise ValueError("插件包内容与不可变版本不一致")
+    package_digests.assert_plugin_checksum(parsed, version.checksum)
     verified = verify_candidate(parsed, candidate)
 
     rows = (await session.scalars(select(am.PluginPublisherKey).where(
@@ -329,6 +331,7 @@ async def register_candidate(session: AsyncSession, version: am.PluginVersion,
     provenance = dict(version.provenance or {})
     provenance.pop("_publisherCandidate", None)
     provenance.update({
+        "digestAlgorithm": package_digests.ALGORITHM,
         "publisherId": proof.get("publisherId"),
         "publisherName": proof.get("publisherName"),
         "publisherType": proof.get("publisherType"),

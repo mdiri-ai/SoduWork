@@ -1,6 +1,6 @@
 'use strict';
 // Real production preload, queue/controller components and turn queue; execution/Hub replies are isolated fixtures.
-const {app,BrowserWindow,ipcMain}=require('electron');
+const {app,BrowserWindow,ipcMain}=require('./fixtures/trusted-electron.cjs');
 const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict');
 const {createTurnQueue}=require('../main/pi-session/turn-queue');
 const root=process.argv[2];if(!root||!path.isAbsolute(root))throw Error('Absolute evidence directory required');

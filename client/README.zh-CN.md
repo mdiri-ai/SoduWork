@@ -42,6 +42,8 @@
 
 验收摘要的隔离验证命令为 `node e2e/acceptance-summary-export.cjs /absolute/evidence/directory /path/to/test/python`。Python 环境需要后端测试依赖。该脚本验证真实原生 IPC、设备认证与保存字节，保存框选择由测试注入，不使用真实模型或生产账号。
 
+运行 `node e2e/renderer-boundary.cjs /absolute/evidence/directory`，可在保留沙箱的真实 Electron 中验证桌面导航、preload/IPC 信任边界和文本预览读取上限。测试使用隔离入口页、合成文件及生产代码的边界层、preload、Markdown 渲染器和成果处理器，不需要 Hub 或模型。
+
 ## Windows 打包
 
 1. 在后端虚拟环境安装 `../hub-backend/requirements-runner-build.txt`。

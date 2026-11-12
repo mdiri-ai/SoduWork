@@ -1,7 +1,7 @@
 'use strict';
 // Real Chromium backdrops and production preload/titlebar IPC. History and
 // directory access use isolated fixtures; no Hub, model or user profile is used.
-const { app, BrowserWindow, ipcMain, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu } = require('./fixtures/trusted-electron.cjs');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');

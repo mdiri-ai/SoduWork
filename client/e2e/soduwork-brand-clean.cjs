@@ -1,7 +1,7 @@
 'use strict';
 
 // Real Electron context isolation and IPC, using temporary storage and inert handlers.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const { spawnSync } = require('node:child_process');
   const env = { ...process.env };

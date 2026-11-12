@@ -3,7 +3,7 @@
 // Real Electron, preload and NativeChat with production desktop script order.
 // The debug IPC endpoint supplies controlled snapshots and delayed replies;
 // no workflow execution, real model, account or business process is involved.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE',

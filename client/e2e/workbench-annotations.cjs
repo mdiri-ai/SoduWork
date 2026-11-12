@@ -1,7 +1,7 @@
 'use strict';
 // Real NativeChat, production preload/IPC and sandboxed WebContentsView. Only
 // the model send boundary is a deterministic fixture; no model or user profile.
-const { app, BrowserWindow, WebContentsView, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, screen } = require('./fixtures/trusted-electron.cjs');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
 const root = process.argv[2];

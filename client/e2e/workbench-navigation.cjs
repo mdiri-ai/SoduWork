@@ -118,7 +118,7 @@ async function run(electron, options = {}) {
 module.exports = { run };
 
 if (require.main === module || process.versions.electron && path.resolve(process.argv[1] || '') === __filename) {
-  const electron = require('electron');
+  const electron = require('./fixtures/trusted-electron.cjs');
   if (typeof electron === 'string') {
     const env = { ...process.env };
     for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE']) delete env[key];

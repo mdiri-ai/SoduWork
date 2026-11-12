@@ -1,7 +1,7 @@
 'use strict';
 // Production sidebar, confirmation dialog, preload, history IPC and worker
 // outbox against an isolated HTTP source. Never opens the user's profile.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS;
   const result = require('node:child_process').spawnSync(electron, [__filename, ...process.argv.slice(2)],

@@ -85,7 +85,7 @@ async def main():
 
     # Verify grouping and dispatch gates.
     async with SessionLocal() as s:
-        groups = await autobatch.group(s)
+        groups = await autobatch.group(s, system=True)
         g = next((x for x in groups if x["repoId"] == "r-flow"), None)
         chk("攒够 3 条 -> 堆 ready", g is not None and g["ready"], g)
         chk("★绑了交付流程插件：没配 ai_work_dir 也放行（老闸门只管老链路）",
@@ -98,7 +98,7 @@ async def main():
 
     # Start a real plugin run.
     async with SessionLocal() as s:
-        out = await autobatch.run_once(s, dry=False)
+        out = await autobatch.run_once(s, dry=False, system=True)
         r = next((x for x in out["results"] if x["repoId"] == "r-flow"), None)
         chk("★归堆走插件路径派发成功", r is not None and r.get("dispatched")
             and r.get("flow") and r.get("runId"), r)
@@ -149,7 +149,7 @@ async def main():
     async with SessionLocal() as s:
         s.add(_bug(4))
         await s.commit()
-        groups = await autobatch.group(s)
+        groups = await autobatch.group(s, system=True)
         g = next((x for x in groups if x["repoId"] == "r-flow"), None)
         chk("已回流的不再归堆：只剩 1 条新 bug -> 不派",
             g is not None and not g["ready"] and "只有 1 条" in g["reason"], g)
@@ -162,7 +162,7 @@ async def main():
         s.add(_bug(5))
         s.add(_bug(6))
         await s.commit()
-        groups = await autobatch.group(s)
+        groups = await autobatch.group(s, system=True)
         g = next((x for x in groups if x["repoId"] == "r-flow"), None)
         chk("同工程并行闸对插件路径照防", g is not None and not g["ready"]
             and "没干完的批次" in g["reason"], g)

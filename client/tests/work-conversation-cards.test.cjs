@@ -825,6 +825,7 @@ test('真实 preload 只转发草稿选择到专用受信任 IPC', async () => {
       assert.equal(name, 'electron');
       return { contextBridge: { exposeInMainWorld: (key, value) => { exposed[key] = value; } },
         ipcRenderer: Object.assign(new (require('node:events').EventEmitter)(), {
+          sendSync: channel => channel === 'client-preload-trust',
           invoke: async (...args) => { calls.push(args); return { ok: true }; },
         }) };
     },

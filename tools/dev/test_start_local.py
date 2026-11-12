@@ -244,6 +244,23 @@ class LocalStartupTests(unittest.TestCase):
                   cwd=root, log=root / 'download.log', label='Retry fixture', timeout=5)
         self.assertTrue(marker.exists())
 
+    @unittest.skipUnless(os.name == "nt", "Windows taskkill fallback")
+    def test_failed_tree_cleanup_stops_parent_immediately_and_blocks_retry(self):
+        marker = Path(self.temp.name) / "must-not-write"
+        command = [sys.executable, "-c",
+                   "import time,pathlib,sys; time.sleep(1); pathlib.Path(sys.argv[1]).touch()", str(marker)]
+        for failure in (subprocess.CompletedProcess([], 1), OSError("taskkill unavailable"),
+                        subprocess.TimeoutExpired("taskkill", 10)):
+            with self.subTest(failure=type(failure).__name__):
+                with subprocess.Popen(command, **build.spawn_options()) as child:
+                    options = ({"side_effect": failure} if isinstance(failure, Exception)
+                               else {"return_value": failure})
+                    with patch.object(build.subprocess, "run", **options):
+                        with self.assertRaisesRegex(build.StartupError, "Could not confirm cleanup"):
+                            build.stop_child(child)
+                    self.assertIsNotNone(child.poll())
+                self.assertFalse(marker.exists())
+
     def test_busy_port_is_left_running(self):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))

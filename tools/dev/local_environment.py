@@ -37,9 +37,23 @@ def stop_child(child: subprocess.Popen) -> None:
     if child.poll() is not None:
         return
     if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+        try:
+            result = subprocess.run(["taskkill", "/PID", str(child.pid), "/T", "/F"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    creationflags=subprocess.CREATE_NO_WINDOW, check=False,
+                                    timeout=10)
+            tree_stopped = result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            tree_stopped = False
+        if not tree_stopped:
+            # Do not give a failed installer another grace period to write files.
+            # Killing the parent cannot prove that its descendants are gone.
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+            raise StartupError(
+                f"Could not confirm cleanup of child process tree {child.pid}. "
+                "Its parent was stopped; check remaining installer processes before retrying.")
     else:
         try:
             os.killpg(child.pid, signal.SIGTERM)

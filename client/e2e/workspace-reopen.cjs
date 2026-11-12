@@ -37,6 +37,7 @@ if (typeof electron === 'string') {
   app.on('window-all-closed', () => {});
   const report = { ok: false, scope: 'Production window route/preload/renderer; synthetic auth, Hub and Agent; no external model or user data', checks: [], timings: [] };
   const client = path.resolve(__dirname, '..'), windows = new Map();
+  const boundary = require('../main/renderer-boundary.cjs').create({ ipcMain, root: client });
   let owner = 'fixture-hub|account-a', sends = 0, opens = 0;
   const snapshotRequests = [];
   const uiWindow = require('../main/pi-session/ui-window').create(), handles = new Map();
@@ -137,7 +138,7 @@ if (typeof electron === 'string') {
         created.show = () => {}; created.focus = () => {};
         return created;
       }
-      route = { _desktopOverlay: { notifyBlur() {}, setWorkspaceMaximized() {} },
+      route = { _rendererBoundary: boundary, _desktopOverlay: { notifyBlur() {}, setWorkspaceMaximized() {} },
         _WORK_SPEC: require('../main/window-specs'), _workspaceState: state, _workWindows: windows,
         _geom: { get: () => null, restore: () => null, initial: () => ({ width: 1440, height: 1000 }),
           limits: () => ({ minWidth: 800, minHeight: 540 }), remember() {} },

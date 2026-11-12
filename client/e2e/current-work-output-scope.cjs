@@ -1,7 +1,7 @@
 'use strict';
 // Isolated Electron renderer + production artifact IPC. No real conversations,
 // account, model calls or user working directories participate in this fixture.
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE; delete env.NODE_OPTIONS;

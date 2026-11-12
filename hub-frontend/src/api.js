@@ -420,7 +420,7 @@ export const api = {
   deleteRepoBinding: (id) => call('DELETE', '/admin/repo-bindings/' + id),
   repoMapPending: () => call('GET', '/admin/repo-bindings/pending'),
   // Execute only with run=true and the server AUTOBATCH_ENABLED switch enabled.
-  autobatch: (run) => call('GET', '/admin/autobatch' + (run ? '?run=true' : '')),
+  autobatch: (run) => call(run ? 'POST' : 'GET', '/admin/autobatch'),
   bindings: () => call('GET', '/admin/bindings'),
   deleteBinding: (id) => call('DELETE', '/admin/bindings/' + id),
   unassigned: () => call('GET', '/admin/unassigned'),

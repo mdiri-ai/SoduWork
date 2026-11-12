@@ -9,7 +9,7 @@ import uuid
 import zipfile
 
 from .immutable_cache import publish_immutable_tree
-from . import skill_frontmatter
+from . import package_digests, skill_frontmatter
 
 
 _CHECKSUM = re.compile(r"^[0-9a-f]{64}$")
@@ -17,7 +17,7 @@ _COPY_CHUNK = 64 * 1024
 
 def skill_root() -> str:
     from .local_base import _data_root
-    path = os.path.join(_data_root(), "plugin-skills")
+    path = os.path.join(_data_root(), "plugin-skills", package_digests.CACHE_VERSION)
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -72,6 +72,23 @@ def materialize_skills(package_path: str, checksum: str, report: dict,
         raise ValueError("插件版本校验值无效，请重新导入这个版本")
     max_files = max(1, int(max_files))
     max_unpacked = max(1, int(max_unpacked))
+    # Never let an old .ready marker bypass the new file-tree identity check.
+    # The original archive remains untouched when a legacy identity fails.
+    if not os.path.isfile(package_path):
+        raise ValueError("插件技能包文件不存在，请重新导入这个版本")
+    with zipfile.ZipFile(package_path) as archive:
+        infos = archive.infolist()
+        if (len(infos) > max_files
+                or sum(item.file_size for item in infos) > max_unpacked
+                or any(not safe_zip(info) for info in infos)):
+            raise ValueError("插件技能包安全校验失败")
+        files = [item for item in infos if not item.is_dir()]
+        names = {item.filename.replace("\\", "/"): item for item in files}
+        if (len(names) != len(files) or len({
+                unicodedata.normalize("NFC", name).casefold() for name in names}) != len(names)):
+            raise ValueError("插件技能包包含重复或跨平台冲突路径")
+        if canonical_digest(archive, names) != package_checksum:
+            raise ValueError(package_digests.PLUGIN_IDENTITY_ERROR)
     target = os.path.join(skill_root(), package_checksum)
     ready = os.path.join(target, ".ready")
     if not os.path.isfile(ready):
@@ -98,7 +115,7 @@ def materialize_skills(package_path: str, checksum: str, report: dict,
                 if len(portable_names) != len(names):
                     raise ValueError("插件技能包包含跨平台会冲突的文件路径")
                 if canonical_digest(archive, names) != package_checksum:
-                    raise ValueError("插件技能包内容已变化，请重新导入这个版本")
+                    raise ValueError(package_digests.PLUGIN_IDENTITY_ERROR)
                 written = 0
                 for index, meta in enumerate(bundled):
                     folder = _skill_folder(str(meta.get("name") or ""), index)

@@ -15,7 +15,7 @@ from collections import OrderedDict
 
 from .immutable_cache import publish_immutable_tree
 from .local_base import _data_root
-from . import skill_frontmatter
+from . import package_digests, skill_content, skill_frontmatter
 
 _MAX_FILES = 300
 _MAX_BYTES = 30 * 1024 * 1024
@@ -35,7 +35,7 @@ def _zip_info(name: str, mode: int = 0o644) -> zipfile.ZipInfo:
 
 
 def _cache_key(items: list[dict]) -> str:
-    identity = [{"name": x.get("name"), "checksum": (
+    identity = [{"name": x.get("name"), "contentDigest": x.get("contentDigest"), "checksum": (
         x.get("pluginChecksum") or x.get("packageChecksum") or x.get("bundleChecksum"))}
                 for x in items]
     return hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -61,10 +61,26 @@ def build(items: list[dict]) -> bytes:
     selected = [x for x in (items or []) if x.get("bundled") and os.path.isdir(x.get("path", ""))]
     if not selected:
         return b""
-    # A legacy package/cache may predate YAML validation. Check it even when the
-    # immutable version key already has a generated transport bundle in memory.
-    metadata = [_read_metadata(str(item["path"]), str(item.get("name") or "")) for item in selected]
-    key = _cache_key(selected)
+    # Snapshot and validate every source before an in-memory cache hit. Historic
+    # identities can be ambiguous; neither a label nor another owner's cache is
+    # authority for these bytes. Serialize the same snapshot that was hashed.
+    snapshots, snapshot_bytes, snapshot_files = [], 0, 0
+    for item in selected:
+        snapshot = skill_content.read_files(str(item["path"]))
+        snapshot_bytes += sum(len(content) for content in snapshot.values())
+        snapshot_files += len(snapshot)
+        if snapshot_files > _MAX_FILES or snapshot_bytes > _MAX_BYTES:
+            raise ValueError("插件技能文件过多或超过 30MB")
+        snapshots.append(snapshot)
+    metadata = [_metadata(files["SKILL.md"], str(item.get("name") or ""))
+                for item, files in zip(selected, snapshots)]
+    identities = []
+    for item, snapshot in zip(selected, snapshots):
+        digest = package_digests.file_tree_digest(snapshot, snapshot.__getitem__)
+        if item.get("packageChecksum") and item["packageChecksum"] != digest:
+            raise ValueError(package_digests.SKILL_IDENTITY_ERROR)
+        identities.append({**item, "contentDigest": digest})
+    key = _cache_key(identities)
     cached = _CACHE.get(key)
     if cached is not None:
         _CACHE.move_to_end(key)
@@ -86,37 +102,22 @@ def build(items: list[dict]) -> bytes:
                            item.get("bundleChecksum") or "")[:64],
             "dir": folder,
         })
-        for current, dirs, names in os.walk(source):
-            dirs[:] = [x for x in dirs if not os.path.islink(os.path.join(current, x))]
-            for filename in names:
-                path = os.path.join(current, filename)
-                if os.path.islink(path):
-                    raise ValueError("插件技能包含符号链接")
-                relative = os.path.relpath(path, source).replace("\\", "/")
-                if relative == ".ready":
-                    continue
-                if relative.startswith("../") or relative == "..":
-                    raise ValueError("插件技能包含越界路径")
-                size = os.path.getsize(path)
-                total += size
-                files.append((path, "skills/%s/%s" % (folder, relative)))
-                if len(files) > _MAX_FILES or total > _MAX_BYTES:
-                    raise ValueError("插件技能文件过多或超过 30MB")
-    if any(path.endswith("/SKILL.md") for _, path in files) is False:
+        for relative, content in snapshots[index].items():
+            path = os.path.join(source, *relative.split("/"))
+            total += len(content)
+            mode = stat.S_IMODE(os.stat(path).st_mode) or 0o644
+            files.append(("skills/%s/%s" % (folder, relative), content, mode))
+            if len(files) > _MAX_FILES or total > _MAX_BYTES:
+                raise ValueError("插件技能文件过多或超过 30MB")
+    if not any(path.endswith("/SKILL.md") for path, _, _ in files):
         raise ValueError("插件技能缺少 SKILL.md")
     manifest = json.dumps({"schemaVersion": 1, "skills": entries},
                           ensure_ascii=False, sort_keys=True).encode("utf-8")
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         archive.writestr(_zip_info("manifest.json"), manifest)
-        for path, name in sorted(files, key=lambda x: x[1]):
-            mode = stat.S_IMODE(os.stat(path).st_mode) or 0o644
-            with open(path, "rb") as source:
-                content = source.read()
-                root = next((entry for entry in entries if name == "skills/" + entry["dir"] + "/SKILL.md"), None)
-                if root:
-                    _metadata(content, root["name"])
-                archive.writestr(_zip_info(name, mode), content)
+        for name, content, mode in sorted(files, key=lambda x: x[0]):
+            archive.writestr(_zip_info(name, mode), content)
     data = buffer.getvalue()
     _CACHE[key] = data
     while len(_CACHE) > 4:
@@ -172,7 +173,7 @@ def install(data: bytes, expected_sha256: str = "") -> list[dict]:
         except KeyError as exc:
             raise ValueError(name + "/SKILL.md: 插件技能包缺少技能文件") from exc
 
-    parent = os.path.join(_data_root(), "runner-plugin-skills")
+    parent = os.path.join(_data_root(), "runner-plugin-skills", package_digests.CACHE_VERSION)
     target = os.path.join(parent, digest)
     ready = os.path.join(target, ".ready")
     if not os.path.isfile(ready):

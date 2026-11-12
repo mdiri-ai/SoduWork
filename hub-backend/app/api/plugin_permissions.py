@@ -107,10 +107,11 @@ async def editable_plugin(plugin_id: str, client=Depends(current_client),
         raise HTTPException(409, "插件没有可供编辑的版本")
     try:
         parsed = await file_io.run(plugin_packages.parse_file, version.package_path)
-        if parsed["checksum"] != version.checksum:
-            raise ValueError("插件包校验失败")
+        from ..services import package_digests
+        package_digests.assert_plugin_checksum(parsed, version.checksum)
         draft = plugin_packages.personal_draft(parsed)
     except (OSError, ValueError) as exc:
-        raise HTTPException(409, "插件原始包缺失或校验失败，请联系管理员重新发布") from exc
+        raise HTTPException(409, "插件原始包缺失、校验失败或使用旧摘要/签名；"
+                            "请联系发布者核对来源，提升版本号并重新签发、导入") from exc
     draft["sourcePluginId"] = plugin.id
     return {"pluginId": plugin.id, "versionId": version.id, "draft": draft}

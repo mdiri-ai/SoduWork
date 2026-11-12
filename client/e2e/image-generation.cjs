@@ -1,5 +1,5 @@
 'use strict';
-const electron = require('electron');
+const electron = require('./fixtures/trusted-electron.cjs');
 if (typeof electron === 'string') {
   const result = require('child_process').spawnSync(electron, [__filename], { stdio: 'inherit', windowsHide: true });
   process.exit(result.status ?? 1);

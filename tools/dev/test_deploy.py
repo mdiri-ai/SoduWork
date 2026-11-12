@@ -56,16 +56,32 @@ class DeployTests(unittest.TestCase):
     def test_env_cannot_redirect_project_or_database(self):
         config = deploy.initialize(self.state, create=True, port=None, origin=None)
         with patch.dict(os.environ, {"COMPOSE_FILE": "private-production.yaml", "DATABASE_URL": "production",
-                                     "SODUWORK_DB_PASSWORD": "wrong", "HTTPS_PROXY": "permitted-proxy"}):
+                                     "SODUWORK_DB_PASSWORD": "wrong", "HTTPS_PROXY": "permitted-proxy",
+                                     "JIYONG_DATABASE_URL": "inherited-production", "jiyong_other": "inherited"}):
             env = deploy.environment(config)
         self.assertNotIn("COMPOSE_FILE", env)
         self.assertNotIn("DATABASE_URL", env)
         self.assertEqual(env["SODUWORK_DB_PASSWORD"], config["databasePassword"])
         self.assertEqual(env["HTTPS_PROXY"], "permitted-proxy")
+        self.assertEqual(env["JIYONG_DATABASE_URL"], "")
+        self.assertNotIn("jiyong_other", env)
         args = deploy.compose_command("docker", self.state, config)
         self.assertIn("--env-file", args)
         self.assertEqual(args[-1], "-")
         self.assertIn(str(deploy.COMPOSE.parent), args)
+
+    def test_explicit_jiyong_database_survives_restart_without_inheriting_shell(self):
+        import json
+        config = deploy.initialize(self.state, create=True, port=None, origin=None)
+        config["jiyongDatabaseUrl"] = "postgresql+asyncpg://test:synthetic@db.example/test"
+        (self.state / "deployment.json").write_text(json.dumps(config), encoding="utf-8")
+        restored = deploy.initialize(self.state, create=False, port=None, origin=None)
+        with patch.dict(os.environ, {"JIYONG_DATABASE_URL": "inherited-production"}):
+            self.assertEqual(deploy.environment(restored)["JIYONG_DATABASE_URL"], config["jiyongDatabaseUrl"])
+        config.pop("jiyongDatabaseUrl")
+        (self.state / "deployment.json").write_text(json.dumps(config), encoding="utf-8")
+        legacy = deploy.initialize(self.state, create=False, port=None, origin=None)
+        self.assertEqual(deploy.environment(legacy)["JIYONG_DATABASE_URL"], "")
 
     def test_remote_docker_is_rejected_before_mutation(self):
         with patch.dict(os.environ, {"DOCKER_HOST": "tcp://production.example:2376"}), patch.object(deploy.subprocess, "run") as run:
