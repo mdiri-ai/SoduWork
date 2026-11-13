@@ -10,11 +10,14 @@ async function fixture(t) {
   const storage = new Map([['soduwork_hub_admin_token', 'synthetic-release-token'],
     ['soduwork_hub_admin_user', JSON.stringify({ id: 'fixture-publisher' })]])
   let reply = { status: 200, body: { notes: [{ version: '2.0.0', channel: 'stable', locales: {} }] } }
+  let hold = false
+  const held = []
   const server = http.createServer((req, res) => {
     let body = ''
     req.on('data', chunk => { body += chunk })
     req.on('end', () => {
       requests.push({ method: req.method, path: req.url, authorization: req.headers.authorization, body })
+      if (hold) { held.push(res); return }
       res.writeHead(reply.status, { 'Content-Type': 'application/json', 'X-Request-ID': 'fixture-release-notes' })
       res.end(JSON.stringify(reply.body))
     })
@@ -34,9 +37,84 @@ async function fixture(t) {
   new Function('require', 'module', 'exports', 'window', 'localStorage', 'fetch', code)(
     () => ({ translateText: text => text }), module, module.exports, browser, localStorage,
     (url, options) => fetch(new URL(url, origin), options))
-  return { api: module.exports.api, storage, requests, events,
-    respond: (status, body) => { reply = { status, body } } }
+  return { api: module.exports.api, exports: module.exports, storage, requests, events,
+    respond: (status, body) => { reply = { status, body } },
+    hold: () => { hold = true },
+    waitHeld: async () => {
+      for (let i = 0; i < 100; i++) {
+        if (held.length) return
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      throw Error('HTTP request did not reach the fixture')
+    },
+    release: (status, body) => {
+      hold = false
+      for (const res of held.splice(0)) {
+        res.writeHead(status, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify(body))
+      }
+    } }
 }
+
+const authenticatedOperations = {
+  json: api => api.orgs(),
+  upload: api => api.importPlugin(new Blob(['synthetic package'])),
+  form: api => api.uploadClientRelease(new Blob(['synthetic bundle']), new Blob(['synthetic installer'])),
+  download: api => api.downloadClientRelease('synthetic-release', 'fixture.bin'),
+}
+
+for (const [kind, operation] of Object.entries(authenticatedOperations)) {
+  test(`${kind}: a previous session's 401 preserves the new session`, async t => {
+    const f = await fixture(t)
+    f.hold()
+    const pending = operation(f.api)
+    const rejection = assert.rejects(pending, error => error.code === 'AUTH_CONTEXT_CHANGED')
+    await f.waitHeld()
+    f.exports.setToken('new-synthetic-session')
+    f.exports.setUser({ id: 'new-account' })
+    f.release(401, { detail: 'old session expired' })
+    await rejection
+    assert.equal(f.exports.getToken(), 'new-synthetic-session')
+    assert.deepEqual(f.exports.getUser(), { id: 'new-account' })
+    assert.deepEqual(f.events, [])
+  })
+
+  test(`${kind}: a current-session 401 still clears authentication`, async t => {
+    const f = await fixture(t)
+    f.respond(401, { detail: 'current session expired' })
+    await assert.rejects(operation(f.api))
+    assert.equal(f.exports.getToken(), '')
+    assert.equal(f.exports.getUser(), null)
+    assert.deepEqual(f.events, ['soduwork-hub-unauth'])
+  })
+
+  test(`${kind}: a previous session's success is discarded`, async t => {
+    const f = await fixture(t)
+    f.hold()
+    const rejection = assert.rejects(operation(f.api), error => error.code === 'AUTH_CONTEXT_CHANGED')
+    await f.waitHeld()
+    f.exports.setToken('new-synthetic-session')
+    f.exports.setUser({ id: 'new-account' })
+    f.release(200, { privateOldAccountData: 'must not reach the new view' })
+    await rejection
+    assert.equal(f.exports.getToken(), 'new-synthetic-session')
+    assert.deepEqual(f.events, [])
+  })
+}
+
+test('sign-out and re-sign-in fence requests even when the token string is reused', async t => {
+  const f = await fixture(t)
+  f.hold()
+  const rejection = assert.rejects(f.api.me(), error => error.code === 'AUTH_CONTEXT_CHANGED')
+  await f.waitHeld()
+  f.exports.setToken('')
+  f.exports.setToken('synthetic-release-token')
+  f.exports.setUser({ id: 'renewed-account' })
+  f.release(401, {})
+  await rejection
+  assert.equal(f.exports.getToken(), 'synthetic-release-token')
+  assert.deepEqual(f.events, [])
+})
 
 test('real release-notes API export sends an authenticated read-only HTTP request', async t => {
   const { api, requests } = await fixture(t)
