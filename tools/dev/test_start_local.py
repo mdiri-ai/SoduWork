@@ -21,6 +21,52 @@ from tools.dev import verify_desktop_fixture as desktop_fixture
 
 
 class LocalStartupTests(unittest.TestCase):
+    def test_linux_root_desktop_fails_before_initialization_password_or_downloads(self):
+        for options in ([], ['--prepare-only'], ['--check']):
+            with self.subTest(options=options), patch.object(sys, 'platform', 'linux'), \
+                    patch.dict(os.environ, {'DISPLAY': ':fixture', 'WAYLAND_DISPLAY': ''}), \
+                    patch.object(os, 'geteuid', return_value=0, create=True), \
+                    patch.object(start, 'check_dependencies'), \
+                    patch.object(start, 'initialize') as initialize, \
+                    patch.object(start, 'exclusive', return_value=nullcontext()), \
+                    patch.object(start, 'prepare') as prepare, \
+                    patch.object(start, 'prepare_desktop') as desktop, \
+                    patch.object(start, 'serve') as serve, \
+                    patch.object(start, 'password_for_start') as password, \
+                    patch.object(start, 'dependency_report') as report, \
+                    redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()) as errors:
+                self.assertEqual(start.main(['--desktop', '--data-dir', str(self.state), *options]), 1)
+                self.assertIn('ordinary user', errors.getvalue())
+                self.assertIn('without --desktop', errors.getvalue())
+                for operation in (initialize, prepare, desktop, serve, password, report):
+                    operation.assert_not_called()
+                self.assertFalse(self.state.exists())
+
+    def test_desktop_session_accepts_linux_users_and_does_not_query_other_platforms(self):
+        with patch.object(sys, 'platform', 'linux'), \
+                patch.object(os, 'geteuid', return_value=1000, create=True):
+            for display in ({'DISPLAY': ':fixture', 'WAYLAND_DISPLAY': ''},
+                            {'DISPLAY': '', 'WAYLAND_DISPLAY': 'wayland-fixture'}):
+                with self.subTest(display=display), patch.dict(os.environ, display):
+                    build.check_desktop_session()
+        for platform in ('win32', 'darwin'):
+            with self.subTest(platform=platform), patch.object(sys, 'platform', platform), \
+                    patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}), \
+                    patch.object(os, 'geteuid', return_value=0, create=True) as uid:
+                build.check_desktop_session()
+                uid.assert_not_called()
+
+    def test_linux_root_can_check_headless_service_prerequisites(self):
+        with patch.object(sys, 'platform', 'linux'), \
+                patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}), \
+                patch.object(os, 'geteuid', return_value=0, create=True), \
+                patch.object(start, 'dependency_report') as report, \
+                patch.object(start, 'initialize') as initialize:
+            self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
+        report.assert_called_once_with(desktop=False)
+        initialize.assert_not_called()
+        self.assertFalse(self.state.exists())
+
     def test_headless_desktop_fails_before_initialization_password_or_downloads(self):
         for options in ([], ['--prepare-only'], ['--check']):
             with self.subTest(options=options), patch.object(sys, 'platform', 'linux'), \
@@ -121,6 +167,10 @@ class LocalStartupTests(unittest.TestCase):
                     self.assertEqual(len(build.check_dependencies()), 2)
 
     def setUp(self):
+        # Desktop fixtures represent an ordinary login, even in root-run CI.
+        uid = patch.object(os, 'geteuid', return_value=1000, create=True)
+        uid.start()
+        self.addCleanup(uid.stop)
         self.temp = tempfile.TemporaryDirectory(prefix="soduwork-start-unit-")
         self.addCleanup(self.temp.cleanup)
         self.state = Path(self.temp.name) / "service"
