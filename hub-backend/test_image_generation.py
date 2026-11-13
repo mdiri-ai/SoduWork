@@ -203,8 +203,10 @@ class ImageGenerationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_http_transport_uses_image_endpoint_and_releases_capacity(self):
         from app.services import model_runtime, model_transport
+        from app.model_runtime_models import ModelRuntimeLease, ModelRuntimeMetric
         async with self.engine.begin() as connection:
-            for model in (models.AppSetting, models.ModelDef, models.ModelProvider):
+            for model in (models.AppSetting, models.ModelDef, models.ModelProvider,
+                          ModelRuntimeLease, ModelRuntimeMetric):
                 await connection.run_sync(model.__table__.create)
         seen, peers = [], []
         async def serve(reader, writer):
