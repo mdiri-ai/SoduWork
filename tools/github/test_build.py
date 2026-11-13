@@ -66,6 +66,21 @@ class BuildTests(unittest.TestCase):
         self.assertNotIn('SODUWORK_MAC_RELEASE', env)
         self.assertNotIn('SODUWORK_MAC_REAL_KEYCHAIN', env)
 
+    def test_macos_checks_tls_behavior_and_frozen_ca_before_inventory(self):
+        with patch.object(build, 'ROOT', self.root), patch.object(build, 'prepare_python'), \
+                patch.object(build.platform, 'system', return_value='Darwin'), \
+                patch.object(build.platform, 'machine', return_value='arm64'), \
+                patch.object(build, 'run') as run:
+            build.package_native(self.ctx, 'macos-arm64', self.root, validation=True)
+        commands = [tuple(map(str, call.args)) for call in run.call_args_list]
+        tls = next(i for i, args in enumerate(commands) if 'test_runner_tls' in args)
+        frozen = next(i for i, args in enumerate(commands)
+                      if any(arg.endswith('check_runner_tls_bundle.py') for arg in args))
+        inventory = next(i for i, args in enumerate(commands) if 'inventory' in args)
+        self.assertLess(tls, frozen)
+        self.assertLess(frozen, inventory)
+        self.assertEqual(commands[frozen][-1], str(self.root / 'client/runner/soduwork-runner'))
+
     def test_postgres_refuses_non_fixture_databases_before_running_commands(self):
         for url in ['postgresql+asyncpg://user:fixture@db.example.test/soduwork_ci',
                     'postgresql+asyncpg://user:fixture@127.0.0.1/production']:

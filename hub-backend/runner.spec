@@ -58,6 +58,11 @@ for notice in pyinstaller_notices:
     license_data.append((str(notice), "third-party/python/pyinstaller-" + pyinstaller_dist.version))
 license_data = sorted(set(license_data))
 
+# The frozen Runner cannot depend on the build host's Python/Homebrew CA path.
+ca_data = collect_data_files("certifi", includes=["cacert.pem"])
+if not ca_data:
+    raise RuntimeError("Runner CA bundle is missing; install requirements-runner-build.txt")
+
 hidden = [
     "app.services.connector_database", "app.services.connector_database_extra",
     "pg8000.dbapi", "pymysql", "redis", "pymongo", "bson", "dns.resolver",
@@ -118,7 +123,7 @@ a = Analysis(
         (os.path.join(backend, "app", "services", "dsh_gateway_bundle"), "app/services/dsh_gateway_bundle"),
         (os.path.join(backend, "app", "services", "harness2_vendor", "LICENSE"), "app/services/harness2_vendor"),
         (os.path.join(backend, "app", "services", "harness2_vendor", "UPSTREAM.md"), "app/services/harness2_vendor"),
-    ] + skill_data + license_data),
+    ] + skill_data + license_data + ca_data),
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},

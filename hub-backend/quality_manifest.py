@@ -344,6 +344,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_runner_turn_selection.py",
     "test_runner_desktop_identity.py",
     "test_runner_handshake.py",
+    "test_runner_tls.py",
     "test_schedule_loop_isolation.py",
     "test_schedule_run_reconciliation.py",
     "test_skill_preferences.py",

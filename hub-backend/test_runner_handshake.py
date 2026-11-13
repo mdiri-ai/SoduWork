@@ -4,6 +4,7 @@ configuration, or real tasks.
 import asyncio
 import contextvars
 import json
+import ssl
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -132,11 +133,19 @@ class RunnerHandshakeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(clean_protocol_caps([f"cap{i}" for i in range(1000)])), 32)
 
     async def test_timeout_closes_connection_and_retries_same_identity_before_reporting(self):
+        await self.check_reconnection("ws://fixture.invalid/api/v1/runner")
+
+    async def test_macos_reconnect_passes_verified_tls_context_on_every_attempt(self):
+        from app.services import runner_tls
+        with patch.object(runner_tls, "sys", SimpleNamespace(platform="darwin")):
+            await self.check_reconnection("wss://fixture.invalid/api/v1/runner")
+
+    async def check_reconnection(self, url):
         wires = [Wire(), Wire(['{"op":"welcome","caps":["bin1"]}'])]
         connections = []
         reported = []
         machine = self.machine(None)
-        machine.url = "ws://fixture.invalid/api/v1/runner"
+        machine.url = url
         machine.secret = "fixture-secret-only-memory"
         machine.key = machine.token = ""
         machine._shutdown_event = asyncio.Event()
@@ -163,6 +172,12 @@ class RunnerHandshakeTests(unittest.IsolatedAsyncioTestCase):
                 self.wire.closed = True
 
         def connect(url, **kwargs):
+            if url.startswith("wss://"):
+                self.assertIsInstance(kwargs.get("ssl"), ssl.SSLContext)
+                self.assertEqual(kwargs["ssl"].verify_mode, ssl.CERT_REQUIRED)
+                self.assertTrue(kwargs["ssl"].check_hostname)
+            else:
+                self.assertNotIn("ssl", kwargs)
             connections.append((url, dict(kwargs["additional_headers"])))
             return Connection(wires[len(connections) - 1])
 

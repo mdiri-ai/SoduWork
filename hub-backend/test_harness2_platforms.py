@@ -92,6 +92,8 @@ class Harness2PlatformTest(unittest.TestCase):
         # Replace installed-distribution metadata discovery only; execute the
         # production recipe and inspect its resulting PyInstaller arguments.
         import PyInstaller.utils.hooks as hooks
+        ca_data = hooks.collect_data_files("certifi", includes=["cacert.pem"])
+        self.assertTrue(ca_data)
         from packaging.markers import default_environment
         # packaging caches the host environment. Supply each fixture target
         # explicitly, without poisoning later checks with the first mocked OS.
@@ -123,7 +125,8 @@ class Harness2PlatformTest(unittest.TestCase):
                       patch.dict(os.environ, {"SODUWORK_INTERNAL_BUILD": "1"}),
                       patch("importlib.metadata.version", side_effect=reviewed_versions.__getitem__),
                       patch.object(hooks, "copy_metadata", return_value=[]),
-                      patch.object(hooks, "collect_data_files", return_value=[]),
+                      patch.object(hooks, "collect_data_files", side_effect=lambda name, **kwargs:
+                                   ca_data if name == "certifi" else []),
                       patch.object(hooks, "collect_dynamic_libs", return_value=[])):
                     runpy.run_path(str(backend / "runner.spec"), init_globals={
                         "SPECPATH": str(backend), "Analysis": Analysis,
@@ -134,6 +137,8 @@ class Harness2PlatformTest(unittest.TestCase):
                               if path.is_relative_to(backend)}
                 self.assertTrue(required.issubset(inputs), sorted(required - inputs))
                 self.assertIn("app.services.harness2_bridge", captured["hiddenimports"])
+                for entry in ca_data:
+                    self.assertIn(entry, captured["datas"])
                 for name in ("LICENSE", "UPSTREAM.md"):
                     self.assertIn((str(backend / "app/services/harness2_vendor" / name),
                                    "app/services/harness2_vendor"), captured["datas"])

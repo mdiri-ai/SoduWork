@@ -38,12 +38,20 @@ class RunnerLicenseTest(unittest.TestCase):
             runpy.run_path(str(ROOT / "hub-backend/runner.spec"), init_globals=namespace)
         metadata = [(Path(source), target) for source, target in captured["datas"] if ".dist-info" in target]
         self.assertTrue(metadata)
-        for prefix in ("websockets-", "pyyaml-", "pg8000-", "pymysql-", "pymongo-", "redis-", "cryptography-"):
+        for prefix in ("websockets-", "pyyaml-", "pg8000-", "pymysql-", "pymongo-", "redis-", "cryptography-", "certifi-"):
             matches = [source for source, target in metadata if target.lower().startswith(prefix)]
             self.assertTrue(matches, prefix)
             self.assertTrue(any(p.is_file() and any(word in p.name.lower() for word in ("license", "copying"))
                                 for source in matches for p in source.rglob("*")), prefix)
         self.assertIn((str(ROOT / "LICENSE"), "third-party"), captured["datas"])
+        self.assertTrue(any(Path(source).name == "cacert.pem" and target == "certifi"
+                            for source, target in captured["datas"]))
+        captured.clear()
+        with patch.dict("os.environ", {"SODUWORK_INTERNAL_BUILD": "1"}), \
+                patch("PyInstaller.utils.hooks.collect_data_files", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "Runner CA bundle is missing"):
+                runpy.run_path(str(ROOT / "hub-backend/runner.spec"), init_globals=namespace)
+        self.assertFalse(captured, "missing CA data must stop before Analysis")
 
     def test_project_license_changes_invalidate_runner_freshness(self):
         self.assertIn(ROOT / "LICENSE", runner_sources.build_inputs(ROOT / "hub-backend", ROOT))

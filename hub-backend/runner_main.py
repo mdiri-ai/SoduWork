@@ -611,8 +611,10 @@ class Runner:
                                     "X-SoduWork-Runner-Key": self.key})
                 if self.token:
                     headers["X-SoduWork-Runner-Token"] = self.token
+                from app.services.runner_tls import websocket_options
                 async with websockets.connect(self.url, max_size=8 * 1024 * 1024,
-                                              additional_headers=headers, proxy=None) as ws:
+                                              additional_headers=headers, proxy=None,
+                                              **websocket_options(self.url)) as ws:
                     self.ws = ws
                     prefetched = await self._hello()
                     # Open the control channel before scanning local CLIs/Skills. A large
