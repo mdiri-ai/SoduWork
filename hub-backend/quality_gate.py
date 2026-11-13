@@ -18,6 +18,7 @@ from quality_manifest import (
     missing_live_requirements,
     scripts_for,
 )
+from app.services.acp_process import OwnedProcessGroup, kill_process_tree
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,9 +56,24 @@ def _node() -> str:
     return executable
 
 
+def _stop_check(process, group) -> None:
+    try:
+        if process.poll() is None:
+            # Native test peers can create private sessions beneath the check.
+            if sys.platform.startswith('linux'):
+                from app.services.linux_process_tree import kill_owned_tree
+                kill_owned_tree(process.pid, process)
+            elif sys.platform == 'darwin':
+                from app.services.darwin_process_tree import kill_owned_tree
+                kill_owned_tree(process.pid, process)
+    finally:
+        # Also covers a reaped leader whose children still hold output pipes.
+        kill_process_tree(process, group)
+
+
 def _run(name: str, args: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tuple[bool, str]:
     started = time.monotonic()
-    result = subprocess.run(
+    with subprocess.Popen(
         args,
         cwd=cwd,
         env=env,
@@ -67,13 +83,24 @@ def _run(name: str, args: list[str], cwd: Path, env: dict[str, str], timeout: in
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=timeout,
         shell=False,
-    )
+        start_new_session=os.name != 'nt',
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0) if os.name == 'nt' else 0,
+    ) as result:
+        group = OwnedProcessGroup(result.pid) if os.name != 'nt' else None
+        try:
+            output, _ = result.communicate(timeout=timeout)
+        except BaseException:
+            _stop_check(result, group)
+            result.communicate(timeout=5)
+            raise
+        finally:
+            # The leader's exit does not prove that its private group exited.
+            _stop_check(result, group)
     elapsed = time.monotonic() - started
     state = "PASS" if result.returncode == 0 else "FAIL"
     print(f"[{state}] {name} ({elapsed:.1f}s)", flush=True)
-    output = result.stdout or ""
+    output = output or ""
     if result.returncode != 0:
         output = f"Process exit code: {result.returncode}\n" + output
         print(output, flush=True)
