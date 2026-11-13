@@ -69,7 +69,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/github/build.py source --output release-out/source
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: accepted-source
           path: release-out/source/*
@@ -128,7 +128,7 @@ jobs:
         run: python tools/github/build.py ${{ matrix.shard }} --output release-out/${{ matrix.shard }}
         env:
           SODUWORK_MAC_SIGN_IDENTITY: ${{ startsWith(matrix.shard, 'macos-') && secrets.SODUWORK_MAC_SIGN_IDENTITY || '' }}
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: accepted-${{ matrix.shard }}
           path: release-out/${{ matrix.shard }}/*
@@ -140,7 +140,7 @@ jobs:
         run: bash tools/ci/cleanup-macos-signing.sh
       - name: Retain failed installation diagnostics
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: diagnostics-${{ matrix.shard }}
           path: |
@@ -163,7 +163,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python tools/github/build.py hub --output release-out/hub
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: accepted-hub
           path: release-out/hub/*
@@ -192,7 +192,7 @@ jobs:
           merge-multiple: true
           path: release-out/candidate
       - run: python tools/github/release.py candidate --folder release-out/candidate
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: candidate
         with:
           name: release-candidate
