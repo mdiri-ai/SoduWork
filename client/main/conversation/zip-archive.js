@@ -20,7 +20,8 @@ function dosDate(st) {
 function collect(root) {
   const result = []; let total = 0;
   function walk(dir, rel, depth) {
-    if (depth > 12 || result.length >= MAX_FILES) return;
+    if (depth > 12) throw new Error("Folder contains directories nested more than 12 levels; move files closer to the selected folder");
+    if (result.length >= MAX_FILES) return;
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       if (result.length >= MAX_FILES) break;
       if (!ent.name || ent.name === "." || ent.name === ".." || SKIP.has(ent.name)) continue;
