@@ -180,6 +180,8 @@ Install `.deb` or `.rpm` packages through your distribution's software installer
 
 Start the application as the ordinary user logged into that desktop. First access may show the system's keyring creation or unlock dialog; use a protected keyring. Do not choose an empty password or disable the sandbox to bypass startup errors. If the keyring is locked or its service is temporarily unavailable, preserve the existing device credentials, restore the system service, then fully quit and reopen the application. Do not delete `device-auth.json`, remove keyring items, or convert credentials to plaintext.
 
+The source launcher's Linux desktop mode rejects root users (including launches through `sudo`) before creating instance data or installing dependencies. This check also applies to `--check --desktop` and `--prepare-only --desktop`. Run `sh start.sh --desktop` in an ordinary user's graphical session; use `sh start.sh` for a headless server.
+
 Linux installation acceptance first checks that a fresh `.deb` / `.rpm` installation supplies its credential-service dependencies, then uses an isolated real GNOME keyring to check ciphertext after first launch, restart, and upgrade. The current upgrade scenario reuses dependencies from the initial installation and does not certify that upgrading an older environment resolves newly added dependencies. Container acceptance also does not replace interactive GNOME/KDE and Wayland/X11 sign-in and unlock verification.
 
 To use management while resolving desktop setup, double-click `start.cmd` on Windows or `start.command` on macOS, or run `sh start.sh` on Linux. The browser management UI is for configuration; it is not the desktop AI conversation workspace.

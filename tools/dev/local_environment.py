@@ -121,8 +121,13 @@ def check_dependencies() -> tuple[str, str]:
 
 
 def check_desktop_session() -> None:
-    if sys.platform.startswith('linux') and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+    if not sys.platform.startswith('linux'):
+        return
+    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
         raise StartupError("Desktop startup requires a graphical Linux session. Use start.py without --desktop on a server.")
+    if os.geteuid() == 0:
+        raise StartupError("Linux desktop startup cannot run as root. Run as the ordinary user logged into a graphical session, "
+                           "or use start.py without --desktop for a headless service.")
 
 
 def dependency_report(*, desktop: bool = False) -> None:
