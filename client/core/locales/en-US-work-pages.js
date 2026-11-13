@@ -1,5 +1,10 @@
 (function (global) {
   const messages = {
+    '删除标签：': 'Remove tag: ',
+    '删除标签': 'Remove tag',
+    '添加标签': 'Add tag',
+    '输入标签后按回车': 'Enter a tag and press Enter',
+    '最多添加 20 个标签': 'You can add up to 20 tags',
     '需求内容': 'Issue content',
     '明确完成这项需求的标准': 'Define what counts as completing this issue',
     '基本信息': 'Basic information',
@@ -635,6 +640,24 @@
     "暂时无法连接": "Temporarily unable to connect",
     "未标来源": "Source unspecified",
   };
+  Object.assign(messages, {
+    '接手未完成，请刷新需求后重试': 'Could not take over the issue. Refresh and try again.',
+    '确认工作内容，选择执行方式': 'Confirm the work and choose how to run it',
+    '交给 AI': 'Assign to AI',
+    '需求与补充内容': 'Issue and additions',
+    '本次需求': 'This issue',
+    '补充内容': 'Additional details',
+    '执行设置': 'Execution settings',
+    '按交付物自动判断（推荐）': 'Decide automatically based on deliverables (recommended)',
+    '有明确输出物时自动提交；没有输出物时默认手动提交。': 'Submit automatically when outputs are clear; otherwise submit manually by default.',
+    '确认交给': 'Confirm assignment to',
+    '确认转给': 'Confirm transfer to',
+    '自动返修未启动：': 'Automatic rework did not start: ',
+    '验收与交付': 'Acceptance and delivery',
+    '查看交付链接': 'View delivery link',
+    '状态未变更': 'The status did not change',
+    ' 条记录': ' records',
+  });
   if (typeof module !== 'undefined' && module.exports) { module.exports = Object.freeze(messages); return; }
   global.SoduWorkLocaleMessages = Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages, { 'en-US': Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages['en-US'], messages)) }));
 })(globalThis);

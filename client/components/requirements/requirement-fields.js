@@ -2,6 +2,7 @@
 (function (global) {
   'use strict';
   const esc = value => String(value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const tr = value => global.SoduWorkI18n?.translateText?.(value) || value;
   const wired = new WeakSet(), composing = new WeakSet(), visibilityWired = new WeakSet();
   const sectionPaths = {
     content: '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/>',
@@ -21,17 +22,17 @@
   }
   function tagChips(tags, disabled = false) {
     return tags.map((tag, index) => '<span class="rq-tag-chip"><span>' + esc(tag) +
-      '</span><button type="button" data-rq-tag-remove="' + index + '" aria-label="删除标签：' + esc(tag) +
-      '" title="删除标签"' + (disabled ? ' disabled data-rq-locked' : '') + '><span aria-hidden="true">×</span></button></span>').join('');
+      '</span><button type="button" data-rq-tag-remove="' + index + '" aria-label="' + esc(tr('删除标签：')) + esc(tag) +
+      '" title="' + esc(tr('删除标签')) + '"' + (disabled ? ' disabled data-rq-locked' : '') + '><span aria-hidden="true">×</span></button></span>').join('');
   }
   function tagHtml(tags, options = {}) {
     const value = normalizeTags(tags), id = options.id || 'rqTags', disabled = options.disabled === true;
     return '<div class="rq-tag-editor" data-rq-tag-editor' + (disabled ? ' aria-disabled="true"' : '') +
       '><div class="rq-tag-chips" data-rq-tag-chips>' + tagChips(value, disabled) +
       '</div><input type="hidden" data-rq-tag-value id="' + esc(id) + '"' + (options.name ? ' name="' + esc(options.name) + '"' : '') +
-      ' value="' + esc(JSON.stringify(value)) + '"><input id="' + esc(id) + 'Input" data-rq-tag-input type="text" aria-label="添加标签" placeholder="' +
-      (disabled ? '' : '输入标签后按回车') + '" autocomplete="off"' + (disabled ? ' disabled data-rq-locked' : '') + '>' +
-      '<span class="rq-tag-limit" data-rq-tag-limit role="status" hidden>最多添加 20 个标签</span></div>';
+      ' value="' + esc(JSON.stringify(value)) + '"><input id="' + esc(id) + 'Input" data-rq-tag-input type="text" aria-label="' + esc(tr('添加标签')) + '" placeholder="' +
+      (disabled ? '' : esc(tr('输入标签后按回车'))) + '" autocomplete="off"' + (disabled ? ' disabled data-rq-locked' : '') + '>' +
+      '<span class="rq-tag-limit" data-rq-tag-limit role="status" hidden>' + esc(tr('最多添加 20 个标签')) + '</span></div>';
   }
   function storedTags(field) {
     try { return normalizeTags(JSON.parse(field?.value || '[]')); } catch (_) { return normalizeTags(field?.value); }
@@ -48,7 +49,7 @@
       const chip = document.createElement('span'), label = document.createElement('span'), button = document.createElement('button');
       chip.className = 'rq-tag-chip'; label.textContent = tag; label.setAttribute('data-user-content', '');
       button.type = 'button'; button.setAttribute('data-rq-tag-remove', String(index));
-      button.setAttribute('aria-label', '删除标签：' + tag); button.title = '删除标签';
+      button.setAttribute('aria-label', tr('删除标签：') + tag); button.title = tr('删除标签');
       const icon = document.createElement('span'); icon.textContent = '×'; icon.setAttribute('aria-hidden', 'true');
       button.append(icon); chip.append(label, button); return chip;
     }));

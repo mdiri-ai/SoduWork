@@ -26,6 +26,7 @@
   }
   const esc = value => String(value == null ? '' : value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  const tr = value => global.SoduWorkI18n?.translateText?.(value) || value;
   const options = (entries, value) => entries.map(([key, label]) => '<option value="' + esc(key) + '"' +
     (key === value ? ' selected' : '') + '>' + esc(label) + '</option>').join('');
   const sectionIcon = name => global.RequirementFields?.sectionIcon?.(name) || '';
@@ -702,23 +703,23 @@
     const hasExecution = task.maintenanceBlocked === true || ['running', 'dispatching', 'done'].includes(task.ai?.state) ||
       ['queued', 'starting', 'running', 'waiting'].includes(routing.conversationTurn?.state);
     const preparing = ['intake', 'clarifying', 'ready'].includes(phase) && !hasExecution && task.ai?.state !== 'failed';
-    const deliveryState = reviewed ? (closedDone ? '已验收'
-        : hasEngineering ? '已验收 · 待合并' : '已验收 · 办结受阻')
-      : phase === 'reviewing' ? '待验收' : phase === 'closed' ? '已归档'
-      : preparing ? '尚未开始' : task.status === 'paused' ? '已暂停' : task.ai?.state === 'failed' ? '执行异常' : '处理中';
+    const deliveryState = reviewed ? (closedDone ? tr('已验收')
+        : hasEngineering ? tr('已验收 · 待合并') : tr('已验收 · 办结受阻'))
+      : phase === 'reviewing' ? tr('待验收') : phase === 'closed' ? tr('已归档')
+      : preparing ? tr('尚未开始') : task.status === 'paused' ? tr('已暂停') : task.ai?.state === 'failed' ? tr('执行异常') : tr('处理中');
     const deliveryStateClass = reviewed ? (closedDone ? 'is-reviewed'
         : hasEngineering ? 'is-reviewed' : 'is-reviewed is-stalled')
       : phase === 'reviewing' ? 'is-ready' : preparing || phase === 'closed' ? 'is-idle' : 'is-active';
     // Show persisted rework failures with their feedback and a retry action.
     const reworkPending = task.workRouting && task.workRouting.reworkPending || null;
     const reworkCard = reworkPending ?
-      '<div class="rq-rework-pending" role="status"><b>返修待处理</b><p><span data-user-content>' +
+      '<div class="rq-rework-pending" role="status"><b>' + tr('返修待处理') + '</b><p><span data-user-content>' +
       esc(String(reworkPending.feedback || '').slice(0, 200)) + '</span>' +
-      (task.canContinueExecution === true && reworkPending.error ? '<small>自动返修未启动：' + esc(String(reworkPending.error).slice(0, 80)) + '</small>' : '') +
+      (task.canContinueExecution === true && reworkPending.error ? '<small>' + tr('自动返修未启动：') + esc(String(reworkPending.error).slice(0, 80)) + '</small>' : '') +
       '</p><p class="rq-rework-route">' + (task.canContinueExecution === true
-        ? '系统会优先续接原执行会话；原会话不可用时自动新开修正会话，上一轮交付会作为输入保留。'
-        : '等待执行人根据返修意见继续修正。') + '</p>' +
-      (task.canContinueExecution === true ? '<div class="rq-rework-actions"><button type="button" class="rq-primary" data-rq-rework>继续修正</button></div>' : '') +
+        ? tr('系统会优先续接原执行会话；原会话不可用时自动新开修正会话，上一轮交付会作为输入保留。')
+        : tr('等待执行人根据返修意见继续修正。')) + '</p>' +
+      (task.canContinueExecution === true ? '<div class="rq-rework-actions"><button type="button" class="rq-primary" data-rq-rework>' + tr('继续修正') + '</button></div>' : '') +
       '</div>' : '';
     /*
      * Render exactly one review surface: the creator's Hub card, a creator-direct card when no
@@ -754,17 +755,17 @@
         ? '<p class="rq-acceptance-waiting">交付验收进行中，由 ' + esc(waitingNames.join('、')) + ' 确认；证据对相关人可见。</p>'
         : '<p class="rq-acceptance-waiting">交付验收进行中，由需求创建人确认；证据对相关人可见。</p>')
       : '';
-    return '<section class="rq-delivery"><div class="rq-delivery-head"><div class="rq-delivery-title"><span class="rq-delivery-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6zM12 8v5m0 3h.01"/></svg></span><div><h4>验收与交付</h4>' +
-      '<p>验收决策、交付链接与执行证据</p></div></div><div class="rq-delivery-head-actions">' +
+    return '<section class="rq-delivery"><div class="rq-delivery-head"><div class="rq-delivery-title"><span class="rq-delivery-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6zM12 8v5m0 3h.01"/></svg></span><div><h4>' + tr('验收与交付') + '</h4>' +
+      '<p>' + tr('验收决策、交付链接与执行证据') + '</p></div></div><div class="rq-delivery-head-actions">' +
       '<span class="rq-delivery-state ' + deliveryStateClass + '">' + deliveryState + '</span></div></div>' +
       reworkCard +
       (approvalCard ? '<div data-rq-approval-card>' + approvalCard + '</div>' : waitingOthers) +
       '<div class="rq-delivery-actions">' +
-      (artifact ? '<button type="button" data-rq-artifact>查看交付链接 <span aria-hidden="true">↗</span></button>' : '') +
-      '<button type="button" data-rq-export-summary' + (summaryExport?.request === seq ? ' disabled aria-busy="true"' : '') + '>导出验收摘要</button>' +
-      '<span data-rq-export-status role="status" aria-live="polite">' + (summaryExport?.request === seq ? '正在导出验收摘要…' : '') + '</span></div>' +
-      '<div class="rq-delivery-sections">' + (global.RequirementDispatchInstructions?.shell() || '') + '<details class="rq-evidence" data-rq-execution><summary><span><b>执行记录与交付证据</b><small>查看执行过程和可验证成果</small></span><i aria-hidden="true"></i></summary><div data-rq-trace></div></details>' +
-      (progress.length ? '<details class="rq-evidence rq-history-panel"><summary><span><b>历史进展</b><small>' + progress.length + ' 条记录</small></span><i aria-hidden="true"></i></summary><ol class="rq-history">' +
+      (artifact ? '<button type="button" data-rq-artifact>' + tr('查看交付链接') + ' <span aria-hidden="true">↗</span></button>' : '') +
+      '<button type="button" data-rq-export-summary' + (summaryExport?.request === seq ? ' disabled aria-busy="true"' : '') + '>' + tr('导出验收摘要') + '</button>' +
+      '<span data-rq-export-status role="status" aria-live="polite">' + (summaryExport?.request === seq ? tr('正在导出验收摘要…') : '') + '</span></div>' +
+      '<div class="rq-delivery-sections">' + (global.RequirementDispatchInstructions?.shell() || '') + '<details class="rq-evidence" data-rq-execution><summary><span><b>' + tr('执行记录与交付证据') + '</b><small>' + tr('查看执行过程和可验证成果') + '</small></span><i aria-hidden="true"></i></summary><div data-rq-trace></div></details>' +
+      (progress.length ? '<details class="rq-evidence rq-history-panel"><summary><span><b>' + tr('历史进展') + '</b><small>' + progress.length + tr(' 条记录') + '</small></span><i aria-hidden="true"></i></summary><ol class="rq-history">' +
         progress.map(row => '<li><div data-user-content>' + esc(row.text || row.content || '') + '</div><time>' +
           esc(row.at ? new Date(row.at).toLocaleString() : '') + '</time></li>').join('') + '</ol></details>' : '') + '</div></section>';
   }
@@ -1209,7 +1210,7 @@
       const transition = result && result.statusTransition;
       if (transition && transition.applied === false) {
         const blocker = (transition.blockers || [])[0] || {};
-        feedback([blocker.title, blocker.detail].filter(Boolean).join('：') || transition.message || '状态未变更');
+        feedback([blocker.title, blocker.detail].filter(Boolean).join('：') || transition.message || tr('状态未变更'));
       } else if (typeof global.petSay === 'function') {
         global.petSay('需求已保存');
       }

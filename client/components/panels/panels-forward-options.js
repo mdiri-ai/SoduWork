@@ -17,6 +17,7 @@ let _fwdMateRows = [];
 let _fwdMateQuery = '';
 let _fwdMateFilter = 'ready';
 let _fwdMateReason = '';
+const _fwdTr = value => window.SoduWorkI18n?.translateText?.(value) || value;
 
 function _fwdId(value) {
   return String(value == null ? '' : value).trim();
@@ -79,8 +80,8 @@ function _fwdSwitch(tid, tab, options) {
   if (searchEmpty) searchEmpty.hidden = true;
   const note = document.getElementById('fwdNote');
   if (note) note.placeholder = _fwdTab === 'ai'
-    ? '补充验收标准、口径或参考资料（选填）'
-    : '给同事补充一句交代（选填）';
+    ? _fwdTr('补充验收标准、口径或参考资料（选填）')
+    : _fwdTr('给同事补充一句交代（选填）');
   const submission = document.getElementById('fwdSubmissionMode')?.closest('label');
   if (submission) submission.hidden = _fwdTab !== 'ai';
   const repo = document.getElementById('fwdRepo');
@@ -91,7 +92,7 @@ function _fwdSwitch(tid, tab, options) {
   if (confirm) confirm.onclick = () => _fwdConfirm(tid);
   window.ForwardSelect?.closeAll();
   const settingsTitle = root.querySelector('.fwd-settings-title');
-  if (settingsTitle) settingsTitle.textContent = _fwdTab === 'ai' ? '执行设置' : '选择承办人';
+  if (settingsTitle) settingsTitle.textContent = _fwdTab === 'ai' ? _fwdTr('执行设置') : _fwdTr('选择承办人');
   _fwdSetStatus('');
   if (_fwdTab === 'ai') _loadAIPickList(tid);
   else _loadMateList(tid);
@@ -128,16 +129,16 @@ function _fillRepoPicker(options) {
   if (!box || !select) return;
   _repoCache = Array.isArray(options && options.repos) ? options.repos : [];
   box.style.display = _fwdTab === 'ai' ? '' : 'none';
-  select.innerHTML = '<option value="">不关联工程 · 通用办公</option>' + _repoCache.map(row =>
+  select.innerHTML = '<option value="">' + esc(_fwdTr('不关联工程 · 通用办公')) + '</option>' + _repoCache.map(row =>
     '<option value="' + esc(row.id) + '">' +
       esc((row.projectName ? row.projectName + ' · ' : '') + row.name +
         (row.branch ? ' · ' + row.branch : '')) + '</option>').join('');
   select.value = String(((options || {}).selection || {}).repoId || '');
   select.disabled = !_repoCache.length;
   if (hint) hint.textContent = !_repoCache.length
-    ? (((options || {}).selection || {}).projectLocked ? '需求所属项目暂无可关联工程。' : '当前账号暂无可关联工程，可选择不关联工程执行。')
+    ? (((options || {}).selection || {}).projectLocked ? _fwdTr('需求所属项目暂无可关联工程。') : _fwdTr('当前账号暂无可关联工程，可选择不关联工程执行。'))
     : ((options || {}).selection || {}).projectLocked
-      ? '需求所属项目已锁定，只显示该项目的可用工程。' : '选择工程后会重新识别适用插件和交付路径。';
+      ? _fwdTr('需求所属项目已锁定，只显示该项目的可用工程。') : _fwdTr('选择工程后会重新识别适用插件和交付路径。');
   if (!select.dataset.fwdWired) {
     select.dataset.fwdWired = '1';
     select.addEventListener('change', () => _loadAIPickList(_fwdTaskId, select.value));
@@ -152,7 +153,7 @@ function _fwdScenarioHtml(result) {
   const repo = (result.repos || []).find(item => _fwdSameId(item.id, selected));
   const chips = [];
   if (repo) chips.push('<em>' + esc(repo.projectName || repo.name) + '</em>');
-  return "<div class=\"fwd-scenario\"><span><b" + (scenario.name ? ' data-user-content' : '') + '>' + esc(scenario.name || '已识别这项工作') + '</b>' +
+  return "<div class=\"fwd-scenario\"><span><b" + (scenario.name ? ' data-user-content' : '') + '>' + esc(scenario.name || _fwdTr('已识别这项工作')) + '</b>' +
     (scenario.reason ? '<small>' + esc(scenario.reason) + '</small>' : '') +
     '</span><span class="fwd-scenario-tags">' + chips.join('') + '</span></div>';
 }
@@ -161,7 +162,7 @@ function _fwdDirectRow(item, recommended) {
   const ready = _fwdAvailable(item);
   const seats = Number(item.onlineSeats || 0);
   const versions = (item.versions || []).filter(Boolean);
-  const sub = [item.note, versions.length ? '版本 ' + versions.join(' / ') : ''].filter(Boolean).join(' · ');
+  const sub = [item.note, versions.length ? _fwdTr('版本 ' + versions.join(' / ')) : ''].filter(Boolean).join(' · ');
   const routeLabel = item.locationLabel || (item.remote
     ? String.fromCharCode(0x8fdc, 0x7a0b) + ' Runner'
     : String.fromCharCode(0x672c, 0x673a));
@@ -172,7 +173,7 @@ function _fwdDirectRow(item, recommended) {
     busy: item.busySeats >= item.onlineSeats && seats > 0,
     off: !ready, disabled: !ready,
     isDef: _fwdSameId(recommended, item.key),
-    meta: seats ? seats + ' 个在线席位' : '未就绪',
+    meta: seats ? _fwdTr(seats + ' 个在线席位') : _fwdTr('未就绪'),
   });
 }
 
@@ -187,7 +188,7 @@ async function _loadAIPickList(tid, repoId) {
   _fwdLoading.ai = true;
   _fwdRepoLoadState(false);
   _fwdSyncConfirm(tid);
-  box.innerHTML = '<div class="fwd-loading"><i></i><span>正在核对需求、插件与本机 Agent…</span></div>';
+  box.innerHTML = '<div class="fwd-loading"><i></i><span>' + esc(_fwdTr('正在核对需求、插件与本机 Agent…')) + '</span></div>';
   _fwdSetStatus('');
   let result;
   try {
@@ -195,7 +196,7 @@ async function _loadAIPickList(tid, repoId) {
       ? String((((_fwdOptions || {}).selection || {}).repoId) || '') : String(repoId || '');
     result = await SoduWorkAPI.taskExecutionOptions({ taskId: tid, repoId: selectedRepo });
     if (result && result.ok === false) {
-      throw new Error(result.reason || result.error || result.message || '执行方式没有加载成功');
+      throw new Error(result.reason || result.error || result.message || _fwdTr('执行方式没有加载成功'));
     }
   } catch (error) {
     if (seq !== _fwdLoadSeq || document.getElementById('fwdList') !== box) return;
@@ -204,9 +205,9 @@ async function _loadAIPickList(tid, repoId) {
     _fwdSelection.ai = null;
     _fwdRepoLoadState(true);
     const message = typeof _humanErr === 'function'
-      ? _humanErr(error, '执行方式没有加载成功') : '执行方式没有加载成功';
-    box.innerHTML = '<div class="fwd-empty is-error"><b>暂时无法安排</b><span>' + esc(message) +
-      '</span><button type="button" data-fwd-retry>重试</button></div>';
+      ? _humanErr(error, _fwdTr('执行方式没有加载成功')) : _fwdTr('执行方式没有加载成功');
+    box.innerHTML = '<div class="fwd-empty is-error"><b>' + esc(_fwdTr('暂时无法安排')) + '</b><span>' + esc(message) +
+      '</span><button type="button" data-fwd-retry>' + esc(_fwdTr('重试')) + '</button></div>';
     const retry = box.querySelector('[data-fwd-retry]');
     if (retry) retry.addEventListener('click', () => _loadAIPickList(tid, repoId));
     _fwdSyncConfirm(tid);
@@ -277,22 +278,22 @@ async function _loadMateList(tid) {
   _fwdLoading.mate = true;
   _fwdMateReason = '';
   _fwdSyncConfirm(tid);
-  box.innerHTML = '<div class="fwd-loading"><i></i><span>正在核对可转交的同事…</span></div>';
+  box.innerHTML = '<div class="fwd-loading"><i></i><span>' + esc(_fwdTr('正在核对可转交的同事…')) + '</span></div>';
   let result;
   let loadError = false;
   try { result = await SoduWorkAPI.listTeammates(); }
   catch (error) {
     loadError = true;
-    result = { mates: [], reason: '同事名单没有加载成功' };
+    result = { mates: [], reason: _fwdTr('同事名单没有加载成功') };
   }
   if (seq !== _fwdLoadSeq || document.getElementById('fwdList') !== box || _fwdTab !== 'mate') return;
   _fwdLoading.mate = false;
   if (loadError || !result || result.ok === false) {
     _fwdMateRows = [];
     _fwdSelection.mate = null;
-    const message = (result && result.reason) || '同事名单暂时无法加载';
-    box.innerHTML = '<div class="fwd-empty is-error"><b>暂时无法加载同事</b><span>' +
-      esc(message) + '</span><button type="button" data-fwd-mate-retry>重试</button></div>';
+    const message = (result && result.reason) || _fwdTr('同事名单暂时无法加载');
+    box.innerHTML = '<div class="fwd-empty is-error"><b>' + esc(_fwdTr('暂时无法加载同事')) + '</b><span>' +
+      esc(message) + '</span><button type="button" data-fwd-mate-retry>' + esc(_fwdTr('重试')) + '</button></div>';
     const retry = box.querySelector('[data-fwd-mate-retry]');
     if (retry) retry.addEventListener('click', () => _loadMateList(tid));
     _fwdSyncConfirm(tid);
@@ -379,7 +380,7 @@ function _fwdSyncConfirm(tid) {
   if (!choice) {
     decision.innerHTML = '';
     button.disabled = true;
-    button.textContent = _fwdTab === 'ai' ? '确认派活' : '确认转交';
+    button.textContent = _fwdTab === 'ai' ? _fwdTr('确认派活') : _fwdTr('确认转交');
     return;
   }
   const title = choice.name || '';
@@ -393,13 +394,13 @@ function _fwdSyncConfirm(tid) {
   let directoryHint = '';
   if (choice.type === 'direct' || choice.type === 'native') {
     if (_fwdOptions?.selection?.repoId) {
-      directoryHint = '所选工程的工作目录由执行端确定。';
+      directoryHint = _fwdTr('所选工程的工作目录由执行端确定。');
     } else if (choice.type === 'native' || (/^local:/.test(choice.id) && !agent?.remote &&
         (!agent?.locationMode || agent.locationMode === 'local'))) {
-      directoryHint = '新建本机会话时，文件路径相对于独立的会话目录。会话建立后，点击「打开位置」可查看目录。';
+      directoryHint = _fwdTr('新建本机会话时，文件路径相对于独立的会话目录。会话建立后，点击「打开位置」可查看目录。');
     }
   }
-  decision.innerHTML = modelHtml + (directoryHint ? '<small class="fwd-directory-hint">' + directoryHint + '</small>' : '');
+  decision.innerHTML = modelHtml + (directoryHint ? '<small class="fwd-directory-hint">' + esc(directoryHint) + '</small>' : '');
   window.ForwardSelect?.enhance(decision);
   const modelSelect = document.getElementById('fwdModel');
   if (modelSelect) modelSelect.addEventListener('change', () => {
@@ -412,10 +413,14 @@ function _fwdSyncConfirm(tid) {
   const validAgent = choice.type !== 'workflow' || !document.getElementById('fwdAgentSelect') ||
     _fwpPayload(document.getElementById('fwdList'), choice.id, false).ok;
   button.disabled = busy || !_fwdChoiceIsCurrent(choice) || !validAgent || modelState.stale;
-  if (modelState.stale) _fwdSetStatus('原模型已不可用，请重新选择', true);
-  button.textContent = choice.type === 'workflow' ? '按这套方法开始' :
-    choice.type === 'native' ? '确认在对话执行' :
-    choice.type === 'direct' ? '确认交给 ' + title : '确认转给 ' + title;
+  if (modelState.stale) _fwdSetStatus(_fwdTr('原模型已不可用，请重新选择'), true);
+  const confirmLabels = {
+    workflow: '按这套方法开始',
+    native: '确认在对话执行',
+    direct: '确认交给 ' + title,
+    mate: '确认转给 ' + title,
+  };
+  button.textContent = _fwdTr(confirmLabels[choice.type] || ('确认转给 ' + title));
 }
 
 function _fwdSetStatus(message, error) {
@@ -442,7 +447,7 @@ function _fwdSetBusy(on, label) {
   if (on) {
     button.dataset.idleLabel = button.textContent;
     button.disabled = true;
-    button.textContent = label || '正在安排…';
+    button.textContent = label || _fwdTr('正在安排…');
   } else {
     if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
     delete button.dataset.idleLabel;

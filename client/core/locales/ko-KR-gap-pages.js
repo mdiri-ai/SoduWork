@@ -4,6 +4,11 @@
    the target-language catalog by the same key after template matching). */
 (function (global) {
   const messages = {
+    '删除标签：': '태그 삭제: ',
+    '删除标签': '태그 삭제',
+    '添加标签': '태그 추가',
+    '输入标签后按回车': '태그를 입력한 후 Enter 키를 누르세요',
+    '最多添加 20 个标签': '태그는 최대 20개까지 추가할 수 있습니다',
     '创建即用：': '앱 만들기: ',
     '创建网页类即用：': '웹 앱 만들기: ',
     '创建桌面客户端：': '데스크톱 앱 만들기: ',
@@ -8369,6 +8374,25 @@
     'Runner 安装已完成': 'Runner 설치가 완료되었습니다',
     'SSH 连接已验证；Runner 是否在线以下方检查结果为准。': 'SSH 연결을 확인했습니다. Runner의 온라인 상태는 아래 연결 확인 결과를 참고하세요.',
     '插件参数过长，请缩短后重试': '플러그인 입력이 너무 깁니다. 줄인 후 다시 시도하세요.',
+  });
+  Object.assign(messages, {
+    '安排执行': '이슈 배정',
+    '接手未完成，请刷新需求后重试': '인계를 완료하지 못했습니다. 이슈를 새로 고친 후 다시 시도하세요.',
+    '确认工作内容，选择执行方式': '작업 내용을 확인하고 실행 방식을 선택하세요',
+    '交给 AI': 'AI에 배정',
+    '需求与补充内容': '이슈 및 추가 내용',
+    '本次需求': '이번 이슈',
+    '补充内容': '추가 내용',
+    '执行设置': '실행 설정',
+    '按交付物自动判断（推荐）': '산출물에 따라 자동 판단(권장)',
+    '有明确输出物时自动提交；没有输出物时默认手动提交。': '명확한 산출물이 있으면 자동 제출하고, 없으면 기본적으로 수동 제출합니다.',
+    '确认交给': '다음 대상에게 배정 확인: ',
+    '确认转给': '다음 동료에게 넘기기 확인: ',
+    '自动返修未启动：': '자동 수정이 시작되지 않았습니다: ',
+    '验收与交付': '검수 및 전달',
+    '查看交付链接': '전달 링크 보기',
+    '状态未变更': '상태가 바뀌지 않았습니다',
+    ' 条记录': '개 기록',
   });
   if (typeof module !== 'undefined' && module.exports) { module.exports = Object.freeze(messages); return; }
   global.SoduWorkLocaleMessages = Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages, { 'ko-KR': Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages['ko-KR'], messages)) }));

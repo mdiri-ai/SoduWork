@@ -320,11 +320,12 @@
   function timingFields(p) {
     const selectedWeekdays = selectedNumbers(p.weekdays?.length ? p.weekdays : p.weekday, 7);
     const selectedMonthDays = selectedNumbers(p.monthDays, 31);
+    const dateLang = esc(global.SoduWorkI18n?.getLocale?.() || 'en-US');
     return '<div class="waz-timing-range" data-waz-range>' +
       '<div class="waz-field"><span>' + esc(tx('开始日期')) + ' <small>' + esc(tx('可选')) + '</small></span>' +
-        '<input name="startDate" type="date" value="' + esc(p.startDate || '') + '" aria-label="' + esc(tx('开始日期')) + '"></div>' +
+        '<input name="startDate" type="date" lang="' + dateLang + '" value="' + esc(p.startDate || '') + '" aria-label="' + esc(tx('开始日期')) + '"></div>' +
       '<div class="waz-field"><span>' + esc(tx('结束日期')) + ' <small>' + esc(tx('可选')) + '</small></span>' +
-        '<input name="endDate" type="date" value="' + esc(p.endDate || '') + '" aria-label="' + esc(tx('结束日期')) + '"></div>' +
+        '<input name="endDate" type="date" lang="' + dateLang + '" value="' + esc(p.endDate || '') + '" aria-label="' + esc(tx('结束日期')) + '"></div>' +
       '<small class="waz-range-hint">' + esc(tx('留空表示长期有效，结束日期包含当天')) + '</small></div>' +
       '<div class="waz-field waz-weekday-field" data-waz-weekday>' +
         '<span>' + esc(tx('星期')) + ' <small>' + esc(tx('可多选')) + '</small></span>' +

@@ -4,6 +4,11 @@
    the target-language catalog by the same key after template matching). */
 (function (global) {
   const messages = {
+    '删除标签：': 'タグを削除: ',
+    '删除标签': 'タグを削除',
+    '添加标签': 'タグを追加',
+    '输入标签后按回车': 'タグを入力して Enter キーを押してください',
+    '最多添加 20 个标签': 'タグは最大 20 個まで追加できます',
     '创建即用：': 'アプリを作成：',
     '创建网页类即用：': 'Web アプリを作成：',
     '创建桌面客户端：': 'デスクトップアプリを作成：',
@@ -8369,6 +8374,25 @@
     'Runner 安装已完成': 'Runner のインストールが完了しました',
     'SSH 连接已验证；Runner 是否在线以下方检查结果为准。': 'SSH 接続は確認済みです。Runner のオンライン状態は下の接続確認結果をご覧ください。',
     '插件参数过长，请缩短后重试': 'プラグインの入力が長すぎます。短くして再試行してください。',
+  });
+  Object.assign(messages, {
+    '安排执行': 'Issue を手配',
+    '接手未完成，请刷新需求后重试': '引き継ぎを完了できませんでした。Issue を更新して再試行してください。',
+    '确认工作内容，选择执行方式': '作業内容を確認して実行方法を選択',
+    '交给 AI': 'AI に割り当て',
+    '需求与补充内容': 'Issue と補足内容',
+    '本次需求': '今回の Issue',
+    '补充内容': '補足内容',
+    '执行设置': '実行設定',
+    '按交付物自动判断（推荐）': '成果物に基づいて自動判定（推奨）',
+    '有明确输出物时自动提交；没有输出物时默认手动提交。': '明確な成果物がある場合は自動提出し、ない場合は手動提出を既定にします。',
+    '确认交给': '次へ割り当てることを確認: ',
+    '确认转给': '次へ引き渡すことを確認: ',
+    '自动返修未启动：': '自動修正を開始できませんでした: ',
+    '验收与交付': '受け入れと納品',
+    '查看交付链接': '納品リンクを表示',
+    '状态未变更': '状態は変わりませんでした',
+    ' 条记录': ' 件の記録',
   });
   if (typeof module !== 'undefined' && module.exports) { module.exports = Object.freeze(messages); return; }
   global.SoduWorkLocaleMessages = Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages, { 'ja-JP': Object.freeze(Object.assign(Object.create(null), global.SoduWorkLocaleMessages['ja-JP'], messages)) }));

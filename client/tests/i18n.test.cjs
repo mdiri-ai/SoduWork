@@ -87,6 +87,23 @@ test('business project association and conflict recovery copy follow all four lo
   }
 });
 
+test('issue creation and delivery surfaces localize tag, assignment and status copy', () => {
+  const c = client();
+  const phrases = [
+    '输入标签后按回车', '添加标签', '最多添加 20 个标签',
+    '确认工作内容，选择执行方式', '执行设置', '原模型已不可用，请重新选择',
+    '验收与交付', '自动返修未启动：', '查看交付链接', '状态未变更', '历史进展', ' 条记录',
+  ];
+  for (const locale of ['zh-CN', 'en-US', 'ja-JP', 'ko-KR']) {
+    c.api.setLocale(locale);
+    for (const phrase of phrases) {
+      const translated = c.api.translateText(phrase);
+      if (locale === 'zh-CN') assert.equal(translated, phrase, locale + ': ' + phrase);
+      else assert.notEqual(translated, phrase, locale + ': ' + phrase);
+    }
+  }
+});
+
 test('renderer catalog packages preserve frozen snapshots and match canonical package order', () => {
   const context = vm.createContext({}), expected = {};
   const directory = path.join(__dirname, '../core/locales');
