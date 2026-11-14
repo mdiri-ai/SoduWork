@@ -163,7 +163,8 @@ if (typeof electron === 'string') {
     await js(human.slice(human.indexOf('function _humanErr('), human.indexOf('/* Speech bubbles. */')));
     await click('#mdAddInline'); localId = await js('document.querySelector("[data-pname]").dataset.pname');
     await fill('[data-pname]', 'Synthetic local service'); await click('#mdSave');
-    await until('!_mdSaveFlight && notice === "请填写 API 地址"');
+    await until('!_mdSaveFlight && document.getElementById("md-url-error")?.textContent === "请填写 API 地址"');
+    assert.equal(await js('notices.includes("请填写 API 地址")'), false);
     assert.equal(store.get().revision, 0);
     assert.equal(await js('document.querySelector(".cfg-state.is-draft").textContent'), '未保存');
     assert.equal(await js('document.querySelector("[data-purl]").getAttribute("aria-invalid")'), 'true');

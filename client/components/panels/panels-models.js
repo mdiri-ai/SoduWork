@@ -388,13 +388,17 @@ function _mdDetailHtml(p) {
 function _mdBodyHtml(p, s, ms, own, t) {
   const validation = _mdValidation?.providerId === p.id ? _mdValidation : null;
   const invalid = field => validation?.field === field ? ' aria-invalid="true"' : '';
+  const error = field => '<small id="md-' + field + '-error" class="md-field-error" role="alert"' +
+    (validation?.field === field ? '' : ' hidden') + '>' + esc(validation?.field === field ? validation.detail : '') + '</small>';
   return '<div class="md-row-b" id="md-body-' + esc(p.id) + '" role="region">' +
     '<section class="md-settings-section"><header class="md-section-heading"><b>连接设置</b><small>填写服务提供的 API 地址</small></header>' +
     '<div class="md-connect-fields">' +
       (p.personal ? '<label class="md-field"><span>服务名称</span><input class="md-in" data-pname="' +
-        esc(p.id) + '"' + (p.localOnly ? ' maxlength="64"' : '') + invalid('name') + ' value="' + esc(p.name || '') + '" placeholder="例如：本机 Ollama"></label>' : '') +
+        esc(p.id) + '"' + (p.localOnly ? ' maxlength="64"' : '') + invalid('name') + ' value="' + esc(p.name || '') +
+        '" placeholder="例如：本机 Ollama" aria-describedby="md-name-error">' + error('name') + '</label>' : '') +
       '<label class="md-field md-field-wide"><span>API 地址</span><input class="md-in" data-purl="' +
-        esc(p.id) + '"' + (p.localOnly ? ' maxlength="400"' : '') + invalid('url') + ' value="' + esc(p.baseUrl || '') + '" placeholder="https://…/v1"></label>' +
+        esc(p.id) + '"' + (p.localOnly ? ' maxlength="400"' : '') + invalid('url') + ' value="' + esc(p.baseUrl || '') +
+        '" placeholder="https://…/v1" aria-describedby="md-url-error">' + error('url') + '</label>' +
       (p.personal ? '<label class="md-field"><span>接口协议</span><select class="md-in" data-pkind="' +
         esc(p.id) + '"><option value="openai-compat"' + (p.localOnly || p.kind !== 'anthropic' ? ' selected' : '') +
         '>OpenAI 兼容</option>' +
@@ -404,7 +408,7 @@ function _mdBodyHtml(p, s, ms, own, t) {
           (p.authMode === 'none' ? ' checked' : '') + '><span>本地服务无需密钥</span></label>' : '') +
       (!p.personal && p.addressOverridden ? '<button class="md-link md-reset-url" data-preset="' + esc(p.id) +
         '">恢复组织默认地址</button>' : '') +
-    '</div>' + (validation ? '<p class="md-model-help" role="alert">' + esc(validation.detail) + '</p>' : '') + (p.kind === 'anthropic'
+    '</div>' + (p.kind === 'anthropic'
       ? '<p class="md-model-help" role="note">Anthropic 协议：连接测试通过也不能用于当前企业模型对话通道。请为该通道配置供应商的 OpenAI 兼容地址与对应密钥；此配置可保留给支持 Anthropic 的 Agent。</p>' : '') +
     '</section><section class="md-settings-section md-credentials">' +
     '<header class="md-section-heading"><b>访问凭据</b><small>密钥保存后只显示配置状态，不回显明文</small></header>' +
@@ -469,6 +473,13 @@ function _mdTouchProvider(pid, patch) {
   const p = _mdProvider(pid);
   if (!p) return;
   Object.assign(p, patch || {});
+  const field = _mdValidation?.field;
+  if (_mdValidation?.providerId === pid && Object.prototype.hasOwnProperty.call(patch || {}, field === 'url' ? 'baseUrl' : 'name')) {
+    _mdValidation = null;
+    document.getElementById('mdBody')?.querySelector('[aria-invalid="true"]')?.removeAttribute('aria-invalid');
+    const error = document.getElementById('md-' + field + '-error');
+    if (error) { error.hidden = true; error.textContent = ''; }
+  }
   p._capStale = true;
   for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdChecks.delete(key);
   _mdMarkOwnedDirty(p);
@@ -577,6 +588,12 @@ function _mdBind(box) {
   _mdBindModels(box);
 }
 
+function _mdFocusValidation() {
+  const input = document.getElementById('mdBody')?.querySelector('[aria-invalid="true"]');
+  input?.focus({ preventScroll: true });
+  input?.closest('.md-field')?.scrollIntoView({ block: 'nearest' });
+}
+
 /*
  * Save pending keys before the real connection test so the result applies to the new
  * credential.
@@ -586,8 +603,11 @@ async function _mdDoTest(el) {
   const pid = el.getAttribute('data-ptest');
   if (_mdTest[pid]?.state === 'ing') return;
   const p = _mdProvider(pid);
-  if (!p || !String(p.baseUrl || '').trim()) {
-    _mdTest[pid] = { state: 'bad', detail: '请先填写 API 地址' }; _mdRender(); return;
+  if (!p) return;
+  const error = _mdProviderError(p);
+  if (error) {
+    _mdValidation = error; delete _mdTest[pid];
+    _mdRender(); _mdFocusValidation(); return;
   }
   if (!_mdUsesLocalDiscovery(p) && !(_mdMyModels || []).some((m) => m.providerId === pid) &&
       !(p.modelDefs || p.modelNames || []).length) {
@@ -686,6 +706,7 @@ function _mdSave(closeAfter) {
   if (_mdSaveFlight) return _mdSaveFlight;
   _mdSaveFlight = Promise.resolve().then(() => _mdSaveChanges(closeAfter)).finally(() => {
     _mdSaveFlight = null; _mdMark();
+    if (_mdValidation) _mdFocusValidation();
   });
   _mdMark();
   return _mdSaveFlight;
@@ -739,7 +760,7 @@ async function _mdSaveChanges(closeAfter) {
     if (!current()) return false;
     if (e.providerId) { _mdValidation = e; _mdOpen = e.providerId; }
     _mdDirty = _mdLocalDirty || _mdManagedDirty || Object.keys(_mdKeyEdits).length > 0;
-    if (typeof petSay === 'function') petSay(localSaved
+    if (typeof petSay === 'function' && (localSaved || !e.providerId)) petSay(localSaved
       ? '本地模型配置已保存，Hub 模型配置未保存，请重试。' : _humanErr(e, '没存上'));
     try { _mdRender(); } catch (_) { /* Preserve the remaining draft after a display failure. */ }
     if (localSaved) await _mdRefreshSavedModels();

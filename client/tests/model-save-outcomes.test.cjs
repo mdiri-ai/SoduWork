@@ -176,7 +176,8 @@ test('a name-only service stays visibly unsaved and reports the missing API addr
   assert.equal(await f.evaluate('_mdSave(false)'), false);
   assert.equal(f.state.localInputs.length, 0);
   assert.equal(f.snapshot().revision, 1);
-  assert.ok(f.state.notices.includes('请填写 API 地址'));
+  assert.match(f.body.innerHTML, /id="md-url-error"[^>]*>请填写 API 地址/);
+  assert.deepEqual(f.state.notices, []);
   assert.match(f.body.innerHTML, /cfg-state is-draft[^>]*>未保存/);
   assert.equal(f.button.disabled, false);
 });
@@ -293,7 +294,8 @@ for (const baseUrl of ['http://', 'not-a-url']) test(`an invalid API address (${
   assert.equal(await f.evaluate('_mdSave(false)'), false);
   assert.equal(f.state.localInputs.length, 0);
   assert.match(f.body.innerHTML, /data-purl="[^"]+"[^>]*aria-invalid="true"/);
-  assert.doesNotMatch(f.state.notices.at(-1), /没存上/);
+  assert.match(f.body.innerHTML, /id="md-url-error"[^>]*>[^<]+/);
+  assert.deepEqual(f.state.notices, []);
 });
 
 test('reloading a saved service clears validation for an invalid edit that was discarded', async t => {
