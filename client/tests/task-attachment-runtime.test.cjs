@@ -64,6 +64,20 @@ test('long attachment names preserve their file type for system and Markdown pre
   assert.match(html,/<h1>Long filename<\/h1>/);
 });
 
+test('multibyte attachment names fit the native filesystem before system handoff', async context => {
+  const fixture = harness(context);
+  fixture.state.type = 'application/octet-stream';
+  for (const filename of ['报告'.repeat(50) + '.docx', '😀'.repeat(90) + '.xlsx']) {
+    assert.equal((await fixture.open(filename)).external, true);
+    const target = fixture.state.opened.at(-1);
+    const basename = path.basename(target);
+    assert.ok(Buffer.byteLength(basename, 'utf8') <= 180);
+    assert.ok(basename.isWellFormed());
+    assert.equal(path.extname(target), path.extname(filename));
+    assert.deepEqual(fs.readFileSync(target), fixture.state.data);
+  }
+});
+
 test('Markdown renders as a safe native preview while CSV, JSON and plain text stay literal', async t=>{
   const h=harness(t);
   for(const [filename,type] of [['报告.md','text/markdown'],['说明.txt','text/plain'],['数据.csv','text/csv'],['资料.json','application/json']]){
