@@ -43,7 +43,7 @@
   "license": "MIT",
   "desktopName": "soduwork.desktop",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "ssh2": "1.17.0"
   },
   "devDependencies": {
