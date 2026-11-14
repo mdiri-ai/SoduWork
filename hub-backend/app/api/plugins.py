@@ -530,10 +530,16 @@ async def simulate_version(
     if project is not None and scope is not None and project.org_id not in scope:
         raise HTTPException(status_code=403, detail="这个项目不在你的组织范围内")
     org_id = project.org_id if project is not None else (plugin.org_id or user.org_id)
+    config = body.get("config") or {}
+    secret_refs = body.get("secretRefs") or {}
+    if not isinstance(config, dict):
+        raise HTTPException(status_code=400, detail="插件配置必须是对象")
+    if not isinstance(secret_refs, dict):
+        raise HTTPException(status_code=400, detail="插件密钥引用必须是对象")
     try:
         return await plugin_service.simulate(
             session, version, project, org_id, str(body.get("agentKind") or ""),
-            dict(body.get("config") or {}), dict(body.get("secretRefs") or {}))
+            config, secret_refs)
     except ValueError as exc:
         raise _conflict(exc) from exc
 
