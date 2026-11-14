@@ -61,6 +61,25 @@ test('filename truncation keeps the final extension and the existing length limi
   assert.equal(attachmentFiles.safeFilename('a.' + 'b'.repeat(200), 'safe.txt').length, 180);
 });
 
+test('filename truncation bounds UTF-8 bytes without splitting Unicode characters', () => {
+  for (const [stem, extension] of [
+    ['报告'.repeat(50), '.docx'], ['😀'.repeat(90), '.xlsx'],
+    ['报'.repeat(80), '.说明'], ['😀'.repeat(90), ''],
+  ]) {
+    const result = attachmentFiles.safeFilename(stem + extension, 'safe.txt');
+    assert.ok(Buffer.byteLength(result, 'utf8') <= 180);
+    assert.ok(result.length <= 180);
+    assert.ok(result.isWellFormed());
+    assert.ok(result.endsWith(extension));
+    assert.ok(stem.startsWith(extension ? result.slice(0, -extension.length) : result));
+  }
+  const boundary = '报'.repeat(58) + '.docx';
+  assert.equal(attachmentFiles.safeFilename(boundary, 'safe.txt'), boundary);
+  const longExtension = attachmentFiles.safeFilename('a.' + '😀'.repeat(100), 'safe.txt');
+  assert.ok(Buffer.byteLength(longExtension, 'utf8') <= 180);
+  assert.ok(longExtension.isWellFormed());
+});
+
 test('renderer exposes narrow native preview and explicit download commands', () => {
   const main = read('main.js');
   const preload = read('preload.js');

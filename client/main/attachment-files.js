@@ -88,11 +88,18 @@ function renderMarkdownPreview(filename, data) {
 function safeFilename(raw, fallback) {
   let name = path.basename(String(raw || '')).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
   name = name.replace(/[. ]+$/g, '');
-  if (name.length > 180) {
+  if (Buffer.byteLength(name, 'utf8') > 180) {
     // Preview routing and system associations depend on the final extension.
     const extension = path.extname(name);
-    name = extension.length < 180
-      ? name.slice(0, 180 - extension.length) + extension : name.slice(0, 180);
+    const suffix = Buffer.byteLength(extension, 'utf8') < 180 ? extension : '';
+    let shortened = '', bytes = Buffer.byteLength(suffix, 'utf8');
+    for (const character of suffix ? name.slice(0, -suffix.length) : name) {
+      const size = Buffer.byteLength(character, 'utf8');
+      if (bytes + size > 180) break;
+      shortened += character;
+      bytes += size;
+    }
+    name = shortened + suffix;
   }
   if (!name || WINDOWS_RESERVED.test(name)) name = String(fallback || 'attachment');
   return name;
