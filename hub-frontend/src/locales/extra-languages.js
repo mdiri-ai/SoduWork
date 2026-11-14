@@ -16,6 +16,7 @@ import { ja as quotaJa, ko as quotaKo } from './quota-management.js'
 import { ja as accessCatalogJa, ko as accessCatalogKo } from './access-catalog.js'
 import { ja as operationsJa, ko as operationsKo } from './operations-overview.js'
 const ja = {
+  '登录状态已变更，请重试本次操作': 'ログイン状態が変わりました。この操作をもう一度実行してください。',
   '编辑推荐': '推薦を編集', '编辑推荐 ': '推薦を編集: ',
   '推荐设置': '推薦設定',
   '推荐位置': '推薦場所', '可多选 · 排序默认升序': '複数選択可・並び順は既定で昇順',
@@ -52,6 +53,7 @@ const ja = {
 };
 
 const ko = {
+  '登录状态已变更，请重试本次操作': '로그인 상태가 변경되었습니다. 이 작업을 다시 시도하세요.',
   '编辑推荐': '추천 편집', '编辑推荐 ': '추천 편집: ',
   '推荐位置': '추천 위치', '可多选 · 排序默认升序': '복수 선택 · 순서는 기본 오름차순',
   '推荐设置': '추천 설정',

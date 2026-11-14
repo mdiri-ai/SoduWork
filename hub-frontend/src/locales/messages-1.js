@@ -77,6 +77,7 @@ export default {
   "排队中": "Queued",
   "已完成": "Completed",
   "已取消": "Canceled",
+  "登录状态已变更，请重试本次操作": "Your sign-in has changed. Retry this operation.",
   "已删除": "Deleted",
   "已保存": "Saved",
   "待审核": "Pending review",
