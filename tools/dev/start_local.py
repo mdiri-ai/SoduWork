@@ -56,7 +56,9 @@ def default_state() -> Path:
         base = Path.home() / "Library/Application Support"
         current, previous = base / "SoduWork/source-service", base / "SoduWork/source-service"
     else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+        base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+        if not base.is_absolute():
+            base = Path.home() / ".local/share"
         current, previous = base / "soduwork/source-service", base / "soduwork/source-service"
     # Preserve existing source-service data in place; only fresh installs use the new name.
     return previous if not current.exists() and (previous / "local-service.json").is_file() else current

@@ -142,6 +142,45 @@ class LocalStartupTests(unittest.TestCase):
             self.assertEqual(start.default_state(), fresh)
             self.assertEqual(marker.read_text(encoding="utf-8"), "{}")
 
+    @unittest.skipIf(os.name == 'nt', 'Linux XDG paths use POSIX semantics')
+    def test_linux_default_state_falls_back_for_invalid_xdg_data_home(self):
+        home = Path(self.temp.name) / 'home'
+        expected = home / '.local/share/soduwork/source-service'
+        for value in (None, '', 'relative-data', '~/data'):
+            environment = {} if value is None else {'XDG_DATA_HOME': value}
+            with self.subTest(value=value), patch.dict(os.environ, environment, clear=True), \
+                    patch.object(sys, 'platform', 'linux'), patch.object(Path, 'home', return_value=home):
+                self.assertEqual(start.default_state(), expected)
+        self.assertFalse(home.exists())
+
+    @unittest.skipIf(os.name == 'nt', 'Linux XDG paths use POSIX semantics')
+    def test_linux_default_state_preserves_absolute_xdg_data_and_existing_files(self):
+        base = Path(self.temp.name) / 'custom-data'
+        expected = base / 'soduwork/source-service'
+        expected.mkdir(parents=True)
+        marker = expected / 'local-service.json'
+        marker.write_text('{}', encoding='utf-8')
+        with patch.dict(os.environ, {'XDG_DATA_HOME': str(base)}), patch.object(sys, 'platform', 'linux'):
+            self.assertEqual(start.default_state(), expected)
+        self.assertEqual(marker.read_text(encoding='utf-8'), '{}')
+
+    @unittest.skipIf(os.name == 'nt', 'Linux XDG paths use POSIX semantics')
+    def test_linux_prepare_only_uses_safe_default_with_invalid_xdg_data_home(self):
+        home = Path(self.temp.name) / 'home'
+        expected = home / '.local/share/soduwork/source-service'
+        for value in ('', 'relative-data'):
+            with self.subTest(value=value), patch.dict(os.environ, {'XDG_DATA_HOME': value}), \
+                    patch.object(sys, 'platform', 'linux'), patch.object(Path, 'home', return_value=home), \
+                    patch.object(start, 'check_dependencies'), patch.object(start.signal, 'signal'), \
+                    patch.object(start, 'initialize', return_value={}) as initialize, \
+                    patch.object(start, 'exclusive', return_value=nullcontext()), \
+                    patch.object(start, 'prepare') as prepare, redirect_stdout(io.StringIO()), \
+                    patch('sys.stderr', io.StringIO()):
+                self.assertEqual(start.main(['--prepare-only']), 0)
+                initialize.assert_called_once_with(expected, 'admin')
+                prepare.assert_called_once_with(expected, expected / 'startup.log')
+        self.assertFalse(home.exists())
+
     def test_macos_default_desktop_profile_is_outside_installed_client(self):
         home = Path(self.temp.name)
         app_data = home / 'Library/Application Support'
