@@ -22,7 +22,7 @@ function fixture(catalog = localCatalog()) {
     catalog: structuredClone(catalog) };
   context.window = context;
   vm.createContext(context);
-  for (const file of ['model-capabilities.js', 'model-catalog-editor.js', 'panels-models.js']) {
+  for (const file of ['model-capabilities.js', 'model-catalog-editor.js', 'model-service-delete.js', 'panels-models.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../components/panels', file), 'utf8'), context, { filename: file });
   }
   const evaluate = source => vm.runInContext(source, context);
@@ -152,7 +152,7 @@ test('local-only panel saves omit managed fields and survive post-save refresh f
   assert.equal(Object.hasOwn(saves[0], 'providers'), false);
   assert.equal(Object.hasOwn(saves[0], 'models'), false);
   assert.equal(Object.hasOwn(saves[0], 'expectedRevision'), false);
-  assert.equal(f.messages.some(message => message.includes('模型配置存好了')), true);
+  assert.ok(f.messages.includes('服务信息已保存'));
   assert.equal(f.messages.some(message => message.includes('没存上')), false);
 });
 
@@ -240,9 +240,11 @@ test('removing another model preserves the current edit draft and its unsaved fi
 test('confirmed provider removal clears that provider draft without clearing other drafts', async () => {
   const f = fixture();
   f.evaluate('_mdDrafts.set("local-fixture", {original:"shared-model"}); _mdDrafts.set("other-provider", {original:"other-model"});');
-  const action = removal(f, 'data-pdelete', 'local-fixture');
-  await action.click(); assert.equal(f.evaluate('_mdDrafts.has("local-fixture")'), true, 'confirmation has not deleted anything');
-  await action.click();
+  f.evaluate('_mdData.localRevision=catalog.revision');
+  f.context.SoduWorkAPI = { localModels: async () => f.context.catalog, saveMyModels: async () => ({ revision: 1 }) };
+  f.context.plan = await f.evaluate('_mdPrepareServiceDelete("local-fixture")');
+  assert.equal(f.evaluate('_mdDrafts.has("local-fixture")'), true, 'confirmation has not deleted anything');
+  await f.evaluate('_mdDeleteService(plan)');
   assert.equal(f.evaluate('_mdDrafts.has("local-fixture")'), false);
   assert.equal(f.evaluate('_mdDrafts.has("other-provider")'), true);
   assert.equal(f.evaluate('_mdData.providers.length'), 0);

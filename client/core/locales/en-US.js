@@ -1,6 +1,6 @@
 (function(global) {
   'use strict';
-  // Product localization: 中文「即用」and English「App」are the same concept.
+// Product localization: the localized product name and English "App" refer to the same concept.
   // This is intentional, not a literal translation; keep app/jiyong IDs stable.
   const messages = {
     '此邮箱尚未注册，请先创建账号。': 'This email is not registered. Create an account to continue.',
@@ -332,7 +332,7 @@
     '个连接': 'connectors', '个技能': 'Skills', '个版本': 'versions', '个节点': 'nodes', '个附件': 'attachments',
     '条需求': "issues", '条记录': 'records', '条消息': 'messages', '项': 'items',
     '请先填写 API 地址': 'Enter the API address first', '请先添加一个模型 ID': 'Add a model ID first',
-    '没测出结果': 'No result returned', '没测成': 'Test failed', '模型配置存好了～': 'Model settings saved',
+    '没测出结果': 'No result returned', '没测成': 'Test failed', '服务信息已保存': 'Service information saved',
     '模型配置已保存，但模型选择器刷新失败，请重新打开对话。': 'Model settings were saved, but the model picker could not refresh. Reopen the chat.',
     '本地模型配置已保存，Hub 模型配置未保存，请重试。': 'Local model settings were saved, but Hub model settings were not. Try again.',
     '模型配置已保存，但模型清单刷新失败，请重新打开模型页面。': 'Model settings were saved, but the model list could not refresh. Reopen the models page.',
