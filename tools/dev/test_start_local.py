@@ -1,6 +1,7 @@
 """Fast contract checks for isolated startup; live verification is a separate script."""
 from __future__ import annotations
 
+from argparse import Namespace
 import io
 from contextlib import closing, nullcontext, redirect_stdout
 import os
@@ -233,6 +234,47 @@ class LocalStartupTests(unittest.TestCase):
         with patch.object(build, "ROOT", source), patch.object(build, "checkout_files", return_value={trusted}):
             self.assertEqual(list(build.source_files(source)), [trusted])
 
+    def test_source_sync_replaces_a_generated_file_with_a_package(self):
+        source = Path(self.temp.name) / 'source'
+        source.mkdir()
+        module = source / 'module'
+        module.write_text('old module', encoding='utf-8')
+        target = self.state / 'application/client'
+        dependency = target / 'node_modules/fixture'
+        dependency.parent.mkdir(parents=True)
+        dependency.write_text('installed dependency', encoding='utf-8')
+        preserve = frozenset({'node_modules'})
+        build.sync_source(source, target, preserve=preserve)
+        module.unlink()
+        package = module / 'nested'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('new package', encoding='utf-8')
+        build.sync_source(source, target, preserve=preserve)
+        self.assertEqual((target / 'module/nested/__init__.py').read_text(encoding='utf-8'), 'new package')
+        self.assertEqual(dependency.read_text(encoding='utf-8'), 'installed dependency')
+        build.sync_source(source, target, preserve=preserve)
+        self.assertEqual((target / 'module/nested/__init__.py').read_text(encoding='utf-8'), 'new package')
+
+    def test_source_sync_replaces_a_generated_package_with_a_file(self):
+        source = Path(self.temp.name) / 'source'
+        package = source / 'nested/module'
+        package.mkdir(parents=True)
+        original = package / 'old.py'
+        original.write_text('old package', encoding='utf-8')
+        target = self.state / 'application/hub-backend/app'
+        upload = target.parent / 'uploads/document.txt'
+        upload.parent.mkdir(parents=True)
+        upload.write_text('user document', encoding='utf-8')
+        build.sync_source(source, target)
+        original.unlink()
+        package.rmdir()
+        package.write_text('new module', encoding='utf-8')
+        build.sync_source(source, target)
+        self.assertEqual((target / 'nested/module').read_text(encoding='utf-8'), 'new module')
+        self.assertEqual(upload.read_text(encoding='utf-8'), 'user document')
+        build.sync_source(source, target)
+        self.assertEqual((target / 'nested/module').read_text(encoding='utf-8'), 'new module')
+
     def test_cancelled_dependency_command_reaps_its_child(self):
         seen = []
 
@@ -271,6 +313,52 @@ class LocalStartupTests(unittest.TestCase):
             with self.assertRaisesRegex(start.StartupError, "already in use"):
                 start.assert_available("127.0.0.1", port)
             self.assertEqual(listener.getsockname()[1], port)
+
+    @unittest.skipUnless(socket.has_ipv6, "IPv6 is not available")
+    def test_ipv6_port_is_available_only_after_listener_closes(self):
+        with socket.socket(socket.AF_INET6) as listener:
+            try:
+                listener.bind(("::1", 0))
+            except OSError as exc:
+                self.skipTest(f"IPv6 loopback is not available: {exc}")
+            listener.listen()
+            port = listener.getsockname()[1]
+            with self.assertRaisesRegex(start.StartupError, "already in use"):
+                start.assert_available("::1", port)
+            self.assertEqual(listener.getsockname()[1], port)
+        start.assert_available("::1", port)
+
+    def test_runtime_environment_uses_bracketed_ipv6_urls(self):
+        config = {"adminUser": "admin", "authSecret": "x" * 48}
+        for host, expected in (("::1", "http://[::1]:18991"),
+                               ("2001:db8::1", "http://[2001:db8::1]:18991"),
+                               ("127.0.0.1", "http://127.0.0.1:18991"),
+                               ("localhost", "http://localhost:18991")):
+            with self.subTest(host=host):
+                env = start.runtime_environment(self.state, config, "fixture-only-password", host, 18991)
+                self.assertEqual(env["HUB_PUBLIC_URL"], expected)
+                self.assertEqual(env["CORS_ORIGINS"], expected + ",null")
+
+    def test_serve_uses_ipv6_url_for_readiness_and_browser(self):
+        config = {"adminUser": "admin", "authSecret": "x" * 48}
+        args = Namespace(host="::1", port=18991, desktop=False, no_browser=False, password_stdin=True)
+        with patch.object(start, "assert_available"), \
+                patch.object(start, "initialized", return_value=True), \
+                patch.object(start, "password_for_start", return_value="fixture-only-password"), \
+                patch.object(start, "prepare", return_value=(Path(sys.executable), self.state / "backend")), \
+                patch.object(start.subprocess, "Popen") as popen, \
+                patch.object(start, "wait_ready") as ready, \
+                patch.object(start, "open_management_page") as browser, \
+                patch.object(start, "wait_child"), patch.object(start, "stop_child"), \
+                redirect_stdout(io.StringIO()):
+            child = popen.return_value
+            child.returncode = 0
+            start.serve(self.state, config, args)
+        expected = "http://[::1]:18991"
+        ready.assert_called_once_with(child, expected, self.state / "startup.log", timeout=90)
+        browser.assert_called_once_with(expected)
+        self.assertEqual(popen.call_args.args[0][-2:], ["--host", "::1"])
+        self.assertEqual(popen.call_args.kwargs["env"]["HUB_PUBLIC_URL"], expected)
 
     @unittest.skipIf(os.name == "nt", "POSIX listener reuse; Windows uses exclusive bind")
     def test_closed_http_connection_allows_restart_but_live_reusable_listener_does_not(self):
@@ -496,6 +584,19 @@ class LocalStartupTests(unittest.TestCase):
                 self.assertEqual(call.kwargs['cwd'], client)
                 self.assertEqual(call.kwargs['log'], log)
 
+    def test_desktop_install_includes_build_dependencies_in_production_environments(self):
+        client = self.cached_desktop()
+        for environment in ({'NODE_ENV': 'production'}, {'NPM_CONFIG_OMIT': 'dev'}):
+            with self.subTest(environment=environment), \
+                    patch.dict(os.environ, {'DISPLAY': ':fixture', **environment}), \
+                    patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+                    patch.object(build, 'run') as run:
+                (self.state / 'desktop-dependencies.sha256').unlink(missing_ok=True)
+                self.assertEqual(build.prepare_desktop(self.state, self.state / 'startup.log'), client)
+                command = next(call.args[0] for call in run.call_args_list if call.args[0][:2] == ['npm', 'ci'])
+                self.assertIn('--include=dev', command)
+                self.assertIn('--ignore-scripts', command)
+
     def test_windows_shell_preparation_failure_stops_desktop_preparation(self):
         with patch.object(sys, 'platform', 'win32'):
             self.cached_desktop()
@@ -582,6 +683,7 @@ class LocalStartupTests(unittest.TestCase):
             put("hub-backend/" + name)
         for name in ("hub-backend/app/api.py", "tools/dev/local_server.py", "skills/example/SKILL.md",
                      "client/core/connector-brand.js", "client/components/panels/connector-config.js",
+                     "client/components/client-auth/legal-html.js", "client/components/client-auth/legal-html.css",
                      "client/assets/connector-brands/fixture.svg", "third-party/manifest.json", "LICENSE",
                      "hub-frontend/src/index.jsx", "hub-frontend/package.json", "hub-frontend/package-lock.json",
                      "hub-frontend/index.html", "hub-frontend/vite.config.js"):
@@ -608,6 +710,8 @@ class LocalStartupTests(unittest.TestCase):
             install = next(command for command in commands if 'pip' in command)
             for manifest in ('requirements.txt', 'requirements-runner.txt'):
                 self.assertIn(str(source / 'hub-backend' / manifest), install)
+            frontend_install = next(command for command in commands if command[:2] == ['npm', 'ci'])
+            self.assertIn('--include=dev', frontend_install)
             for name in ("LICENSE", "third-party/manifest.json"):
                 self.assertEqual((self.state / "application" / name).read_bytes(), (source / name).read_bytes())
             generated = [self.state / 'application/client' / relative for relative in (
@@ -623,6 +727,20 @@ class LocalStartupTests(unittest.TestCase):
             self.assertEqual((self.state / "application/client/assets/connector-brands/fixture.svg").read_text(), "updated artwork")
             for file in generated:
                 self.assertEqual(file.read_bytes(), b'generated runtime fixture')
+            for relative in ('client/components/client-auth/legal-html.js',
+                             'client/components/client-auth/legal-html.css'):
+                with self.subTest(shared_frontend_source=relative):
+                    calls.clear()
+                    put(relative, 'updated shared legal document resource')
+                    build.prepare(self.state, self.state / 'startup.log')
+                    self.assertEqual(calls, [
+                        '[Runner] 检查本地运行环境 / Checking the local Runner environment',
+                        '[4/4] 构建管理页面 / Building the management UI'])
+                    self.assertEqual((self.state / 'application' / relative).read_text(),
+                                     'updated shared legal document resource')
+            calls.clear()
+            build.prepare(self.state, self.state / 'startup.log')
+            self.assertEqual(calls, ['[Runner] 检查本地运行环境 / Checking the local Runner environment'])
             before = (self.state / 'python-dependencies.sha256').read_text()
             put('hub-backend/requirements-runner.txt', 'updated Runner dependencies')
             commands.clear()

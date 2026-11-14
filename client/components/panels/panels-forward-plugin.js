@@ -71,14 +71,21 @@ function _fwpReady(plugin, options) {
   return !_fwpUsesRuntime(plugin) || _fwpSubstrates(options || {}, plugin).length > 0;
 }
 
-function _fwpOption(value, label, selected) {
-  return '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + '>' +
+function _fwpOption(value, label, selected, title = '') {
+  return '<option value="' + esc(value) + '"' + (value === selected ? ' selected' : '') + (title ? ' title="' + esc(title) + '"' : '') + '>' +
     esc(label) + '</option>';
 }
 
 function _fwpModelLabel(options, name) {
   const rows = (options?.modelOptions || []).filter(item => item?.name === name);
-  if (!rows.length || rows.some(item => !String(item.providerName || '').trim())) return name;
+  if (!rows.length) return name;
+  const local = rows.find(item => item.localOnly === true || item.source === 'local');
+  if (local) {
+    const label = String(local.label || local.modelName || name).trim() || name;
+    const provider = String(local.providerName || '').trim();
+    return [label, provider, '本机'].filter(Boolean).join(' · ');
+  }
+  if (rows.some(item => !String(item.providerName || '').trim())) return name;
   // Repeated model names can refer to different providers. Never guess which
   // provider an inherited or explicitly selected name will resolve to.
   if (rows.length > 1 && rows.some(item => !item.providerId)) return name;
@@ -97,7 +104,19 @@ function _fwpModelState(options, selected) {
     value, stale: Boolean(value && !models.includes(value))};
 }
 
-function _fwpDefaultModelLabel(options, agent) {
+function _fwpWorkflowModelState(options, selected) {
+  // Workflows use controlled execution and cannot consume device-owned models.
+  const rows = options?.modelOptions || [];
+  const localNames = new Set(rows.filter(row => row?.localOnly === true || row?.source === 'local').map(row => row.name));
+  const allowed = name => !String(name || '').startsWith('local:') && !localNames.has(name);
+  return _fwpModelState({...options,
+    defaultModel: allowed(options?.defaultModel) ? options?.defaultModel : '',
+    models: (options?.models || []).filter(allowed),
+    modelOptions: rows.filter(row => allowed(row?.name)),
+  }, selected);
+}
+
+function _fwpDefaultModelTitle(options, agent) {
   const cli = String(agent?.cli || agent?.key || '').replace(/^local:/, '');
   // Defer remote or mixed-seat resolution without claiming which device owns
   // the preference; dispatch may use the requesting credential owner's model.
@@ -109,9 +128,14 @@ function _fwpDefaultModelLabel(options, agent) {
   return options?.defaultModel ? '跟随底座默认（目录默认：' + _fwpModelLabel(options, options.defaultModel) + '）' : '跟随底座默认';
 }
 
-function _fwpModelOptions(state, defaultLabel) {
+function _fwpDefaultModelLabel(options, agent) {
+  const title = _fwpDefaultModelTitle(options, agent);
+  return title.startsWith('跟随底座默认') ? '跟随底座默认' : title;
+}
+
+function _fwpModelOptions(state, defaultLabel, defaultTitle = '') {
   return (state.stale ? '<option value="__unselected__" disabled selected>原模型已不可用，请重新选择</option>' : '') +
-    _fwpOption('', defaultLabel, state.stale ? null : state.value) +
+    _fwpOption('', defaultLabel, state.stale ? null : state.value, defaultTitle) +
     state.models.map(item => _fwpOption(item, state.labels?.[item] || item, state.stale ? null : state.value)).join('');
 }
 
@@ -162,7 +186,7 @@ function _fwpCard(plugin, options, separateAgent = false, selection = null) {
   const selectedKind = selection?.kind ?? ((substrates[0] || {}).value || '');
   const entryLabel = window.TaskExecutionClient ? TaskExecutionClient.nodeAgentLabel(plugin) : '';
   const selectedSubstrate = substrates.find(item => item.value === selectedKind);
-  const modelState = _fwpModelState(options, selection?.model);
+  const modelState = _fwpWorkflowModelState(options, selection?.model);
   const canPickModel = !selectedSubstrate || selectedSubstrate.modelPick !== false;
   const open = _fwpOpen === plugin.bindingId || (canPickModel && modelState.stale);
   const scope = plugin.projectSpecific ? '项目专属' : '组织通用';

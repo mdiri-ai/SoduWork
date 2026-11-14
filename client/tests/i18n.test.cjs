@@ -19,6 +19,133 @@ test('device and account history controls retain all four locale translations', 
     assert.deepEqual(keys.map(key => c.api.t('workspace.history.' + key)), values);
   }
 });
+test('settings placeholders and screenshot notices follow every supported locale', () => {
+  const c = client();
+  const phrases = [
+    'GitLab 登录名（GitHub 可留空）',
+    '截图已保存。',
+    '截图已复制，可在输入框粘贴。',
+    '截图已复制到剪贴板。',
+  ];
+  const expected = {
+    'zh-CN': phrases,
+    'en-US': [
+      'GitLab username (optional for GitHub)',
+      'Screenshot saved.',
+      'Screenshot copied. Paste it into the input.',
+      'Screenshot copied to the clipboard.',
+    ],
+    'ja-JP': [
+      'GitLab ログイン名（GitHub は空欄可）',
+      'スクリーンショットを保存しました。',
+      'スクリーンショットをコピーしました。入力欄に貼り付けられます。',
+      'スクリーンショットをクリップボードにコピーしました。',
+    ],
+    'ko-KR': [
+      'GitLab 로그인 이름(GitHub은 비워도 됨)',
+      '스크린샷을 저장했습니다.',
+      '스크린샷을 복사했습니다. 입력창에 붙여넣을 수 있습니다.',
+      '스크린샷을 클립보드에 복사했습니다.',
+    ],
+  };
+  for (const [locale, values] of Object.entries(expected)) {
+    c.api.setLocale(locale);
+    assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), values, locale);
+  }
+});
+
+test('model save outcomes and retry guidance follow every supported locale', () => {
+  const c = client();
+  const phrases = ['模型配置已保存，但模型选择器刷新失败，请重新打开对话。',
+    '本地模型配置已保存，Hub 模型配置未保存，请重试。',
+    '模型配置已保存，但模型清单刷新失败，请重新打开模型页面。',
+    '请重新打开模型页面，刷新服务配置后再保存。'];
+  const expected = {
+    'zh-CN': phrases,
+    'en-US': [
+      'Model settings were saved, but the model picker could not refresh. Reopen the chat.',
+      'Local model settings were saved, but Hub model settings were not. Try again.',
+      'Model settings were saved, but the model list could not refresh. Reopen the models page.',
+      'Reopen the models page and refresh the service settings before saving again.',
+    ],
+    'ja-JP': [
+      'モデル設定は保存されましたが、モデル選択メニューを更新できませんでした。会話を開き直してください。',
+      'ローカルモデルの設定は保存されましたが、Hub のモデル設定は保存されていません。もう一度お試しください。',
+      'モデル設定は保存されましたが、モデル一覧を更新できませんでした。モデルページを開き直してください。',
+      'モデルページを開き直し、サービス設定を更新してから、もう一度保存してください。',
+    ],
+    'ko-KR': [
+      '모델 설정은 저장되었지만 모델 선택 목록을 새로고침하지 못했습니다. 대화를 다시 열어 주세요.',
+      '로컬 모델 설정은 저장되었지만 Hub 모델 설정은 저장되지 않았습니다. 다시 시도해 주세요.',
+      '모델 설정은 저장되었지만 모델 목록을 새로고침하지 못했습니다. 모델 페이지를 다시 열어 주세요.',
+      '모델 페이지를 다시 열고 서비스 설정을 새로고침한 후 다시 저장해 주세요.',
+    ],
+  };
+  for (const [locale, messages] of Object.entries(expected)) {
+    c.api.setLocale(locale);
+    assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), messages, locale);
+  }
+});
+
+test('requirement parsing warnings, tag controls, and built-in model names follow every supported locale', () => {
+  const c = client();
+  const phrases = [
+    '本地模型不能用于后台解析；原文已保留，请选择托管模型或手动填写',
+    '输入标签后按回车',
+    '添加标签',
+    '字节跳动 · 火山引擎方舟',
+    '阿里云百炼（通义）',
+    '智谱 GLM',
+    '月之暗面 Kimi',
+  ];
+  const expected = {
+    'en-US': [
+      'Local models cannot be used for server-side parsing. The original text is preserved; choose a hosted model or fill it in manually.',
+      'Press Enter after entering a tag', 'Add tag', 'Volcano Ark (Volcengine)',
+      'Alibaba Cloud Model Studio (Bailian)', 'Z.ai GLM', 'Moonshot AI (Kimi)',
+    ],
+    'ja-JP': [
+      'ローカルモデルはサーバー側の解析に使用できません。元のテキストは保持されています。ホスト型モデルを選択するか、手動で入力してください。',
+      'タグを入力して Enter キーを押してください', 'タグを追加', 'Volcano Ark (Volcengine)',
+      'Alibaba Cloud Model Studio (Bailian)', 'Z.ai GLM', 'Moonshot AI (Kimi)',
+    ],
+    'ko-KR': [
+      '로컬 모델은 서버 측 파싱에 사용할 수 없습니다. 원문은 보존되어 있으므로 호스팅 모델을 선택하거나 직접 입력하세요.',
+      '태그를 입력한 후 Enter를 누르세요', '태그 추가', 'Volcano Ark (Volcengine)',
+      'Alibaba Cloud Model Studio (Bailian)', 'Z.ai GLM', 'Moonshot AI (Kimi)',
+    ],
+  };
+  for (const [locale, values] of Object.entries(expected)) {
+    c.api.setLocale(locale);
+    assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), values, locale);
+  }
+  c.api.setLocale('zh-CN');
+  assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), phrases);
+});
+
+test('requirement creation card controls follow locale changes without translating user content', () => {
+  const c = client();
+  const phrases = ['加入需求池', '检查需求详情', '需求内容', '背景与说明', '完成标准', '基本信息',
+    '负责人', '优先级', '期望完成', '类型', '可见范围', '仅相关人', '标签', '创建需求',
+    '继续对话'];
+  const expected = {
+    'en-US': ['Add to Issues', 'Review issue details', 'Issue content', 'Context and description',
+      'Acceptance criteria', 'Basic information', 'Owner', 'Priority', 'Expected completion', 'Type',
+      'Visibility', 'Related people', 'Tags', 'Create issue', 'Continue chatting'],
+    'ja-JP': ['課題プールに追加', '課題の詳細を確認', '課題の内容', '背景と説明', '受け入れ基準',
+      '基本情報', '担当者', '優先度', '完了予定', '種類', '公開範囲', '関係者のみ', 'タグ',
+      '課題を作成', '会話を続ける'],
+    'ko-KR': ['이슈 풀에 추가', '이슈 세부 정보 검토', '이슈 내용', '배경 및 설명', '완료 기준',
+      '기본 정보', '담당자', '우선순위', '완료 예정', '유형', '공개 범위', '관련자만', '태그',
+      '이슈 생성', '대화 계속하기'],
+  };
+  for (const [locale, values] of Object.entries(expected)) {
+    c.api.setLocale(locale);
+    assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), values, locale);
+  }
+  c.api.setLocale('zh-CN');
+  assert.deepEqual(phrases.map(phrase => c.api.translateText(phrase)), phrases);
+});
 test('company visibility copy distinguishes related people in all supported locales', () => {
   const c = client();
   const phrases = ['同公司可见', '同公司成员可查看需求内容；执行会话和日志仍按原有权限访问。',
@@ -34,10 +161,9 @@ test('company visibility copy distinguishes related people in all supported loca
     }
   }
 });
-test('personal action scope guidance follows every supported locale', () => {
+test('execution status guidance follows every supported locale', () => {
   const c = client();
-  const phrases = ['“需要我处理”仅显示当前轮到你操作的需求。执行中或已提交验收的需求仍保留在“与我相关”。',
-    '查看与我相关', '执行已安排，可在“与我相关”查看进展', '已提交验收，等待验收人处理'];
+  const phrases = ['执行已安排，可在“与我相关”查看进展', '已提交验收，等待验收人处理'];
   for (const locale of ['en-US', 'ja-JP', 'ko-KR', 'zh-CN']) {
     c.api.setLocale(locale);
     for (const phrase of phrases) {

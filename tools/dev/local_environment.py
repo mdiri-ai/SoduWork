@@ -179,7 +179,13 @@ def sync_source(source: Path, target: Path, *, preserve: frozenset[str] = frozen
         relative = path.relative_to(source)
         wanted.add(relative)
         dest = target / relative
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        for parent in reversed(relative.parents):
+            directory = target / parent
+            if directory.is_file():
+                directory.unlink()
+            directory.mkdir(exist_ok=True)
+        if dest.is_dir():
+            shutil.rmtree(dest)
         if not dest.exists() or path.read_bytes() != dest.read_bytes():
             shutil.copyfile(path, dest)
     for directory, dirs, files in os.walk(target, followlinks=False):
@@ -267,7 +273,7 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
     npm_stamp = state / "node-dependencies.sha256"
     wanted = hashlib.sha256((source / "package-lock.json").read_bytes()).hexdigest()
     if read_stamp(npm_stamp) != wanted or not (frontend / "node_modules/vite").is_dir():
-        run([npm, "ci", "--no-audit", "--no-fund"], cwd=frontend, log=log,
+        run([npm, "ci", "--include=dev", "--no-audit", "--no-fund"], cwd=frontend, log=log,
             label="[3/4] 安装页面依赖 / Installing management UI dependencies")
         npm_stamp.write_text(wanted, encoding="utf-8")
     build_stamp = state / "frontend.sha256"
@@ -275,7 +281,9 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
     for name in ("src", "public"):
         if (source / name).is_dir():
             files.extend(source_files(source / name))
-    files.extend((ROOT / "client" / name) for name in ("core/connector-brand.js", "components/panels/connector-config.js"))
+    files.extend((ROOT / "client" / name) for name in (
+        "core/connector-brand.js", "components/panels/connector-config.js",
+        "components/client-auth/legal-html.js", "components/client-auth/legal-html.css"))
     files.extend(source_files(ROOT / "client/assets/connector-brands"))
     wanted = digest_files(files, ROOT)
     if read_stamp(build_stamp) != wanted or not (frontend / "dist/index.html").is_file():
@@ -299,7 +307,7 @@ def prepare_desktop(state: Path, log: Path) -> Path:
     stamp = state / 'desktop-dependencies.sha256'
     wanted = hashlib.sha256((client / 'package-lock.json').read_bytes()).hexdigest()
     if read_stamp(stamp) != wanted or not electron_binary(client).is_file():
-        run([npm, 'ci', '--no-audit', '--no-fund', '--ignore-scripts'], cwd=client, log=log,
+        run([npm, 'ci', '--include=dev', '--no-audit', '--no-fund', '--ignore-scripts'], cwd=client, log=log,
             label='[Desktop] 安装桌面端 / Installing the desktop application (first run needs internet)')
         # npm versions differ in install-script policy. Download the locked Electron
         # runtime explicitly without enabling unrelated dependencies' lifecycle scripts.

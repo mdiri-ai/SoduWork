@@ -63,10 +63,12 @@ test('assignment includes the concrete catalog default and shows the selected Ag
   const state=context._fwpModelState(options,'catalog-default');
   assert.deepEqual(Array.from(state.models),['catalog-default','review']);assert.equal(state.stale,false);
   assert.match(context._fwpModelOptions(state,'Default'),/value="catalog-default" selected/);
-  assert.equal(context._fwpDefaultModelLabel(options,{cli:'pi'}),'跟随底座默认 · review');
+  assert.equal(context._fwpDefaultModelLabel(options,{cli:'pi'}),'跟随底座默认');
+  assert.equal(context._fwpDefaultModelTitle(options,{cli:'pi'}),'跟随底座默认 · review');
   assert.match(context._fwpDefaultModelLabel(options,{cli:'qwen'}),/不可用/);
   assert.match(context._fwpDefaultModelLabel(options,{cli:'pi',remote:true}),/派发时解析/);
-  assert.match(context._fwpDefaultModelLabel({defaultModel:'old-hub-default'},{cli:'pi'}),/目录默认：old-hub-default/);
+  assert.equal(context._fwpDefaultModelLabel({defaultModel:'old-hub-default'},{cli:'pi'}),'跟随底座默认');
+  assert.match(context._fwpDefaultModelTitle({defaultModel:'old-hub-default'},{cli:'pi'}),/目录默认：old-hub-default/);
   assert.equal(context._fwpModelState({defaultModel:'only',models:[]},'').models.length,1);
   assert.equal(context._fwpModelState(options,'removed').stale,true);
 });
@@ -77,11 +79,31 @@ test('assignment labels identify an unambiguous provider without changing model 
   vm.runInNewContext(fs.readFileSync(path.join(root,'components/panels/panels-forward-plugin.js'),'utf8'),context);
   const row = {name:'model-a',providerId:'provider-a',providerName:'Example <provider>'};
   const options = {defaultModels:{pi:'model-a'},defaultModel:'model-a',modelOptions:[row]};
-  assert.equal(context._fwpDefaultModelLabel(options,{cli:'pi'}),'跟随底座默认 · model-a · Example <provider>');
+  assert.equal(context._fwpDefaultModelLabel(options,{cli:'pi'}),'跟随底座默认');
+  assert.equal(context._fwpDefaultModelTitle(options,{cli:'pi'}),'跟随底座默认 · model-a · Example <provider>');
+  const markup=context._fwpModelOptions(context._fwpModelState(options,''),
+    context._fwpDefaultModelLabel(options,{cli:'pi'}),context._fwpDefaultModelTitle(options,{cli:'pi'}));
+  assert.match(markup, /value="" selected title="跟随底座默认 · model-a · Example &lt;provider>">跟随底座默认<\/option>/);
+  assert.match(markup, /value="model-a">model-a · Example &lt;provider>/);
   const state=context._fwpModelState(options,'model-a');
   assert.equal(state.value,'model-a');assert.equal(state.stale,false);
   assert.match(context._fwpModelOptions(state,'Default'),/value="model-a" selected>model-a · Example &lt;provider>/);
   assert.equal(context._fwpModelLabel({...options,modelOptions:[row,{...row}]},'model-a'),'model-a · Example <provider>');
   assert.equal(context._fwpModelLabel({...options,modelOptions:[row,{...row,providerId:'provider-b'}]},'model-a'),'model-a');
   assert.equal(context._fwpModelLabel({...options,modelOptions:[row,{...row,providerName:''}]},'model-a'),'model-a');
+});
+
+test('assignment labels keep local model references distinct from Hub models', () => {
+  const context = {window:{},esc:value=>String(value).replaceAll('<','&lt;')};
+  vm.runInNewContext(fs.readFileSync(path.join(root,'components/panels/panels-forward-plugin.js'),'utf8'),context);
+  const local = {name:'local:model-abc', modelName:'qwen-local', label:'Qwen Local',
+    providerId:'ollama', providerName:'本机 Ollama', localOnly:true, source:'local'};
+  const options = {defaultModel:'hub-model', modelOptions:[
+    {name:'hub-model', providerId:'hub-provider', providerName:'Example Hub'}, local,
+  ]};
+  assert.equal(context._fwpModelLabel(options, local.name), 'Qwen Local · 本机 Ollama · 本机');
+  assert.deepEqual(Array.from(context._fwpModelState(options, local.name).models),
+    ['hub-model', 'local:model-abc']);
+  assert.match(context._fwpModelOptions(context._fwpModelState(options, local.name), 'Default'),
+    /value="local:model-abc" selected>Qwen Local · 本机 Ollama · 本机/);
 });

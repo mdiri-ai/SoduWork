@@ -1153,8 +1153,10 @@ async def list_skills(user: User = Depends(require_perm("task.dispatch")),
 
     from ..models import Client as _C
     from ..services import skills as sk
-    cfg = await sk.load_cfg(session)
-    found = sk.scan(cfg.get("roots"))
+    try:
+        cfg, found = await sk.catalog_with_policy(session, include_runner=False)
+    except sk.PolicyChanged as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
     en = set(cfg["allowed"])
     users: dict[str, int] = {}
     for c in (await session.execute(_sel(_C))).scalars().all():
@@ -1172,7 +1174,12 @@ async def put_skills(body: dict = Body(default_factory=dict),
                      user: User = Depends(require_perm("task.dispatch")),
                      session: AsyncSession = Depends(get_session)):
     from ..services import skills as sk
-    cfg = await sk.save_cfg(session, body.get("cfg") if isinstance(body.get("cfg"), dict) else body)
+    if "cfg" in body and not isinstance(body["cfg"], dict):
+        raise HTTPException(400, detail="企业能力开放策略必须是对象")
+    try:
+        cfg = await sk.save_cfg(session, body.get("cfg") if isinstance(body.get("cfg"), dict) else body)
+    except sk.PolicyChanged as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
     await session.commit()
     # Audit the allowed key, which replaced cfg["enabled"] when the allowlist was introduced.
     # Reading the old key raises KeyError after saving the allowlist.
@@ -1264,6 +1271,34 @@ async def del_model_provider(
     await models_changed(session)
     await audit.log(session, user, "model.provider.del", "setting", pid, p.name, {})
     return {"ok": True}
+
+
+@router.post("/model-providers/{pid}/discover")
+async def discover_model_provider(
+    pid: str,
+    user: User = Depends(require_perm("integration.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Ask the saved provider which model identifiers it serves. Read-only: names
+    come back for review; importing them stays an explicit model-defs write.
+    """
+    from ..models import ModelDef, ModelProvider
+    from ..services import model_catalog, model_discovery
+    p = await session.get(ModelProvider, pid)
+    if p is None:
+        raise HTTPException(status_code=404, detail="这个模型服务不存在")
+    if not p.enabled or not p.base_url or not p.api_key:
+        return {"ok": False, "models": [], "known": [],
+                "detail": "服务需要先启用，并填写地址与密钥后才能读取模型列表"}
+    result = await model_discovery.discover(p.base_url, p.api_key, p.kind)
+    existing = (await session.execute(
+        select(ModelDef.name).where(ModelDef.provider_id == pid))).scalars().all()
+    known = set(existing)
+    result["known"] = sorted(known)
+    result["models"] = [name for name in result["models"] if name not in known]
+    await audit.log(session, user, "model.discover", "setting", pid, p.name,
+                    {"ok": result["ok"], "count": len(result["models"])})
+    return result
 
 
 @router.put("/model-defs")

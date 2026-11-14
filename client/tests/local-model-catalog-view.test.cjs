@@ -62,6 +62,19 @@ test('a saved local model is counted once and remains editable despite its catal
   assert.equal(JSON.stringify(catalog), before, 'presentation does not rewrite persisted or execution catalogs');
 });
 
+test('canonical built-in provider names are localizable while renamed providers remain user content', () => {
+  const f = fixture();
+  f.evaluate(`_mdData.providers.push(
+    {id:'volcengine', name:'字节跳动 · 火山引擎方舟', builtin:true, baseUrl:'https://ark.example/v1', modelNames:[]},
+    {id:'company-gateway', name:'公司网关', builtin:true, baseUrl:'https://gateway.example/v1', modelNames:[]}
+  ); _mdOpen = 'volcengine';`);
+  assert.match(f.nav('volcengine'), /data-i18n="字节跳动 · 火山引擎方舟"/);
+  assert.doesNotMatch(f.nav('volcengine'), /data-user-content/);
+  assert.match(f.detail('volcengine'), /data-i18n="字节跳动 · 火山引擎方舟"/);
+  assert.match(f.nav('company-gateway'), /data-user-content/);
+  assert.doesNotMatch(f.nav('company-gateway'), /data-i18n=/);
+});
+
 test('editing a local model without changing its ID does not collide with its saved mirror', () => {
   const f = fixture();
   f.apply({ original: 'shared-model', name: 'shared-model', label: 'Edited local label' });
@@ -98,6 +111,49 @@ test('legacy local modelNames are mirrors rather than extra organization-owned r
   assert.match(f.nav(), /1 模型/);
   f.evaluate('_mdMyModels = []');
   assert.equal(rows(f.detail()), 0);
+});
+
+test('a no-key local service can discover its first model without a manual model ID', async () => {
+  const provider = { id: 'legacy-local', name: 'Legacy local', baseUrl: 'http://127.0.0.1:8686/v1',
+    authMode: 'none', localOnly: false, modelNames: [] };
+  const catalog = { providers: [provider], myModels: [], usable: [], mediaUsable: {} };
+  const f = fixture(catalog);
+  const calls = [];
+  let pickerRefreshes = 0;
+  f.context.ComposeModelPicker = { refresh: async () => { pickerRefreshes++; } };
+  f.context.SoduWorkAPI = {
+    testMyModel: async id => { calls.push(id); return { ok: true, models: ['qwen3'], detail: '连接通过，已读取模型列表' }; },
+    myModels: async () => ({ providers: [provider], myModels: [{ providerId: provider.id, name: 'qwen3', label: 'qwen3', localOnly: true }], usable: [], mediaUsable: {} }),
+  };
+  await f.evaluate('_mdDoTest({ getAttribute: () => "legacy-local" })');
+  assert.deepEqual(calls, ['legacy-local']);
+  assert.equal(f.evaluate('_mdTest["legacy-local"].state'), 'ok');
+  assert.equal(f.evaluate('_mdMyModels[0].name'), 'qwen3');
+  assert.equal(pickerRefreshes, 1);
+});
+
+test('local-only panel saves omit managed fields and survive post-save refresh failures', async () => {
+  const f = fixture();
+  const catalog = localCatalog(['saved-model']);
+  const saves = [], button = { disabled: false, textContent: '' };
+  const body = { innerHTML: '', setAttribute() {}, removeAttribute() {}, querySelectorAll: () => [] };
+  f.context.catalog = catalog;
+  f.context.document = { getElementById: id => id === 'mdBody' ? body : id === 'mdSave' ? button : null };
+  f.context.SoduWorkAPI = {
+    saveMyModels: async payload => { saves.push(payload); return { ok: true }; },
+    myModels: async () => structuredClone(catalog),
+  };
+  f.context.ComposeModelPicker = { refresh: async () => { throw Error('picker refresh failed'); } };
+  f.context.soduWorkAPI = { broadcast: () => { throw Error('broadcast unavailable'); } };
+  f.evaluate('_mdData = catalog; _mdMyModels = catalog.myModels.slice(); _mdOpen = "local-fixture"; _mdLoadState = "ready"; _mdLocalDirty = true; _mdManagedDirty = false; _mdDirty = true;');
+  assert.equal(await f.evaluate('_mdSave(false)'), true);
+  assert.equal(saves.length, 1);
+  assert.deepEqual(Object.keys(saves[0]).sort(), ['localKeys', 'localModels', 'localProviders', 'localRevision']);
+  assert.equal(Object.hasOwn(saves[0], 'providers'), false);
+  assert.equal(Object.hasOwn(saves[0], 'models'), false);
+  assert.equal(Object.hasOwn(saves[0], 'expectedRevision'), false);
+  assert.equal(f.messages.some(message => message.includes('模型配置存好了')), true);
+  assert.equal(f.messages.some(message => message.includes('没存上')), false);
 });
 
 test('an incomplete local catalog fails loading instead of promoting mirrored definitions', async () => {
@@ -167,7 +223,7 @@ test('removing the model being edited clears only its edit draft before saving',
   assert.equal(f.evaluate('_mdDrafts.has("other-provider")'), true);
   assert.equal(f.evaluate('_mdMyModels.length'), 0);
   assert.doesNotMatch(f.detail(), /shared-model|应用修改/);
-  assert.equal(JSON.parse(f.context.saves[0]).models.length, 0);
+  assert.equal(JSON.parse(f.context.saves[0]).localModels.length, 0);
 });
 
 test('removing another model preserves the current edit draft and its unsaved fields', async () => {
