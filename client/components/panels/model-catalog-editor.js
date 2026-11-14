@@ -25,7 +25,7 @@ function _mdModelListHtml(p, models, own) {
       ModelCapabilitiesUI.badges(item) + '</div><div class="md-model-actions">' +
       (_mdType(model.modality) === 'chat' ? '<button type="button" data-mdcheck' + (check?.pending ? ' disabled' : '') + '>' + (check?.pending ? '检测中…' : '检测能力') + '</button>' : '') +
       (index >= 0 ? '<button type="button" data-mdedit="' + esc(p.id) + '|' + index + '">编辑</button>' +
-        '<button type="button" data-mdel="' + esc(p.id) + '|' + index + '" title="移除模型" aria-label="移除模型">移除</button>' : '<span class="md-cap-unchecked">组织管理</span>') +
+        '<button type="button" data-mdel="' + esc(p.id) + '|' + index + '" title="移除模型" aria-label="移除模型">移除模型</button>' : '<span class="md-cap-unchecked">组织管理</span>') +
       '</div>' + (_mdType(model.modality) === 'chat' ? '<div class="md-model-report">' + ModelCapabilitiesUI.report(check || item.capabilityCheck) + '</div>' : '') + '</article>';
   }).join('') + '</div>';
 }
@@ -43,7 +43,7 @@ function _mdModelEditorHtml(p) {
     '<input class="md-addin md-addresult" data-paddresult="' + esc(p.id) + '" aria-label="结果下载路径" value="' + esc(config.resultPath || '') + '" placeholder="状态接口直接返回视频地址时留空">' +
     '<textarea class="md-addin md-adddefaults" data-padddefaults="' + esc(p.id) + '" aria-label="默认生成参数" rows="3">' + esc(JSON.stringify(config.defaults || {}, null, 2)) + '</textarea>' +
     '<div class="md-model-editor-actions"><button type="button" class="md-model-add" data-madd="' + esc(p.id) + '">' + (draft?.original ? '应用修改' : '添加模型') + '</button>' +
-    (draft?.original ? '<button type="button" class="md-model-add-cancel" data-mdcancel="' + esc(p.id) + '">取消</button>' : '') + '</div></div></details>';
+    '<button type="button" class="md-model-add-cancel" data-mdcancel="' + esc(p.id) + '">取消</button></div></div></details>';
 }
 function _mdBindModels(box) {
   box.querySelectorAll('[data-mdedit]').forEach(button => button.addEventListener('click', () => {
@@ -52,7 +52,10 @@ function _mdBindModels(box) {
     if (!model) return;
     _mdDrafts.set(pid, { original: model.name, model: structuredClone(model), open: true });
     _mdRender();
-    box.querySelector('[data-padd]')?.focus();
+    const field = box.querySelector('[data-padd]');
+    field?.focus({ preventScroll: true });
+    // Reveal the editor only as far as necessary, without jumping to the form top.
+    field?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }));
   box.querySelectorAll('[data-mdcancel]').forEach(button => button.addEventListener('click', () => {
     if (button.isConnected === false) return;
@@ -65,14 +68,17 @@ function _mdBindModels(box) {
       const field = editor.querySelector(selector); if (field) field.value = value;
     }
     if (restored?.advanced) editor.querySelector('.md-cap-advanced')?.setAttribute('open', '');
-    function capture() {
+    function capture(event) {
       if (!editor.isConnected) return;
       const fields = {};
       editor.querySelectorAll('input,select,textarea').forEach(field => {
         const attr = [...field.attributes].find(attribute => attribute.name.startsWith('data-'));
         if (attr) fields['[' + attr.name + '="' + CSS.escape(attr.value) + '"]'] = field.value;
       });
-      _mdDrafts.set(pid, { ...(_mdDrafts.get(pid) || {}), open: editor.open, fields, advanced: !!editor.querySelector('.md-cap-advanced')?.open });
+      const previous = _mdDrafts.get(pid) || {};
+      _mdDrafts.set(pid, { ...previous, open: editor.open, fields,
+        changed: !!(previous.changed || event?.type === 'input' || event?.type === 'change'),
+        advanced: !!editor.querySelector('.md-cap-advanced')?.open });
     }
     editor.addEventListener('input', capture);
     editor.addEventListener('change', capture);
@@ -147,7 +153,7 @@ async function _mdCheckModel(pid, name) {
   const pending = { pending: true };
   _mdChecks.set(key, pending); _mdRender();
   try {
-    if ((_mdDirty || Object.keys(_mdKeyEdits).length) && !await _mdSave(false)) throw Error('请先保存模型配置，再检测能力');
+    if (_mdNeedsSave(pid) && !await _mdSave(false)) throw Error('请先保存模型配置，再检测能力');
     const report = await SoduWorkAPI.checkMyModelCapabilities({ providerId: pid, model: name, checks: ['connection', 'imageInput', 'toolCalling', 'streaming'] });
     if (_mdChecks.get(key) !== pending) return;
     _mdChecks.set(key, report);

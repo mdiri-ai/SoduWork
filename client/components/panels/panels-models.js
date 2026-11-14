@@ -30,9 +30,12 @@ let _mdManagedDirty = false;
 let _mdLocalKeyIds = new Set();
 let _mdManagedNeedsReload = false;
 let _mdSaveFlight = null;
+let _mdDeleteFlight = null;          /* Reopening waits for an admitted deletion to settle. */
 let _mdTest = {};                   /* providerId -> {state:'ing'|'ok'|'bad', detail} */
 let _mdEditor = '';                 /* A native child window edits one provider; empty selection indicates the overview. */
 let _mdNew = null;                  /* New-provider draft. */
+let _mdNewScope = null;
+let _mdValidation = null;
 let _mdDeletePending = '';
 let _mdLoadId = 0;
 let _mdLoadState = 'idle';
@@ -63,6 +66,7 @@ function openModelsPanel(options) {
       Math.random().toString(36).slice(2, 7));
     _mdNew = { id, name: '', kind: 'openai-compat', baseUrl: '', defaultBaseUrl: '',
       personal: true, localOnly: true, authMode: 'key', modelNames: [], note: '', myKeySet: false, keySet: false };
+    _mdNewScope = SoduWorkAPI.taskStorageKey?.('ops');
   }
   let p = document.getElementById('mdPanel');
   if (!p) {
@@ -98,6 +102,7 @@ function openModelsPanel(options) {
 
 function closeModelsPanel() {
   ++_mdLoadId;
+  if (typeof _mdCloseDeleteDialog === 'function') _mdCloseDeleteDialog();
   _mdLoadState = 'idle';
   const p = document.getElementById('mdPanel');
   if (p) p.classList.remove('show');
@@ -112,7 +117,7 @@ async function _mdLoad(options) {
   const previous = { data: _mdData, keys: _mdKeyEdits, models: _mdMyModels,
     dirty: _mdDirty, localDirty: _mdLocalDirty, managedDirty: _mdManagedDirty,
     localKeyIds: _mdLocalKeyIds, managedNeedsReload: _mdManagedNeedsReload,
-    editor: _mdEditor, draft: _mdNew };
+    editor: _mdEditor, draft: _mdNew, validation: _mdValidation };
   let timer, rendering = false;
   _mdLoadState = 'loading';
   box.setAttribute('aria-busy', 'true');
@@ -120,7 +125,7 @@ async function _mdLoad(options) {
   if (!_mdData) box.innerHTML = '<div class="md-load"><i></i><i></i><i></i><span>正在看有哪些模型能用…</span></div>';
   try {
     const r = await Promise.race([
-      Promise.resolve().then(() => SoduWorkAPI.myModels()),
+      Promise.resolve(_mdDeleteFlight).catch(() => {}).then(() => SoduWorkAPI.myModels()),
       new Promise((_, reject) => { timer = setTimeout(() => {
         const error = new Error('Model catalog load timed out');
         error.code = 'MODEL_LOAD_TIMEOUT'; reject(error);
@@ -135,14 +140,20 @@ async function _mdLoad(options) {
     rendering = true;
     _mdData = r;
     _mdReconcileChecks(r);
-    if (_mdNew && _mdEditor.indexOf('__new__') === 0) {
+    if (_mdNew) {
       const saved = r.providers.find((p) => p.id === _mdNew.id);
-      if (saved) { _mdEditor = saved.id; _mdNew = null; }
+      if (saved || _mdNewScope !== SoduWorkAPI.taskStorageKey?.('ops')) {
+        _mdDrafts.delete(_mdNew.id);
+        if (_mdEditor.indexOf('__new__') === 0) _mdEditor = saved?.id || '';
+        _mdNew = null; _mdValidation = null;
+      }
     }
-    _mdKeyEdits = {};
-    _mdMyModels = r.myModels.slice();
-    _mdDirty = false; _mdLocalDirty = false; _mdManagedDirty = false;
-    _mdLocalKeyIds = new Set(); _mdManagedNeedsReload = false;
+    if (!_mdNew || _mdValidation?.providerId !== _mdNew.id) _mdValidation = null;
+    // A retained new service is still a draft, including its credentials/models.
+    _mdKeyEdits = Object.fromEntries(Object.entries(previous.keys).filter(([id]) => id === _mdNew?.id));
+    _mdMyModels = r.myModels.concat(previous.models.filter(row => row.providerId === _mdNew?.id));
+    _mdDirty = _mdLocalDirty = !!_mdNew; _mdManagedDirty = false;
+    _mdLocalKeyIds = new Set(_mdNew ? [_mdNew.id] : []); _mdManagedNeedsReload = false;
     _mdRender();
     _mdLoadState = 'ready';
     return true;
@@ -151,7 +162,7 @@ async function _mdLoad(options) {
     _mdData = previous.data; _mdKeyEdits = previous.keys; _mdMyModels = previous.models;
     _mdDirty = previous.dirty; _mdLocalDirty = previous.localDirty; _mdManagedDirty = previous.managedDirty;
     _mdLocalKeyIds = previous.localKeyIds; _mdManagedNeedsReload = previous.managedNeedsReload;
-    _mdEditor = previous.editor; _mdNew = previous.draft;
+    _mdEditor = previous.editor; _mdNew = previous.draft; _mdValidation = previous.validation;
     if (options?.saved) {
       _mdLoadState = 'ready';
       _mdRender();
@@ -177,7 +188,8 @@ async function _mdLoad(options) {
 
 /* Provider status precedence: personal credentials, company credentials, missing key, missing endpoint. */
 function _mdState(p) {
-  if (p.localOnly) return 'local';
+  if (_mdNew?.id === p.id) return 'draft';
+  if (!p.baseUrl) return 'noaddr';
   if (p.authMode === 'none' && p.baseUrl) return 'local';
   if (p.myKeySet || _mdKeyEdits[p.id]) return 'mine';
   if (p.keySet) return 'org';
@@ -190,7 +202,65 @@ const _MD_ST = {
   org: { t: '公司可用', o: 1 },
   open: { t: '填写 Key', o: 2 },
   noaddr: { t: '需补地址', o: 3 },
+  draft: { t: '未保存', o: 4 },
 };
+
+/* Keep viewport state separate from catalog/save state. Only the contents of
+ * the stable scroll containers change when an operation refreshes the page. */
+function _mdRenderView(box, html, providerId) {
+  const master = box.querySelector?.('.cfg-master');
+  const detail = box.querySelector?.('.cfg-detail');
+  if (!master || !detail) {
+    box.innerHTML = html;
+    box._mdRenderedProvider = providerId;
+    box._mdScrollViews = new Map();
+    return;
+  }
+  const capture = (node, attribute) => {
+    if (!node) return null;
+    const top = node.getBoundingClientRect().top;
+    return { top: node.scrollTop, left: node.scrollLeft,
+      anchors: [...node.querySelectorAll('[' + attribute + ']')].map(row => ({
+        key: row.getAttribute(attribute), offset: row.getBoundingClientRect().top - top,
+        bottom: row.getBoundingClientRect().bottom - top,
+      })).filter(row => row.bottom > 0 && row.offset < node.clientHeight) };
+  };
+  const restore = (node, state, attribute) => {
+    if (!node) return;
+    node.scrollTop = state?.top || 0;
+    node.scrollLeft = state?.left || 0;
+    if (!state?.top) return; // An unscrolled service stays at the top across layout changes.
+    const rows = [...node.querySelectorAll('[' + attribute + ']')];
+    for (const anchor of state?.anchors || []) {
+      const row = rows.find(item => item.getAttribute(attribute) === anchor.key);
+      if (!row) continue;
+      node.scrollTop += row.getBoundingClientRect().top - node.getBoundingClientRect().top - anchor.offset;
+      break;
+    }
+  };
+  const nav = master.querySelector('.cfg-master-scroll');
+  const scroll = detail.querySelector('.cfg-detail-scroll');
+  // Stacked layouts let the detail grow and scroll the outer panel instead.
+  const viewport = node => node && (getComputedStyle(node).overflowY === 'visible' ? box : node);
+  const navState = capture(nav, 'data-mdselect');
+  const views = box._mdScrollViews || (box._mdScrollViews = new Map());
+  if (scroll) views.set(box._mdRenderedProvider, capture(viewport(scroll), 'data-md-model'));
+  const next = document.createElement('div');
+  next.innerHTML = html;
+  for (const selector of ['.cfg-master-head', '.cfg-master-actions', '.cfg-master-scroll'])
+    master.querySelector(selector).innerHTML = next.querySelector(selector).innerHTML;
+  const nextScroll = next.querySelector('.cfg-detail-scroll');
+  if (scroll && nextScroll) {
+    for (const selector of ['.cfg-detail-head', '.cfg-detail-facts', '.cfg-detail-scroll'])
+      detail.querySelector(selector).innerHTML = next.querySelector(selector).innerHTML;
+  } else detail.innerHTML = next.querySelector('.cfg-detail').innerHTML;
+  box._mdRenderedProvider = providerId;
+  // Binding restores expanded editor fields and can change content height.
+  return () => {
+    restore(nav, navState, 'data-mdselect');
+    restore(viewport(detail.querySelector('.cfg-detail-scroll')), views.get(providerId), 'data-md-model');
+  };
+}
 
 function _mdRender() {
   const box = document.getElementById('mdBody');
@@ -217,7 +287,7 @@ function _mdRender() {
   const mineN = usable.filter((m) => m.keyFrom === 'mine').length;
   const homes = new Set(usable.map((m) => m.providerId)).size;
 
-  box.innerHTML = '<div class="cfg-master-detail md-master-detail">' +
+  const html = '<div class="cfg-master-detail md-master-detail">' +
     '<aside class="cfg-master md-master" aria-label="模型服务">' +
       '<div class="cfg-master-head"><span>模型服务</span>' +
         '<strong>' + _mdMessage('models.available', '{count} 个可选模型', { count: usable.length }) + '</strong>' +
@@ -228,7 +298,8 @@ function _mdRender() {
           esc(_mdQuery) + '" placeholder="搜索服务或模型"></label>' +
         '<button type="button" class="cfg-master-add" id="mdAddInline">＋ 添加服务</button></div>' +
       '<div class="cfg-master-scroll">' + (visible.length
-        ? _mdNavGroupHtml('正在使用', active) +
+        ? _mdNavGroupHtml('未保存', visible.filter(p => _mdState(p) === 'draft')) +
+          _mdNavGroupHtml('正在使用', active) +
           _mdNavGroupHtml('可配置服务', available) +
           _mdNavGroupHtml('高级与自定义', advanced)
         : '<div class="cfg-master-empty">' + _mdMessage('models.noResults', '没有匹配“{query}”的服务或模型', { query: _mdQuery }) + '</div>') +
@@ -240,10 +311,12 @@ function _mdRender() {
         '<button type="button" class="cfg-master-add" id="mdEmptyAdd">添加服务</button></div>') +
     '</main></div>';
 
+  const restoreView = _mdRenderView(box, html, target?.id || '');
   _mdBind(box);
   const emptyAdd = document.getElementById('mdEmptyAdd');
   if (emptyAdd) emptyAdd.addEventListener('click', _mdAddService);
   _mdMark();
+  restoreView?.();
 }
 
 function _mdNavGroupHtml(title, rows) {
@@ -313,13 +386,19 @@ function _mdDetailHtml(p) {
 }
 
 function _mdBodyHtml(p, s, ms, own, t) {
+  const validation = _mdValidation?.providerId === p.id ? _mdValidation : null;
+  const invalid = field => validation?.field === field ? ' aria-invalid="true"' : '';
+  const error = field => '<small id="md-' + field + '-error" class="md-field-error" role="alert"' +
+    (validation?.field === field ? '' : ' hidden') + '>' + esc(validation?.field === field ? validation.detail : '') + '</small>';
   return '<div class="md-row-b" id="md-body-' + esc(p.id) + '" role="region">' +
     '<section class="md-settings-section"><header class="md-section-heading"><b>连接设置</b><small>填写服务提供的 API 地址</small></header>' +
     '<div class="md-connect-fields">' +
       (p.personal ? '<label class="md-field"><span>服务名称</span><input class="md-in" data-pname="' +
-        esc(p.id) + '" value="' + esc(p.name || '') + '" placeholder="例如：本机 Ollama"></label>' : '') +
+        esc(p.id) + '"' + (p.localOnly ? ' maxlength="64"' : '') + invalid('name') + ' value="' + esc(p.name || '') +
+        '" placeholder="例如：本机 Ollama" aria-describedby="md-name-error">' + error('name') + '</label>' : '') +
       '<label class="md-field md-field-wide"><span>API 地址</span><input class="md-in" data-purl="' +
-        esc(p.id) + '" value="' + esc(p.baseUrl || '') + '" placeholder="https://…/v1"></label>' +
+        esc(p.id) + '"' + (p.localOnly ? ' maxlength="400"' : '') + invalid('url') + ' value="' + esc(p.baseUrl || '') +
+        '" placeholder="https://…/v1" aria-describedby="md-url-error">' + error('url') + '</label>' +
       (p.personal ? '<label class="md-field"><span>接口协议</span><select class="md-in" data-pkind="' +
         esc(p.id) + '"><option value="openai-compat"' + (p.localOnly || p.kind !== 'anthropic' ? ' selected' : '') +
         '>OpenAI 兼容</option>' +
@@ -362,9 +441,8 @@ function _mdBodyHtml(p, s, ms, own, t) {
       _mdMessage('models.itemCount', '{count} 个', { count: ms.length + own.length }) + '</span></div>' +
       '<p class="md-model-help">对话模型可单独支持图片输入；图片生成和视频生成用于创作成果。</p>' +
       _mdModelListHtml(p, ms, own) + _mdModelEditorHtml(p) + '</section>' +
-    (p.personal ? '<div class="md-editor-danger"><button class="md-link' +
-      (_mdDeletePending === p.id ? ' is-confirm' : '') + '" data-pdelete="' + esc(p.id) + '">' +
-      (_mdDeletePending === p.id ? '再次点击，确认删除' : '删除这个模型服务') + '</button></div>' : '') +
+    (p.personal ? '<div class="md-editor-danger"><div><b>删除模型服务</b><p>删除此服务及其下的模型配置</p></div>' +
+      '<button type="button" class="md-delete-service" data-pdelete="' + esc(p.id) + '">删除模型服务</button></div>' : '') +
   '</div>';
 }
 
@@ -377,6 +455,7 @@ function _mdAddService() {
   const id = 'custom-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
   _mdNew = { id, name: '', kind: 'openai-compat', baseUrl: '', defaultBaseUrl: '',
     personal: true, localOnly: true, authMode: 'key', modelNames: [], note: '', myKeySet: false, keySet: false };
+  _mdNewScope = SoduWorkAPI.taskStorageKey?.('ops'); _mdValidation = null;
   _mdEditor = '__new__:' + id;
   _mdOpen = id;
   _mdMarkOwnedDirty(_mdNew);
@@ -394,6 +473,13 @@ function _mdTouchProvider(pid, patch) {
   const p = _mdProvider(pid);
   if (!p) return;
   Object.assign(p, patch || {});
+  const field = _mdValidation?.field;
+  if (_mdValidation?.providerId === pid && Object.prototype.hasOwnProperty.call(patch || {}, field === 'url' ? 'baseUrl' : 'name')) {
+    _mdValidation = null;
+    document.getElementById('mdBody')?.querySelector('[aria-invalid="true"]')?.removeAttribute('aria-invalid');
+    const error = document.getElementById('md-' + field + '-error');
+    if (error) { error.hidden = true; error.textContent = ''; }
+  }
   p._capStale = true;
   for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdChecks.delete(key);
   _mdMarkOwnedDirty(p);
@@ -419,7 +505,7 @@ function _mdBind(box) {
       const at = q.selectionStart;
       _mdRender();
       const q2 = document.getElementById('mdQ');
-      if (q2) { q2.focus(); try { q2.setSelectionRange(at, at); } catch (e) { /* Keep focus if selection restoration is unsupported. */ } }
+      if (q2) { q2.focus({ preventScroll: true }); try { q2.setSelectionRange(at, at); } catch (e) { /* Keep focus if selection restoration is unsupported. */ } }
     });
   }
   box.querySelectorAll('[data-mdselect]').forEach((el) => el.addEventListener('click', () => {
@@ -458,19 +544,7 @@ function _mdBind(box) {
   }));
   box.querySelectorAll('[data-pdelete]').forEach(el => el.addEventListener('click', () => {
     if (_mdSaveFlight || el.isConnected === false) return;
-    const pid = el.getAttribute('data-pdelete');
-    const provider = _mdProvider(pid);
-    if (!provider) return;
-    if (_mdDeletePending !== pid) { _mdDeletePending = pid; _mdRender(); return; }
-    _mdDeletePending = '';
-    _mdData.providers = (_mdData.providers || []).filter((p) => p.id !== pid);
-    _mdMyModels = _mdMyModels.filter((m) => m.providerId !== pid);
-    _mdDrafts.delete(pid);
-    if (_mdNew?.id === pid) _mdNew = null;
-    for (const key of _mdChecks.keys()) if (JSON.parse(key)[0] === pid) _mdChecks.delete(key);
-    _mdKeyEdits[pid] = null; _mdMarkOwnedDirty(provider);
-    _mdRender();
-    _mdSave(false);
+    _mdConfirmServiceDelete(el.getAttribute('data-pdelete'));
   }));
   box.querySelectorAll('[data-peye]').forEach(el => el.addEventListener('click', () => {
     const inp = box.querySelector('[data-pkey="' + el.getAttribute('data-peye') + '"]');
@@ -514,6 +588,12 @@ function _mdBind(box) {
   _mdBindModels(box);
 }
 
+function _mdFocusValidation() {
+  const input = document.getElementById('mdBody')?.querySelector('[aria-invalid="true"]');
+  input?.focus({ preventScroll: true });
+  input?.closest('.md-field')?.scrollIntoView({ block: 'nearest' });
+}
+
 /*
  * Save pending keys before the real connection test so the result applies to the new
  * credential.
@@ -523,8 +603,11 @@ async function _mdDoTest(el) {
   const pid = el.getAttribute('data-ptest');
   if (_mdTest[pid]?.state === 'ing') return;
   const p = _mdProvider(pid);
-  if (!p || !String(p.baseUrl || '').trim()) {
-    _mdTest[pid] = { state: 'bad', detail: '请先填写 API 地址' }; _mdRender(); return;
+  if (!p) return;
+  const error = _mdProviderError(p);
+  if (error) {
+    _mdValidation = error; delete _mdTest[pid];
+    _mdRender(); _mdFocusValidation(); return;
   }
   if (!_mdUsesLocalDiscovery(p) && !(_mdMyModels || []).some((m) => m.providerId === pid) &&
       !(p.modelDefs || p.modelNames || []).length) {
@@ -533,7 +616,7 @@ async function _mdDoTest(el) {
   _mdTest[pid] = { state: 'ing' };
   _mdRender();
   try {
-    if (_mdDirty || Object.keys(_mdKeyEdits).length) {
+    if (_mdNeedsSave(pid)) {
       if (!await _mdSave(false)) throw Error('请先保存模型配置，再检测能力');
     }
     const testPid = pid === '__new__' ? (_mdNew && _mdNew.id) : pid;
@@ -545,7 +628,8 @@ async function _mdDoTest(el) {
       // merged catalog instead of saving again with a stale local revision.
       const latest = await SoduWorkAPI.myModels();
       if (latest && Array.isArray(latest.providers) && Array.isArray(latest.myModels)) {
-        _mdData = latest; _mdMyModels = latest.myModels.slice(); _mdReconcileChecks(latest);
+        const pending = _mdMyModels.filter(row => row.providerId === _mdNew?.id);
+        _mdData = latest; _mdMyModels = latest.myModels.concat(pending); _mdReconcileChecks(latest);
         if (globalThis.ComposeModelPicker?.refresh) await ComposeModelPicker.refresh(true);
       }
     }
@@ -568,9 +652,10 @@ function _mdMark() {
   btn.textContent = _mdSaveFlight ? '保存中…' : dirty || _mdLoadState !== 'ready' ? '保存' : '已保存';
 }
 
-function _mdPayload() {
-  const all = (_mdData && _mdData.providers ? _mdData.providers : []).slice();
-  if (_mdNew && !all.some((p) => p.id === _mdNew.id)) {
+function _mdPayload(excludeDraft = false) {
+  const skippedId = excludeDraft ? _mdNew?.id : null;
+  const all = (_mdData && _mdData.providers ? _mdData.providers : []).filter(p => p.id !== skippedId);
+  if (_mdNew && !excludeDraft && !all.some((p) => p.id === _mdNew.id)) {
     all.push(_mdNew);
   }
   const providers = all.map((p) => ({ id: p.id, name: p.name, kind: p.kind || 'openai-compat',
@@ -585,19 +670,43 @@ function _mdPayload() {
     payload.keys = Object.fromEntries(Object.entries(_mdKeyEdits).filter(([id]) => !localIds.has(id)));
     payload.expectedRevision = _mdData && _mdData.revision;
   }
-  if (_mdLocalDirty) {
+  if (_mdLocalDirty && (!excludeDraft || [..._mdLocalKeyIds].some(id => id !== skippedId))) {
     payload.localProviders = localProviders;
-    payload.localModels = _mdMyModels.filter(m => m.localOnly === true || localIds.has(m.providerId));
-    payload.localKeys = Object.fromEntries(Object.entries(_mdKeyEdits).filter(([id]) => localIds.has(id)));
+    payload.localModels = _mdMyModels.filter(m => m.providerId !== skippedId && (m.localOnly === true || localIds.has(m.providerId)));
+    payload.localKeys = Object.fromEntries(Object.entries(_mdKeyEdits).filter(([id]) => id !== skippedId && localIds.has(id)));
     payload.localRevision = _mdData && _mdData.localRevision;
   }
   return payload;
+}
+
+function _mdNeedsSave(pid) {
+  const skip = !!(_mdNew && _mdNew.id !== pid && _mdProviderError(_mdNew));
+  return Object.keys(_mdPayload(skip)).length > 0;
+}
+
+function _mdProviderError(p) {
+  if (!p) return null;
+  const address = String(p.baseUrl || '').trim();
+  let field = 'url', detail = '';
+  if (!address) detail = '请填写 API 地址';
+  else if (p.localOnly && address.length > 400) detail = 'API 地址不能超过 400 个字符';
+  else if (!/^https?:\/\//i.test(address)) detail = 'API 地址要以 http:// 或 https:// 开头';
+  else {
+    try {
+      const url = new URL(address);
+      if (!url.hostname || (p.localOnly && (url.username || url.password || url.search || url.hash))) throw Error();
+    } catch (_) { detail = '请填写有效的 API 地址'; }
+  }
+  if (!detail && p.personal && !String(p.name || '').trim()) { field = 'name'; detail = '请填写服务名称'; }
+  if (!detail && p.localOnly && String(p.name || '').trim().length > 64) { field = 'name'; detail = '服务名称不能超过 64 个字符'; }
+  return detail ? Object.assign(new Error(detail), { detail, field, providerId: p.id }) : null;
 }
 
 function _mdSave(closeAfter) {
   if (_mdSaveFlight) return _mdSaveFlight;
   _mdSaveFlight = Promise.resolve().then(() => _mdSaveChanges(closeAfter)).finally(() => {
     _mdSaveFlight = null; _mdMark();
+    if (_mdValidation) _mdFocusValidation();
   });
   _mdMark();
   return _mdSaveFlight;
@@ -607,24 +716,27 @@ async function _mdSaveChanges(closeAfter) {
   const loadId = _mdLoadId, scope = SoduWorkAPI.taskStorageKey?.('ops');
   const current = () => loadId === _mdLoadId && scope === SoduWorkAPI.taskStorageKey?.('ops');
   let localSaved = false;
+  let skippedDraft = false;
   try {
     const p = _mdProvider(_mdOpen || _mdEditor);
-    if (p && (!String(p.baseUrl || '').startsWith('http://') && !String(p.baseUrl || '').startsWith('https://'))) {
-      throw new Error('API 地址要以 http:// 或 https:// 开头');
-    }
-    if (p && p.personal && !String(p.name || '').trim()) throw new Error('请填写服务名称');
+    skippedDraft = !!(_mdNew && p?.id !== _mdNew.id && _mdProviderError(_mdNew));
     // Keep the two ownership domains independent, including partial failures.
-    const body = structuredClone(_mdPayload());
+    const body = structuredClone(_mdPayload(skippedDraft));
+    const checked = (body.localProviders || []).concat(body.providers?.some(row => row.id === p?.id) ? [p] : []);
+    for (const provider of checked) { const error = _mdProviderError(provider); if (error) throw error; }
+    if (!body.localProviders && !body.providers) throw _mdProviderError(_mdNew) || Error('请先选择要保存的服务');
+    _mdValidation = null;
     if (Array.isArray(body.localProviders)) {
       const result = await SoduWorkAPI.saveMyModels({ localProviders: body.localProviders,
         localModels: body.localModels, localKeys: body.localKeys, localRevision: body.localRevision });
       if (!current()) return false;
-      localSaved = true; _mdLocalDirty = false; _mdLocalKeyIds.clear();
+      localSaved = true; _mdLocalDirty = skippedDraft; _mdLocalKeyIds = new Set(skippedDraft ? [_mdNew.id] : []);
       for (const id of Object.keys(body.localKeys)) delete _mdKeyEdits[id];
       if (result && Array.isArray(result.providers) && Array.isArray(result.myModels)) {
         const localIds = new Set([...body.localProviders.map(provider => provider.id), ...Object.keys(body.localKeys)]);
         const managed = rows => (rows || []).filter(row => !row.localOnly && !localIds.has(row.providerId));
-        _mdMyModels = result.myModels.concat(managed(_mdMyModels));
+        const pending = skippedDraft ? _mdMyModels.filter(row => row.providerId === _mdNew.id) : [];
+        _mdMyModels = result.myModels.concat(managed(_mdMyModels).filter(row => row.providerId !== _mdNew?.id), pending);
         _mdData = { ..._mdData, localRevision: result.revision,
           providers: result.providers.concat(_mdData.providers.filter(provider => !provider.localOnly)),
           myModels: _mdMyModels, usable: (result.usable || []).concat(managed(_mdData.usable)),
@@ -646,14 +758,16 @@ async function _mdSaveChanges(closeAfter) {
     _mdDirty = _mdLocalDirty || _mdManagedDirty || Object.keys(_mdKeyEdits).length > 0;
   } catch (e) {
     if (!current()) return false;
+    if (e.providerId) { _mdValidation = e; _mdOpen = e.providerId; }
     _mdDirty = _mdLocalDirty || _mdManagedDirty || Object.keys(_mdKeyEdits).length > 0;
-    if (typeof petSay === 'function') petSay(localSaved
+    if (typeof petSay === 'function' && (localSaved || !e.providerId)) petSay(localSaved
       ? '本地模型配置已保存，Hub 模型配置未保存，请重试。' : _humanErr(e, '没存上'));
     try { _mdRender(); } catch (_) { /* Preserve the remaining draft after a display failure. */ }
     if (localSaved) await _mdRefreshSavedModels();
     return false;
   }
-  if (typeof petSay === 'function') petSay('模型配置存好了～');
+  if (typeof petSay === 'function') petSay(skippedDraft
+    ? '其他模型配置已保存，新增服务尚未保存，请补全后保存。' : '服务信息已保存');
   let reloaded = false;
   try { reloaded = await _mdLoad({ saved: true }); } catch (_) { /* The write has already committed. */ }
   if (!reloaded && typeof petSay === 'function')

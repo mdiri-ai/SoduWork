@@ -31,7 +31,18 @@ window.fixture={providers:[
 usable:[{providerId:'company',name:'default-multimodal',keyFrom:'org'},{providerId:'personal',name:'business-review-model',keyFrom:'mine'}]};
 window.SoduWorkAPI={myModels:async()=>structuredClone(fixture),hubBase:()=> 'isolated-model-ui',
 checkMyModelCapabilities:async body=>{capabilityCalls.push(structuredClone(body));await new Promise(r=>setTimeout(r,240));if(capabilityFailure)throw Error('能力检测未完成，请重试');const checks=Object.fromEntries(body.checks.map(key=>[key,{status:'passed',code:'verified'}]));const capabilityProfile=Object.fromEntries(['imageInput','toolCalling','streaming'].map(key=>[key,{state:'supported',source:'verified'}]));return {ok:true,checks,capabilityProfile,checkedAt:'2026-09-30T08:00:00Z',configRevision:'fixture-v1',runtimeRevision:'fixture-run-v1'};},
-saveMyModels:async body=>{if(saveFailure)throw Error('模拟保存失败');saved.push(structuredClone(body));fixture.myModels=structuredClone(body.models);for(const provider of body.providers){let p=fixture.providers.find(x=>x.id===provider.id);if(!p){p={...provider,modelNames:[]};fixture.providers.push(p)}else Object.assign(p,provider);if(body.keys[p.id]){p.myKeySet=true;p.myKeyLen=body.keys[p.id].length}}},
+saveMyModels:async body=>{
+ if(saveFailure)throw Error('模拟保存失败');
+ saved.push(structuredClone(body));
+ const local=Array.isArray(body.localProviders),keys=(local?body.localKeys:body.keys)||{};
+ fixture.myModels=fixture.myModels.filter(m=>!!m.localOnly!==local).concat(structuredClone((local?body.localModels:body.models)||[]));
+ if(local)fixture.providers=fixture.providers.filter(p=>!p.localOnly);
+ for(const provider of (local?body.localProviders:body.providers)||[]){
+  let p=fixture.providers.find(x=>x.id===provider.id);
+  if(!p){p={...provider,modelNames:[]};fixture.providers.push(p)}else Object.assign(p,provider);
+  if(keys[p.id]){p.myKeySet=true;p.myKeyLen=keys[p.id].length}
+ }
+},
 testMyModel:async id=>{testCalls.push(id);await new Promise(r=>setTimeout(r,160));return testFailure?{ok:false,detail:'连接失败：请检查 API 地址与凭据'}:{ok:true,detail:'连接成功 · 测试模型可用'}}};
 window.WorkspaceHost={open:()=>{}};
 </script>
@@ -45,6 +56,8 @@ window.WorkspaceHost={open:()=>{}};
 <script src="../../core/locales/en-US-chat-pages.js"></script>
 <script src="../../core/locales/en-US-work-pages.js"></script>
 <script src="../../core/locales/en-US-runtime-pages.js"></script>
+<script src="../../core/locales/ja-JP-runtime-surfaces.js"></script>
+<script src="../../core/locales/ko-KR-runtime-surfaces.js"></script>
 <script src="../../core/locales/en-US-plugin-pages.js"></script>
 <script src="../../core/locales/en-US-trace-pages.js"></script>
 <script src="../../core/locales/en-US-native.js"></script>
@@ -61,6 +74,7 @@ window.WorkspaceHost={open:()=>{}};
 <script src="../../components/workspace/workspace-shell.js"></script>
 <script src="../../components/panels/model-capabilities.js"></script>
 <script src="../../components/panels/model-catalog-editor.js"></script>
+<script src="../../components/panels/model-service-delete.js"></script>
 <script src="../../components/panels/panels-models.js"></script>
 <script>WorkspaceShell.mount();WorkspaceShell.setActive('models');openModelsPanel();
 window.selectService=id=>document.querySelector('[data-mdselect="'+id+'"]').click();
