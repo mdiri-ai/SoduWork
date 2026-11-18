@@ -296,3 +296,59 @@ async def test_my_model(
     r = await _aio.to_thread(model_catalog.probe_sync, p["baseUrl"], key, probe, p["kind"])
     return {**r, "keyFrom": key_from, "protocol": p["kind"],
             "gatewayCompatible": p["kind"] == "openai-compat"}
+
+@router.post("/my-models/{pid}/discover")
+async def discover_my_model_provider(
+    pid: str,
+    body: dict = Body(default_factory=dict),
+    client: Client = Depends(current_client),
+    session: AsyncSession = Depends(get_session),
+):
+    """List model identifiers served by this device's own provider. Read-only:
+    saving picks names explicitly through the existing PUT /my-models write.
+    Unlike the probe endpoint this never runs inference, so it does not need
+    quota admission.
+    """
+    from ..services import model_catalog, model_discovery
+
+    if set(body) - {"baseUrl", "kind", "apiKey", "authMode"}:
+        raise HTTPException(status_code=400, detail="发现模型只接受服务地址、协议与密钥这几个字段")
+    # Same normalization the personal write path uses: case-insensitive, capped
+    # at the org column's 48 characters.
+    pid = str(pid or "").strip().lower()[:48]
+    providers = await model_catalog.effective_provider_map(session, client)
+    p = providers.get(pid)
+    if p is not None and not p.get("personal"):
+        raise HTTPException(status_code=403, detail="组织模型服务请由管理员在模型目录里发现")
+
+    # Draft mode: discovering before saving is the point (issue #42 wants to
+    # see what a just-configured local gateway serves).
+    base = str(body.get("baseUrl") or "").strip()[:400]
+    kind = str(body.get("kind") or "").strip()
+    key = str(body.get("apiKey") or "").strip()[:400]
+    if kind and kind not in ("openai-compat", "anthropic"):
+        raise HTTPException(status_code=400, detail="暂不支持这种接口协议")
+    if base or kind or key or body.get("authMode"):
+        if not base.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="接口地址要以 http(s):// 开头")
+        use_base, use_kind = base, kind or "openai-compat"
+        use_key = key
+        keyless = body.get("authMode") == "none" or not key
+    else:
+        if p is None or not p["enabled"] or not p["baseUrl"]:
+            raise HTTPException(status_code=404, detail="没有这个模型服务，或者它还没配置接口地址")
+        use_base, use_kind = p["baseUrl"], p["kind"]
+        # provider_key already maps authMode=none to the placeholder the chat
+        # runtime sends, keeping discovery and inference on one credential path.
+        use_key = model_catalog.provider_key(p, client)[0]
+        keyless = False
+    result = await model_discovery.discover(use_base, use_key, use_kind,
+                                            allow_empty_key=keyless)
+    known = sorted({str(row.get("name") or "")
+                    for row in (getattr(client, "models", None) or [])
+                    if isinstance(row, dict) and str(row.get("providerId") or "") == pid
+                    and str(row.get("name") or "")})
+    result["known"] = known
+    result["models"] = [name for name in result["models"] if name not in known]
+    return result
+

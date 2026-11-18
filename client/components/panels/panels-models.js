@@ -39,6 +39,7 @@ let _mdNew = null;                  /* New-provider draft. */
 let _mdNewScope = null;
 let _mdValidation = null;
 let _mdDeletePending = '';
+let _mdDiscover = {};               /* providerId -> {state, models, chosen:Set, known, detail} */
 let _mdLoadId = 0;
 let _mdLoadState = 'idle';
 let _mdCatalogScope;
@@ -491,6 +492,28 @@ function _mdReadOnlyBodyHtml(p, models) {
       _mdModelListHtml(p, models, []) + '</section></div>';
 }
 
+function _mdDiscoverListHtml(p) {
+  const state = _mdDiscover[p.id];
+  if (!state) return '';
+  if (state.state === 'error') {
+    return '<p class="md-discover-error" role="status">' + esc(state.detail || '读取模型列表失败') + '</p>';
+  }
+  if (state.state !== 'ready') return '';
+  if (!state.models.length) {
+    return '<p class="md-discover-empty">' + esc(state.detail || '这个服务的模型都已经在清单里了。') + '</p>';
+  }
+  const picked = state.models.filter(name => state.chosen.has(name));
+  return '<div class="md-discover-list" role="region" aria-label="发现的模型列表">' +
+    '<div class="md-discover-toolbar"><span>发现 ' + state.models.length + ' 个可添加的模型</span>' +
+      '<button type="button" data-pdall="' + esc(p.id) + '">全选</button>' +
+      '<button type="button" data-pdnone="' + esc(p.id) + '">全不选</button></div>' +
+    state.models.map((name, index) => '<label class="md-discover-row"><input type="checkbox" data-pdpick="' +
+      esc(p.id) + '" value="' + esc(String(index)) + '"' + (state.chosen.has(name) ? ' checked' : '') + '><code>' +
+      esc(name) + '</code></label>').join('') +
+    '<button type="button" class="md-primary" data-pdadd="' + esc(p.id) + '"' +
+      (picked.length ? '' : ' disabled') + '>添加选中的 ' + picked.length + ' 个</button></div>';
+}
+
 function _mdBodyHtml(p, s, ms, own, t) {
   if (!_mdCanEdit(p)) return _mdReadOnlyBodyHtml(p, ms);
   const validation = _mdValidation?.providerId === p.id ? _mdValidation : null;
@@ -544,6 +567,10 @@ function _mdBodyHtml(p, s, ms, own, t) {
     '</section>' +
     '<section class="cfg-subsection"><div class="cfg-subsection-h"><b>模型清单</b><span>' +
       _mdMessage('models.itemCount', '{count} 个', { count: ms.length + own.length }) + '</span></div>' +
+      (p.localOnly !== true ? '<div class="md-discover-bar"><button type="button" class="md-discover" data-pdiscover="' +
+        esc(p.id) + '"' + (_mdDiscover[p.id]?.state === 'ing' ? ' disabled' : '') + '>' +
+        (_mdDiscover[p.id]?.state === 'ing' ? '读取中…' : '发现模型') + '</button></div>' +
+        _mdDiscoverListHtml(p) : '') +
       '<p class="md-model-help">对话模型可单独支持图片输入；图片生成和视频生成用于创作成果。</p>' +
       _mdModelListHtml(p, ms, own) + _mdModelEditorHtml(p) + '</section>' +
     (p.personal ? '<div class="md-editor-danger"><div><b>删除模型服务</b><p>删除此服务及其下的模型配置</p></div>' +
@@ -700,6 +727,23 @@ function _mdBind(box) {
     if (!saved) _mdRender();
   }));
   box.querySelectorAll('[data-ptest]').forEach(el => el.addEventListener('click', () => _mdDoTest(el)));
+  box.querySelectorAll('[data-pdiscover]').forEach(el => el.addEventListener('click', () => _mdDoDiscover(el)));
+  box.querySelectorAll('[data-pdall]').forEach(el => el.addEventListener('click', () => {
+    const state = _mdDiscover[el.getAttribute('data-pdall')]; if (state) state.chosen = new Set(state.models);
+    _mdRender();
+  }));
+  box.querySelectorAll('[data-pdnone]').forEach(el => el.addEventListener('click', () => {
+    const state = _mdDiscover[el.getAttribute('data-pdnone')]; if (state) state.chosen = new Set();
+    _mdRender();
+  }));
+  box.querySelectorAll('[data-pdpick]').forEach(el => el.addEventListener('change', () => {
+    const pid = el.getAttribute('data-pdpick');
+    const state = _mdDiscover[pid]; if (!state) return;
+    const name = state.models[+el.value]; if (name === undefined) return;
+    if (el.checked) state.chosen.add(name); else state.chosen.delete(name);
+    _mdRender();
+  }));
+  box.querySelectorAll('[data-pdadd]').forEach(el => el.addEventListener('click', () => _mdApplyDiscover(el)));
   box.querySelectorAll('[data-mdel]').forEach(el => el.addEventListener('click', async () => {
     if (_mdSaveFlight || el.isConnected === false) return;
     const [pid, i] = el.getAttribute('data-mdel').split('|');
@@ -791,6 +835,48 @@ async function _mdDoTest(el) {
   } finally {
     if (_mdTest[pid] === pending) delete _mdTest[pid];
   }
+  _mdRender();
+}
+
+async function _mdDoDiscover(el) {
+  const pid = el.getAttribute('data-pdiscover');
+  const state = _mdDiscover[pid];
+  if (!state || state.state === 'ing') return;
+  _mdDiscover[pid] = { state: 'ing' };
+  _mdRender();
+  try {
+    const r = await SoduWorkAPI.discoverMyModels(pid);
+    if (r && r.ok) {
+      const names = Array.isArray(r.models) ? r.models : [];
+      _mdDiscover[pid] = { state: 'ready', models: names, known: r.known || [],
+        chosen: new Set(names), detail: r.detail || '' };
+    } else {
+      _mdDiscover[pid] = { state: 'error', detail: (r && r.detail) || '没读到模型列表' };
+    }
+  } catch (e) {
+    _mdDiscover[pid] = { state: 'error', detail: _humanErr(e, '读取模型列表失败') };
+  }
+  _mdRender();
+}
+
+function _mdApplyDiscover(el) {
+  const pid = el.getAttribute('data-pdadd');
+  const state = _mdDiscover[pid];
+  if (!state || state.state !== 'ready') return;
+  if (el.dataset.busy === '1') return;
+  el.dataset.busy = '1';
+  el.disabled = true;
+  const provider = _mdProvider(pid);
+  let added = 0;
+  for (const name of state.models) {
+    if (!state.chosen.has(name)) continue;
+    if (_mdMyModels.some(row => row.providerId === pid && row.name === name)) continue;
+    if (_mdCatalogModels(provider).some(row => row.name === name)) continue;
+    _mdMyModels.push({ providerId: pid, name, label: name, modality: 'chat', config: {} });
+    added += 1;
+  }
+  if (added > 0) _mdMarkOwnedDirty(provider || pid);
+  _mdDiscover[pid] = { state: 'ready', models: [], known: state.known.concat(state.models), chosen: new Set(), detail: '已添加 ' + added + ' 个，记得点保存' };
   _mdRender();
 }
 
