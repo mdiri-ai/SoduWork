@@ -493,9 +493,11 @@ async def save_profession(
     """Save a professional profile without granting platform permissions."""
     from uuid import uuid4
 
-    name = str(body.get("name", current.name if current else "") or "").strip()[:48]
+    name = str(body.get("name", current.name if current else "") or "").strip()
     if not name:
         raise ValueError("请填写职业名称")
+    if len(name) > 48:
+        raise ValueError("职业名称不能超过 48 个字符")
     query = select(models.Position).where(
         models.Position.org_id.is_(None) if org_id is None
         else models.Position.org_id == org_id,
