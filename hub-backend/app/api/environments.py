@@ -605,6 +605,10 @@ async def probe_secret_reference(
     row = await session.get(am.SecretReference, ref_id)
     if row is None:
         raise HTTPException(status_code=404, detail="密钥引用不存在")
+    if row.org_id is None and not user.is_super:
+        # The same reference cannot be edited or deleted by a non-superuser, so probing it must not
+        # be allowed either: the probe reads the variable back from the Runner.
+        raise HTTPException(status_code=403, detail="系统级密钥引用只能由超级管理员探测")
     scope = await _scope(session, user)
     if scope is not None and row.org_id is not None and row.org_id not in scope:
         raise HTTPException(status_code=403, detail="这个密钥引用不在你的组织范围内")
