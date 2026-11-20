@@ -24,8 +24,16 @@ async def create_integration(
 ) -> dict:
     from . import scm_support
     scm_support.require_active(type_)
+    label = str(name or "").strip()
+    if not label:
+        raise ValueError("请填写集成名称")
+    if len(label) > 64:
+        raise ValueError("集成名称不能超过 64 个字符")
+    if await session.scalar(select(func.count(models.Integration.id)).where(
+            func.lower(models.Integration.name) == label.lower())):
+        raise ValueError("集成名称已存在")
     integ = models.Integration(
-        name=name,
+        name=label,
         type=type_,
         config=config or {},
         ingest_token=_new_ingest_token(),

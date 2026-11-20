@@ -1867,7 +1867,10 @@ async def create_integration(body: IntegrationCreate,
     from ..services import scm_support
     if str(body.type or "").strip().lower() == "gerrit":
         raise HTTPException(status_code=400, detail=scm_support.GERRIT_RETIRED)
-    result = await agg.create_integration(session, body.name, body.type, body.config)
+    try:
+        result = await agg.create_integration(session, body.name, body.type, body.config)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await audit.log(session, user, "integration.create", "integration",
                     result.get("id"), result.get("name", ""),
                     {"type": result.get("type", "")})
