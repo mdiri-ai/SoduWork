@@ -517,7 +517,11 @@ async def revoke(request_id: str, body: dict = Body(default_factory=dict),
     out = await release_control.revoke_approval(
         session, task, user, request_id, note=str(body.get("note") or ""))
     if not out.get("ok"):
-        raise HTTPException(status_code=409, detail=out.get("error") or "撤回没有成功")
+        # Mirror the decision endpoint: an unassigned reviewer is a permission problem, not a state
+        # conflict, so the client stops telling the user to retry.
+        status = {"forbidden": 403, "not_found": 404, "note": 400}.get(
+            out.get("reason") or "", 409)
+        raise HTTPException(status_code=status, detail=out.get("error") or "撤回没有成功")
     who = user.display_name or user.username
     owner = await session.get(Client, task.owner_client_id) if task.owner_client_id else None
     if owner and task_access.is_owner(task, owner) and owner.id != client.id:
