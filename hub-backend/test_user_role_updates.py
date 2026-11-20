@@ -1,4 +1,4 @@
-"""User role updates persist and immediately affect existing authenticated sessions."""
+"""Role writes and user role updates through authenticated admin requests."""
 import importlib
 import os
 from pathlib import Path
@@ -75,6 +75,35 @@ class UserRoleUpdateTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             user = await session.get(models.User, uid)
             self.assertEqual(user.role_id, expected)
+
+    async def test_role_writes_reject_unknown_permissions_without_changes(self):
+        invalid = "delivery.aprove"
+        body = {"name": "Changed", "permissions": ["task.dispatch", invalid]}
+        for method, path in (("POST", "/roles"), ("PATCH", "/roles/reader")):
+            with self.subTest(method=method):
+                response = await self.request(method, path, who="super", json=body)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn(invalid, response.json()["detail"])
+
+        async with self.sessions() as session:
+            roles = (await session.execute(select(models.Role.name, models.Role.permissions))).all()
+            self.assertEqual(dict(roles), {"Manager": ["user.manage"], "Reader": ["task.view"]})
+            self.assertIsNone(await session.scalar(select(models.AuditLog.id).limit(1)))
+
+    async def test_valid_role_permissions_can_be_set_preserved_and_cleared(self):
+        valid = ["task.view", "delivery.review"]
+        created = await self.request("POST", "/roles", who="super",
+                                     json={"name": "Custom", "permissions": valid})
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["permissions"], valid)
+        path = "/roles/" + created.json()["id"]
+        for body, expected in (({"name": "Renamed"}, valid), ({"permissions": None}, valid),
+                               ({"permissions": ["task.dispatch"]}, ["task.dispatch"]),
+                               ({"permissions": []}, [])):
+            with self.subTest(body=body):
+                updated = await self.request("PATCH", path, who="super", json=body)
+                self.assertEqual(updated.status_code, 200, updated.text)
+                self.assertEqual(updated.json()["permissions"], expected)
 
     async def test_explicit_null_clears_role_in_response_list_database_and_audit(self):
         updated = await self.request("PATCH", "/users/target", json={"roleId": None})

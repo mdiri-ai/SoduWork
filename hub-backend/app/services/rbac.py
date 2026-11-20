@@ -282,13 +282,24 @@ async def delete_org(
 
 # Roles.
 
+class UnknownRolePermissions(ValueError):
+    """A role write includes keys outside the permission catalog."""
+
+
+def _validate_role_permissions(permissions: list[str]) -> None:
+    unknown = sorted(set(permissions).difference(ALL_KEYS))
+    if unknown:
+        raise UnknownRolePermissions("未知权限：" + "、".join(unknown))
+
+
 async def list_roles(session: AsyncSession) -> list[dict]:
     res = await session.execute(select(models.Role).order_by(models.Role.created_at))
     return [role_to_api(r) for r in res.scalars().all()]
 
 
 async def create_role(session: AsyncSession, name: str, permissions: list[str]) -> dict:
-    r = models.Role(name=name or "未命名角色", permissions=valid_keys(permissions))
+    _validate_role_permissions(permissions)
+    r = models.Role(name=name or "未命名角色", permissions=permissions)
     session.add(r)
     await session.commit()
     await session.refresh(r)
@@ -299,10 +310,11 @@ async def update_role(session: AsyncSession, rid: str, name: str | None, permiss
     r = await session.get(models.Role, rid)
     if r is None:
         return None
+    if permissions is not None:
+        _validate_role_permissions(permissions)
+        r.permissions = permissions
     if name is not None:
         r.name = name
-    if permissions is not None:
-        r.permissions = valid_keys(permissions)
     await session.commit()
     await session.refresh(r)
     return role_to_api(r)

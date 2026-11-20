@@ -225,7 +225,10 @@ async def list_roles(user: User = Depends(current_user), session: AsyncSession =
 async def create_role(body: RoleCreate,
                       user: User = Depends(require_perm("role.manage")),
                       session: AsyncSession = Depends(get_session)):
-    result = await rbac.create_role(session, body.name, body.permissions)
+    try:
+        result = await rbac.create_role(session, body.name, body.permissions)
+    except rbac.UnknownRolePermissions as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await audit.log(session, user, "role.create", "role", result.get("id"),
                     result.get("name", ""), {"permissions": result.get("permissions", [])})
     return result
@@ -235,7 +238,10 @@ async def create_role(body: RoleCreate,
 async def update_role(rid: str, body: RoleUpdate,
                       user: User = Depends(require_perm("role.manage")),
                       session: AsyncSession = Depends(get_session)):
-    r = await rbac.update_role(session, rid, body.name, body.permissions)
+    try:
+        r = await rbac.update_role(session, rid, body.name, body.permissions)
+    except rbac.UnknownRolePermissions as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if r is None:
         raise HTTPException(status_code=404, detail="角色不存在")
     await audit.log(session, user, "role.update", "role", rid, r.get("name", ""),
