@@ -11,6 +11,17 @@ from ..services import client_access, device_connections, rbac, task_access, usa
 
 router = APIRouter(prefix="/api/v1", tags=["usage"])
 
+_DAYS_MAX = 365
+
+
+def _days(value: int) -> int:
+    """Clamp the reporting window; an unbounded scan is never a meaningful request.
+
+    The Runner tab already clamped the value it echoed back, which made the cap look enforced
+    while ``days=999999`` still reached the aggregation query.
+    """
+    return max(1, min(_DAYS_MAX, int(value or 30)))
+
 
 @router.post("/usage/events")
 async def report_usage(
@@ -45,7 +56,7 @@ async def my_usage(
     session: AsyncSession = Depends(get_session),
 ):
     return await usage_analytics.consistent_overview(
-        session, days=days, user_id=str(client.user_ref or ""),
+        session, days=_days(days), user_id=str(client.user_ref or ""),
         client_id=client.id)
 
 
@@ -63,7 +74,7 @@ async def admin_usage_overview(
     if user_id and visible_users is not None and user_id not in visible_users:
         raise HTTPException(status_code=404, detail="用户不在可见范围")
     return await usage_analytics.consistent_overview(
-        session, days=days, user_ids=visible_users, user_id=user_id,
+        session, days=_days(days), user_ids=visible_users, user_id=user_id,
         source_type=str(source or ""), agent_key=str(agent or ""))
 
 
@@ -78,9 +89,10 @@ async def admin_runner_usage(
     """
     from .admin import _visible_client_ids
     from ..services import runner_admin_scope
-    return {"days": max(1, min(365, int(days or 30))),
+    window = _days(days)
+    return {"days": window,
             "runners": await usage_stats.runner_usage(
-                session, days=days,
+                session, days=window,
                 task_client_ids=await _visible_client_ids(session, user),
                 runner_client_ids=await runner_admin_scope.admin_allowed(session, user),
                 runner_org_ids=await runner_admin_scope.admin_orgs(session, user))}
