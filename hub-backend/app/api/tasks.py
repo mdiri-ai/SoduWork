@@ -298,6 +298,25 @@ async def list_repos_for_box(
                        "note": r.note} for r in rows]}
 
 
+def _report_day(value, *, allow_future: bool = False) -> str:
+    """Normalize a daily-report date and reject values the report service cannot handle.
+
+    ``generate_for`` parses the anchor with ``date.fromisoformat``, so a malformed date surfaced as
+    a 500, and a future day produced and persisted an empty report.
+    """
+    from datetime import date as _date
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        day = _date.fromisoformat(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD") from None
+    if not allow_future and day > _date.today():
+        raise HTTPException(status_code=400, detail="不能为未来的日期生成日报")
+    return day.isoformat()
+
+
 @router.get("/daily-report")
 async def get_daily_report(
     date: str = "", client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)
@@ -309,7 +328,7 @@ async def get_daily_report(
     u = await _actor_user(session, client)
     if u is None:
         raise HTTPException(status_code=400, detail="本 SoduWork 未绑定用户，请让管理员分配归属")
-    day = (date or "").strip() or dr.today_str()
+    day = _report_day(date, allow_future=True) or dr.today_str()
     from sqlalchemy import select as _sel
     from ..models import DailyReport
     rep = (await session.execute(
@@ -332,7 +351,7 @@ async def gen_daily_report(
     u = await _actor_user(session, client)
     if u is None:
         raise HTTPException(status_code=400, detail="本 SoduWork 未绑定用户，请让管理员分配归属")
-    day = (body.get("date") or "").strip() or dr.today_str()
+    day = _report_day(body.get("date")) or dr.today_str()
     rep = await dr.generate_for(session, u, day, notify=False)
     if rep is None:
         raise HTTPException(status_code=400, detail="今天还没有进展记录，先在需求里写一条再生成")
