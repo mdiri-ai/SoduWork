@@ -288,7 +288,15 @@ async def list_roles(session: AsyncSession) -> list[dict]:
 
 
 async def create_role(session: AsyncSession, name: str, permissions: list[str]) -> dict:
-    r = models.Role(name=name or "未命名角色", permissions=valid_keys(permissions))
+    label = str(name or "").strip()
+    if not label:
+        raise ValueError("请填写角色名称")
+    if len(label) > 64:
+        raise ValueError("角色名称不能超过 64 个字符")
+    if await session.scalar(select(func.count(models.Role.id)).where(
+            func.lower(models.Role.name) == label.lower())):
+        raise ValueError("角色名已存在")
+    r = models.Role(name=label, permissions=valid_keys(permissions))
     session.add(r)
     await session.commit()
     await session.refresh(r)
@@ -300,7 +308,17 @@ async def update_role(session: AsyncSession, rid: str, name: str | None, permiss
     if r is None:
         return None
     if name is not None:
-        r.name = name
+        label = str(name).strip()
+        if not label:
+            raise ValueError("请填写角色名称")
+        if len(label) > 64:
+            raise ValueError("角色名称不能超过 64 个字符")
+        if r.is_system and label != r.name:
+            raise ValueError("系统内置角色不可改名")
+        if await session.scalar(select(func.count(models.Role.id)).where(
+                func.lower(models.Role.name) == label.lower(), models.Role.id != rid)):
+            raise ValueError("角色名已存在")
+        r.name = label
     if permissions is not None:
         r.permissions = valid_keys(permissions)
     await session.commit()
