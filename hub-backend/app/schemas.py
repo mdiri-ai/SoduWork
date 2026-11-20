@@ -258,7 +258,9 @@ AdminName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1
 
 
 class IntegrationCreate(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # Unknown top-level keys were silently dropped: a body carrying "projectId" answered 200 while
+    # storing none of it, which is indistinguishable from a successful write.
+    model_config = ConfigDict(extra="forbid")
     name: AdminName
     type: str = "generic"
     config: dict = {}                    # GitLab configuration stores base_url and project; tokens remain in environment variables.
