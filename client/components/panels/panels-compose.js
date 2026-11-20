@@ -793,6 +793,12 @@
     /* Starter recommendations refetch on every open (30s throttle): freshly published admin apps and startup-time not-ready fetches self-heal. */
     try { refreshComposeRecommendations(p); } catch (_) { /* recommendations are an enhancement; failure must not affect the panel */ }
     const q = payload || {};
+    // Settings only hides the composer. Reveal the same draft or running task
+    // without opening another session or replaying the original task action.
+    if (q.resumeComposer === true) {
+      setTab();
+      return true;
+    }
     const chatOpenSeq = ++_chatOpenSeq;
     const taskSession = q.taskSession === true || q.taskSession === 1 || q.taskSession === '1';
     if (q.newSession && !q.chatId) {

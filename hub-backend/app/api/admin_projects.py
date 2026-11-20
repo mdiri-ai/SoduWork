@@ -14,6 +14,7 @@ from ..models import Task, User
 from ..schemas import task_to_api
 from ..services import audit, rbac
 from ..services import tasks as svc
+from ..services.repository_catalog import lock_mapping_project
 
 router = APIRouter()
 
@@ -226,8 +227,8 @@ async def add_repo(pid: str, body: dict = Body(default_factory=dict),
     """Add a repository using local_dir relative to the device's configured workspace; resolve
     machine-specific absolute paths at dispatch.
     """
-    from ..models import Project, Repo
-    p = await session.get(Project, pid)
+    from ..models import Repo
+    p = await lock_mapping_project(session, pid)
     if p is None:
         raise HTTPException(status_code=404, detail="工程所属项目不存在")
     name = (body.get("name") or "").strip()
@@ -425,11 +426,14 @@ async def delete_project(pid: str, user: User = Depends(require_perm("task.dispa
     """Delete the project while retaining its tasks and clearing their project_id association."""
     from .admin import _assert_org_in_scope
 
-    from ..models import Project
-    p = await session.get(Project, pid)
+    from ..models import Repo
+    p = await lock_mapping_project(session, pid)
     if p is None:
         return {"ok": True}
     await _assert_org_in_scope(session, user, p.org_id)
+    repo_count = await session.scalar(select(func.count()).select_from(Repo).where(Repo.project_id == pid))
+    if repo_count:
+        raise HTTPException(status_code=409, detail=f"该项目仍关联 {repo_count} 个仓库，请先移除仓库配置后再删除项目。")
     ts = (await session.execute(select(Task).where(Task.project_id == pid))).scalars().all()
     for t in ts:
         t.project_id = None

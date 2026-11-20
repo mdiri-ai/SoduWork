@@ -80,13 +80,14 @@ class RemoteRunner(runner_hub._Runner):
         return bus.healthy and self.node in bus.peers and super().alive()
 
     async def call(self, op, data, timeout=60, *, _rerouted=False):
+        from .session_read_budget import remaining
         try:
             result = await bus.request(self.node, "runner.call", {
                 "runner": self.id, "token": self.cluster_token,
                 "op": op, "data": data, "timeout": timeout,
                 "client": self.client_id, "org": self.org_id,
                 "owner": self.owner_user_id,
-            }, timeout + 5)
+            }, remaining(timeout + 5))
             # A rejected old owner has NOT forwarded bytes. Refresh once so a
             # just-reconnected Runner does not require a second user click.
             if (not _rerouted and result.get("code") == "RUNNER_OWNER_CHANGED"
@@ -198,6 +199,8 @@ async def before_refresh():
     seen = set()
     for runner, owns in zip(runners, renewed):
         if not runner.alive() or not owns:
+            runner.close_reason = "heartbeat_expired" if not runner.alive() else "owner_changed"
+            runner_hub.log_connection(runner, "close_requested", close_code=1012)
             runner_hub.drop(runner.id, runner.ws)
             await runner_hub._close_quietly(runner.ws, 1012)
             continue

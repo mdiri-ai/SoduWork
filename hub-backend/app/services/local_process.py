@@ -30,6 +30,7 @@ from .local_base import (
     _pid_alive,
     _save_meta,
     _store_dir,
+    bind_command_environment,
 )
 
 log = logging.getLogger('uvicorn.error')
@@ -404,6 +405,7 @@ def spawn(
                     del env[key]
             env['SODUWORK_DESKTOP_CONTROL_SCOPE'] = f'runner:{ref}:{desktop_round}'
             argv = _command_argv(exe, args, ws, cfg or {}, prof or {})
+            bind_command_environment(env, argv)
             from . import access_broker
             # Recheck after command preparation without holding the run lock
             # across the broker's own condition locks and server lifecycle.

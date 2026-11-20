@@ -552,6 +552,14 @@
             node.dataset.messageOwner === _messageOwner(Number(match[1]))) finalReplies.add(Number(match[1]));
       });
     }
+    // A terminal marker belongs to its original turn even after a later reply.
+    // Partial output must not become a completed delivery when history reopens.
+    for (const index of finalReplies) {
+      const absolute = ctx._snap.history?.messageIndices?.[index] ??
+        ((Number(ctx._snap.history?.messageStart) || 0) + index);
+      if ((ctx._snap.turnMetrics || []).some(row => row.outcome &&
+          absolute >= row.fromMessage && absolute <= row.toMessage)) finalReplies.delete(index);
+    }
     const summaryTurns = turnSummary?.prepare(ctx._snap, finalReplies) || new Map();
     const shownSummaries = new Set();
     const appendSummary = index => {

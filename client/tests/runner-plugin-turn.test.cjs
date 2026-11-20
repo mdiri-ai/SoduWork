@@ -27,9 +27,11 @@ function harness(t, opts={}) {
     if(op==='job.dispatch'||op==='job.comment'){
       if(opts.failDispatch)return {ok:false,error:'test-ticket dispatch failed'};
       const first=op==='job.dispatch';
-      events.push({seq:events.length+1,kind:'user',
-        text:first?payload.ctx.conversationUserText:payload.text,
-        plugins:first?payload.ctx.conversationPlugins:payload.plugins});
+      const echo = {kind:'user', text:first?payload.ctx.conversationUserText:payload.text,
+        plugins:first?payload.ctx.conversationPlugins:payload.plugins};
+      for (const item of opts.userEvents?.(echo, payload, first, id) || [echo]) {
+        events.push({...item, seq:events.length+1});
+      }
       count++;
       return {ok:true,data:{ref:id,ok:true}};
     }
@@ -111,6 +113,68 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ' separates selected
   assert.equal((await session.send({ text: '现在聊旅行', options: { clearPluginSelection: true } }).completion).ok, true);
   assert.doesNotMatch(h.calls.filter(row => row.op === 'job.comment').at(-1).payload.promptText, /"authoring":/);
   assert.doesNotMatch(JSON.stringify(session.snapshot().messages), /"authoring":|changing values/);
+});
+
+test('Runner reconciles each multiline submission with its own persisted user event', async t => {
+  const h = harness(t, { spec: catalog.runtime('qwen'), userEvents(echo, payload, first, ref) {
+    // A follow-up user event can still carry the previous admission key.
+    return [{...echo, text: echo.text.trim(), admissionKey: 'dispatch:' + ref,
+      sentAt: first ? payload.ctx.conversationSentAt : payload.sentAt}];
+  } });
+  const session = await h.open();
+  const text = '  Summarize the following sections.\r\n' + 'A long section with examples.\n'.repeat(50);
+  const stamps = [1700000000100, 1700000000200];
+  for (const [index, sentAt] of stamps.entries()) {
+    const result = await session.send({ text, options: { submissionId: 'user-' + index, sentAt } }).completion;
+    assert.equal(result.ok, true);
+    await until(() => !getRunnerSessionDetails(session).handle.inFlight());
+  }
+  assert.equal(h.calls.filter(row => row.op === 'job.dispatch').length, 1);
+  assert.equal(h.calls.filter(row => row.op === 'job.comment').length, 1);
+  assert.deepEqual(session.snapshot().messages.filter(row => row.role === 'user')
+    .map(row => [row.submissionId, row.sentAt, row.text, row.runnerPersisted]),
+  stamps.map((sentAt, index) => ['user-' + index, sentAt, text, true]));
+});
+
+test('a refused comment cannot replace the last confirmed native user turn', async t => {
+  const options = {userEvents(echo, payload, first, ref) {
+    return [{...echo, text: echo.text.trim(), admissionKey: 'dispatch:' + ref,
+      sentAt: first ? payload.ctx.conversationSentAt : payload.sentAt}];
+  }};
+  const h = harness(t, options);
+  const session = await h.open();
+  const send = async (submissionId, text) => {
+    const turn = session.send({text, options:{submissionId}});
+    const handle = getRunnerSessionDetails(session).handle;
+    if (turn.queued) assert.equal(handle.updateQueue('', 'resume').ok, true);
+    const result = await turn.completion;
+    await until(() => !handle.inFlight());
+    return result.ok;
+  };
+  assert.equal(await send('first', 'Initial request'), true);
+  options.failDispatch = true;
+  assert.equal(await send('refused', 'Declined request'), false);
+  options.failDispatch = false;
+  assert.equal(await send('fresh', '  New request after refusal\n'), true);
+  const users = session.snapshot().messages.filter(row => row.role === 'user');
+  assert.deepEqual(users.map(row => [row.submissionId, row.runnerPersisted]), [
+    ['first', true], ['refused', false], ['fresh', true],
+  ]);
+  assert.equal(h.calls.filter(row => row.op === 'job.comment').length, 2);
+});
+
+test('Runner keeps a separate same-text event with its own send time and identity', async t => {
+  const sentAt = 1700000000200;
+  const h = harness(t, { userEvents(echo, payload, first, ref) {
+    return [{...echo, admissionKey: 'comment:other', sentAt},
+      {...echo, admissionKey: 'comment:earlier', sentAt: sentAt - 1, submissionId: 'earlier'},
+      {...echo, admissionKey: 'dispatch:' + ref, sentAt}];
+  } });
+  const session = await h.open();
+  assert.equal((await session.send({text:'Repeat', options:{sentAt, submissionId:'current'}}).completion).ok, true);
+  const users = session.snapshot().messages.filter(row => row.role === 'user');
+  assert.deepEqual(users.map(row => row.submissionId || '').sort(), ['', 'current', 'earlier']);
+  assert.ok(users.every(row => row.runnerPersisted));
 });
 
 test('Runner rejects over-limit requests before dispatch instead of silently cutting the request', async t => {

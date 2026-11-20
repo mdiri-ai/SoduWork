@@ -113,7 +113,9 @@ To check prerequisites without installing anything:
 .\start.cmd --check --desktop
 ```
 
-After the check passes, run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+`--check` is read-only: it reports prerequisites and path risks without creating test files. Passing it does not guarantee that every installation step will succeed. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+
+Path diagnostics use Chinese and English. Redirected output keeps its current encoding; characters it cannot represent are escaped so they do not interrupt startup, while the English guidance remains readable.
 
 `sh start.sh --desktop` in Git Bash is not inherently invalid, but it finds Python through `PATH`, unlike the Windows entry point. When the Python launcher `py` is available, `start.cmd` first tries Python 3.12, then `py -3`; it uses `python` from `PATH` only when `py` is absent. Having a supported version such as Python 3.13 installed does not mean both terminals select the same interpreter.
 
@@ -123,6 +125,10 @@ If Python is missing or too old, check `python --version` in the original termin
 & 'C:\Path\To\Python\python.exe' .\start.py --check --desktop
 & 'C:\Path\To\Python\python.exe' .\start.py --desktop
 ```
+
+Microsoft Store Python is a valid interpreter. Windows may redirect its data directory to a deeper physical path. When long paths are needed, startup tests actual file operations before copying source, creating the virtual environment, or installing dependencies. The Windows legacy 260-character path limit does not apply to macOS or Linux.
+
+If startup reports that long paths are unavailable, enable **Win32 long paths** in Windows and reopen the launcher so it uses a new process. The launcher does not change this system setting. Keep existing data in its original directory. A short `--data-dir` is an option for a **new, separate instance**; it does not migrate existing accounts or data.
 
 ### macOS launcher permissions
 

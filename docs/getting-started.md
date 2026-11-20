@@ -114,7 +114,9 @@ Administrator: admin
 .\start.cmd --check --desktop
 ```
 
-检查通过后，在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
+`--check` 只读检查依赖和路径风险，不创建探测文件；检查通过不代表后续所有安装步骤都一定成功。随后在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
+
+路径诊断采用中英双语。重定向输出时保留当前编码；无法表示的字符使用转义形式，避免中断启动，英文处理说明仍然可读。
 
 Git Bash 中的 `sh start.sh --desktop` 并非无效命令，但它通过 `PATH` 查找 Python，与 Windows 入口的选择方式不同。`start.cmd` 在有 Python 启动器 `py` 时先尝试 Python 3.12，再尝试 `py -3`；没有 `py` 时才使用 `PATH` 中的 `python`。安装了 Python 3.13 等受支持版本，不代表两个终端会选中同一个解释器。
 
@@ -124,6 +126,10 @@ Git Bash 中的 `sh start.sh --desktop` 并非无效命令，但它通过 `PATH`
 & 'C:\Path\To\Python\python.exe' .\start.py --check --desktop
 & 'C:\Path\To\Python\python.exe' .\start.py --desktop
 ```
+
+Microsoft Store 版 Python 是有效的解释器，但 Windows 可能将其数据目录重定向到更深的物理路径。需要长路径时，正式启动会在复制源码、创建虚拟环境和安装依赖之前，通过实际文件操作检查路径是否可用。Windows 的传统 260 字符路径限制不适用于 macOS 和 Linux。
+
+如果启动时提示无法使用长路径，请在 Windows 中启用 **Win32 长路径**，然后重新打开启动程序，使其使用新进程。启动器不会修改这个系统设置。已有数据请保留在原目录；较短的 `--data-dir` 可用于**新建独立实例**，不会迁移原有账号或数据。
 
 ### macOS 打不开启动文件
 

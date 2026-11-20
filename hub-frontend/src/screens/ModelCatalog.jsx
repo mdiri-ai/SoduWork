@@ -1,4 +1,4 @@
-import { translateText as tx, localeMap, useLocale } from '../i18n.js'
+import { translateText as tx, localeMap, useLocale, serverMessage } from '../i18n.js'
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState, useId } from 'react'
 import { api } from '../api.js'
 import { useViewportHeight } from '../viewport-height.js'
@@ -644,7 +644,7 @@ function DiscoverForm({ provider, onClose, onSaved }) {
     api.discoverModels(provider.id)
       .then((r) => {
         if (!alive) return
-        if (!r.ok) { setDetail(r.detail || tx("读取失败")); setPhase('error'); return }
+        if (!r.ok) { setDetail(r.code ? serverMessage({ key: r.code, params: r.params, fallback: r.detail }) : (r.detail || tx("读取失败"))); setPhase('error'); return }
         const list = (r.models || []).map((name) => ({ name, checked: true }))
         if (list.length === 0) { setPhase('empty'); return }
         setRows(list); setPhase('ready')

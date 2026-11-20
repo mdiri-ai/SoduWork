@@ -84,4 +84,4 @@ function select(cwd, delivery, snapshot) {
   }
   return { ...delivery, items };
 }
-module.exports = { select, turn, requestsCaptures, processRoles };
+module.exports = { select, turn, mentioned, requestsCaptures, processRoles };

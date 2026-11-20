@@ -6,6 +6,33 @@ Command examples use `sh start.sh` on macOS/Linux. On Windows, use `.\start.cmd`
 
 The desktop uses Electron and native HTML/CSS/JavaScript. The React management UI is a separate application.
 
+## Build a different default Hub
+
+Normal builds still default to `https://service.soduwork.ai`. To build for another
+deployment, set `SODUWORK_DEFAULT_HUB_URL` to an HTTP(S) origin without credentials,
+paths, queries or fragments when running `npm run build`, `npm run build:linux`,
+or `npm run build:mac`. For example, on Linux:
+
+```sh
+SODUWORK_DEFAULT_HUB_URL=https://hub.example.com npm run build:linux
+```
+
+An omitted or empty setting retains the normal default. The address is embedded
+before signing; runtime environment variables cannot change it. Existing saved
+service selections still take precedence. App name, version, installation identity,
+data directories, update trust and installer filenames stay the same.
+
+The manual **On-demand client packages** Actions workflow accepts `default_hub_url`
+and an `artifact_label` such as `cn`. Select a protected branch with the intended
+version and these build tools. That version must already have a stable Release;
+its verified release notes are reused in every package. It runs quality checks, signing and native installation
+acceptance, then keeps environment-labelled Actions artifacts for 30 days. It does
+not create a GitHub Release or deploy a Hub. Each download includes
+`client-packages.json` with the default address, source commit, build run and hashes.
+Keep downloads from different environments in separate directories. Deployment
+uploads the original installers with signed update manifests to the selected Hub;
+see [the release workflow](../.github/RELEASE.md#on-demand-client-packages).
+
 Local library imports retain file extensions and reserve room for duplicate-name counters. For files saved by older versions, a **Check file name** hint identifies duplicate, invalid, or potentially truncated names; the hint does not mean the file contents are damaged. In the item's menu, choose **Repair file name** and confirm the full name, including the correct extension. This replaces an incorrect suffix as well as a missing one, while preserving the item's ID, contents, source, and folder. Ordinary **Rename** continues to preserve the existing extension. The repair action is available for all local files, including entries whose names were already changed manually, and is not available for remote storage.
 
 The original extension cannot always be recovered from old metadata, so the client never guesses it or rewrites names automatically. Consult the original file or source before confirming. If the correct name is unknown, export a copy for inspection. Duplicate entries retain independent contents and can be repaired to distinct names. Repairing a name does not convert the file format or allow executables to bypass the system-open restrictions.
@@ -27,6 +54,8 @@ The original extension cannot always be recovered from old metadata, so the clie
 | `runner/`, `dist/`, `.runtime/` | Generated Runner, release packages, and runtime resources |
 
 Conversations and task execution share the same session path: `panels-chat` → `conversationSession` → main-process IPC → `agent-runtime` → Pi or Runner. AI team assignments open the corresponding conversation. Requirement drawers expand task traces; legacy detail links resolve the same requirement rather than creating duplicate records.
+
+Switching runtimes retains a verified inventory of previously indexed artifacts with the conversation. Historical images, documents and media remain addressable after further switches or reopening, without automatically becoming current-turn deliveries. A completed reply in the active runtime may explicitly deliver a historical result again. Reads revalidate the workspace and file version; changed files require a current validated index instead of relying on an old historical entry. Historical plugin packages and their resources are checked again before showing installation readiness. Legacy switch records without a verified inventory are not reconstructed from arbitrary message links. A preview interrupted by a concurrent switch reauthorizes the same read at most once; account changes, permission failures and file actions are not retried. Loading and failed image cards retain a readable layout at narrow widths. Run `node e2e/chat-media-error-layout.cjs /absolute/evidence/directory` to check loading, failed and retried image cards in Electron with synthetic images.
 
 Ordinary conversations retain chat mode on every runtime, including when a message asks for phased implementation or continued work. Goal loops require an explicit goal configuration; the desktop does not infer persistent goal mode from message wording. Existing configured goals retain their pause, continue, stop and recovery controls.
 
@@ -50,7 +79,7 @@ Conversation automation drafts accept relative delays such as `五分钟后` (in
 
 Unconfirmed drafts support repeated time changes. Explicit time-only messages using `后`, `之后`, `以后` or `过后`, such as `修改为10分钟以后`, update the same draft locally, even when model extraction is unavailable. Each delay uses that message's submission time, captured before asynchronous access checks, and synchronizes scheduling annotations in the title, instructions and acceptance criteria without changing unrelated business durations. Restoring the card retains the latest instant; nothing is created until confirmation.
 
-Local draft extraction honors the model's detected output-token parameter. Provider failures retain a safe HTTP status with separate guidance for credentials, access, endpoint/model selection, incompatible parameters, throttling and service outages; raw provider responses remain private and calls are not automatically retried. Failed refinements retain this diagnostic and the original draft. Runner readiness only checks execution prerequisites and does not confirm successful model extraction.
+Local draft extraction honors the model's detected output-token parameter and configured output budget, bounded by its context window. When no output budget is configured, it uses the shared 16,384-token fallback instead of a fixed 1,024-token cap. Explicit smaller native request budgets remain effective. Ordinary plugin AI calls retain their separate limits. Truncated output, including a reasoning response with no final text, reports the output limit and does not create a partial draft. Provider failures retain a safe HTTP status with separate guidance for credentials, access, endpoint/model selection, incompatible parameters, throttling and service outages; raw provider responses remain private and calls are not automatically retried. Failed refinements retain this diagnostic and the original draft. Runner readiness only checks execution prerequisites and does not confirm successful model extraction.
 
 Native history and downloaded conversation replicas retain their account and Hub boundaries when listed, read, restored, or changed, including offline use. Unknown-owner archives require explicit import as separate read-only copies. Cached content does not grant permission to execute a requirement or cloud conversation; resolving a verified native source must preserve its original runtime, model, and permissions.
 
@@ -72,13 +101,25 @@ Conversation analysis and automatic acceptance include the saved requirement, di
 
 Runner conversations distinguish queue waiting, execution-environment startup and actual execution. The queue shows its ordinal position and wait time; execution time starts from the native process acknowledgement. A slow startup displays guidance after 90 seconds without declaring the process stopped. Queued work remains cancellable, and missing historical timestamps are displayed as unrecorded. Run `node e2e/runner-queue-status.cjs /absolute/evidence/directory` for real Electron/Chromium controls using production adapters with synthetic Runner replies. This does not call a real model or remote Hub.
 
+Closing a conversation automation form preserves a draft card at its original position in the transcript, with **Continue editing** to restore the saved fields. Reopening the conversation retains that entry and its collapsed state. Closing or reopening a draft does not create a schedule.
+
 ## Run and verify
+
+Model capability report v3 verifies the complete streaming tool round trip: the synthetic tool result is the last message, tool definitions remain present, and the model must return that result without another forced tool call. Older v2 tool successes require a new check; independent image and streaming evidence remains available. A passed check verifies this small request, not every production prompt or provider policy. Update both desktop and Hub, then rerun the tool capability check for existing models.
+
+The receipt continuation omits `tool_choice`, matching the native Pi request. A generic 403 leaves that capability inconclusive and does not skip independent checks or diagnose missing credential permissions. Explicit authentication and billing failures retain their separate handling.
+
+Hub model refusals carry an opaque `soduwork-trace` marker through JSON, SSE and native conversation summaries. Use it to correlate the Hub transport log with a validated upstream request identifier. Generic HTTP 403 means the request was rejected; it does not prove a credential-permission defect. Completed tools and files remain available, and a 403 does not trigger an automatic retry.
+
+Transient model failures share the existing per-turn retry budget. A provider's `Retry-After` is a minimum wait: if it exceeds the remaining time budget, automatic retries stop instead of shortening that wait. Recognized billing or quota exhaustion does not retry. Completed output and tool results remain available through the existing explicit recovery flow.
 
 Native file delivery preserves Unicode filename spelling and file bytes, including relative links inside bundles. Update the Hub together with the desktop to accept decomposed Unicode names; canonically equivalent or case-conflicting paths are rejected rather than merged. Completed Pi turn journals can recover files with preserved old modification times within the existing scan limits; unrelated historical files remain excluded. Capture checks recorded content hashes before freezing bytes. An explicit file-path contract with no captured output or an incomplete inferred scan reports incomplete delivery; text-only and kind-only contracts retain their existing behavior. Completed manual submissions show that acceptance still requires submission. Transport continues to use the existing account-scoped durable receipt queue.
 
 New native requirement executions distinguish the selected submission policy from its effective mode. The default can submit validated current-turn primary outputs for review even without a predeclared output contract; explicit and unclassified historical manual policies stay manual. Explicit default selections require an updated Hub acknowledgment. Standalone chat JSON results can be collected alongside Markdown; configuration, credentials, hidden directories and process files remain excluded from inference. Project workspaces retain their bounded result rules and explicit manifests remain authoritative.
 
 Before completed-turn capture, the existing durable queue records a scoped pending-capture receipt. Interrupted capture is visible after restart; it never reconstructs a result from changed workspace files or reruns the model. Once captured, retries use frozen bytes and do not duplicate review requests. Requirement details distinguish pending synchronization, manual submission and delivery/reviewer blockers. A filesystem failure before any durable write is reported locally and cannot promise restart recovery. Restore an unavailable creator account or have an administrator verify missing attribution; execution permission never grants acceptance permission.
+
+Opening a requirement from a completion notification refreshes its approval list even before the requirement board has been visited. Native file deliveries outside the repository-change workflow commit the review gate before the existing notification outbox announces it; transport retries retain the committed gate. A resumed turn can submit final files previously retained as incomplete process evidence, including receipts from older clients. Explicit manual submission stays manual. Acceptance navigation distinguishes review intent from ordinary navigation, and an older approval cannot clear the active review context. Update the desktop and Hub together for these delivery and notification fixes.
 
 For a manual requirement-to-acceptance investigation, close the existing desktop and enable the optional local recorder before starting the source desktop. In PowerShell at the repository root:
 
@@ -138,7 +179,9 @@ If the model rejects a plugin draft repair, the conversation and queue retain th
 
 To verify summary export against a disposable authenticated Hub, run `node e2e/acceptance-summary-export.cjs /absolute/evidence/directory /path/to/test/python`. The Python environment needs the backend test dependencies. This exercises native IPC and saved bytes with injected save-dialog choices, not a real model or production account.
 
-For models without an explicit maximum output budget, the desktop, Hub and Runner use 16384 tokens, further bounded by the configured context window. This fallback is not a detected provider limit. Set **Maximum output tokens** in **My Models**, or **Model Catalog** for organization models, to match the deployed service. Reasoning models may need a larger explicit budget to reach tool calls or a final answer. Keep the real context window separate from the output limit; do not shrink it to work around an output-budget rejection. Capability and connection tests use small requests and do not determine the maximum output limit. Output-limit errors identify the setting to adjust and do not trigger automatic retries.
+For models without an explicit maximum output budget, the desktop, Hub and Runner use 16384 tokens, further bounded by the configured context window. This fallback is not a detected provider limit. Set **Maximum output tokens** in **My Models**, or **Model Catalog** for organization models, to match the deployed service. Reasoning models may need a larger explicit budget to reach tool calls or a final answer. Keep the real context window separate from the output limit; do not shrink it to work around an output-budget rejection. Capability and connection tests use small requests and do not determine the maximum output limit. Provider rejections of the configured output limit identify the setting to adjust and do not trigger automatic retries. A Pi response that ends at the output limit with thinking but no answer or tool call may receive one bounded continuation within the same submission. It retains completed tool results and uses the same output budget and thinking settings, asking for a smaller next step or a concise answer. Repeated exhaustion remains incomplete and does not release queued work; cancellation and permission controls remain effective. This does not increase a provider limit or replace context compaction.
+
+Model aliases do not identify their underlying reasoning protocol. For a service confirmed to provide GLM 5.3 or GLM 5.3 Flash, select **GLM 5.3 (always thinking)** under the model editor's advanced thinking strategy settings. The preset keeps the model ID, display name and output budget, and declares always-on Z.ai thinking with the valid low/high/max levels. An unset or disabled initial level resolves to low; explicit supported levels remain available. Recognized wire model names receive the same capability defaults; display labels never determine the protocol. An unknown alias in automatic mode is shown as service-controlled and unconfirmed. Explicitly disabling thinking for a recognized always-thinking model is rejected before execution. See the [provider's thinking documentation](https://docs.bigmodel.cn/cn/guide/capabilities/thinking) for supported settings. Changing the thinking policy does not complete a task or prove its acceptance criteria.
 
 ## Packaging
 

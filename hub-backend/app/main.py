@@ -61,6 +61,14 @@ async def lifespan(app: FastAPI):
     install_log_redaction()
     settings.validate_security()  # Reject missing or default credentials outside development.
     await init_db()
+    if settings.jiyong_database_url:
+        from .services import jiyong_cloud_database
+        try:
+            await jiyong_cloud_database.migrate_at_startup()
+            log.info("即用云端数据库迁移已完成")
+        except Exception as error:
+            log.error("即用云端数据库迁移失败，云端即用服务不可用: %s", error)
+            raise
     from .services import cluster_control, cluster_runtime
     from .services.cluster_bus import bus
     if bus.enabled:
@@ -199,6 +207,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="SoduWork Hub", version=settings.version, lifespan=lifespan)
+
+from .services.session_read_budget import SessionReadBudgetMiddleware
+app.add_middleware(SessionReadBudgetMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

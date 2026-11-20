@@ -20,6 +20,7 @@ const reportDetails = {
   expected_output_mismatch: '回复内容与检测要求不符',
 };
 const additionalDiagnostics = {
+  request_rejected: '服务拒绝了检测请求，原因尚未确认',
   stream_error: '服务在逐步返回回复时报告错误',
   stream_not_observed: '未收到逐步返回的回复，暂不能确认能力',
   response_truncated: '回复提前结束，未能完成检测',
@@ -30,7 +31,7 @@ const badgeMessages = ['最近检测：{0}', '手动配置：{0}', '已有配置
   '服务拒绝了本次图片请求。对话沿用上次通过的结果，你仍可发图。', '对话沿用上次通过的结果，你仍可发图。'];
 const badgeText = (html, index = 0) => [...html.matchAll(/<span class="md-cap-badge [^"]*"[^>]*>([\s\S]*?)<\/span>/g)][index]?.[1].replace(/<[^>]*>/g, '') || '';
 function checkedModel(status, { state = 'supported', config = {} } = {}) {
-  const result = { checks: { imageInput: { status, checkedAt: '2026-11-17T00:00:00Z' } },
+  const result = { reportVersion: 3, checks: { imageInput: { status, checkedAt: '2026-11-17T00:00:00Z' } },
     verifiedChecks: { imageInput: { status: state === 'supported' ? 'passed' : 'unsupported', checkedAt: '2026-11-16T00:00:00Z' } } };
   return { config, capabilityCheck: result, capabilityProfile: contract.profile(config, result) };
 }
@@ -42,6 +43,53 @@ function load() {
   assert.equal(context.esc, undefined);
   return context.ModelCapabilitiesUI;
 }
+
+function thinkingEditor(values = {}) {
+  const fields = Object.fromEntries(Object.entries({ thinkingPreset: 'custom', thinkingFormat: 'qwen',
+    supportsReasoningEffort: 'no', thinkingMode: 'controllable', ...values }).map(([key, value]) => [key, {
+    value, disabled: false, addEventListener(name, callback) { this[name] = callback; },
+  }]));
+  const note = { hidden: true };
+  return { fields, note, querySelector(selector) {
+    if (selector === '[data-paddthinking]') return fields.thinkingMode;
+    if (selector === '[data-md-thinking-preset-note]') return note;
+    return fields[/data-mdfield="([^"]+)"/.exec(selector)?.[1]] || null;
+  } };
+}
+
+test('explicit GLM policy round-trips its legal levels and does not infer from a display label', () => {
+  const ui = load(), original = { name: 'gateway-model', label: 'GLM 5.3', config: { thinkingMode: 'auto' } };
+  const before = JSON.stringify(original);
+  assert.match(ui.fields(original), /value="custom" selected/);
+  const editor = thinkingEditor({ thinkingPreset: 'glm-5.3', thinkingMode: 'always', maxOutputTokens: '16384' });
+  const model = { ...original, ...ui.read(editor, original) };
+  assert.deepEqual(JSON.parse(JSON.stringify(model.config.thinkingLevelMap)),
+    { off: null, minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' });
+  assert.equal(model.config.thinkingFormat, 'zai');
+  assert.equal(model.config.supportsReasoningEffort, true);
+  assert.equal(model.config.thinkingMode, 'always');
+  assert.match(ui.fields(model), /value="glm-5.3" selected/);
+  assert.equal(JSON.stringify(original), before);
+});
+
+test('preset controls stay consistent and returning to custom restores the edited controls across redraws', () => {
+  const ui = load(), editor = thinkingEditor();
+  ui.bindThinking(editor);
+  editor.fields.thinkingPreset.value = 'glm-5.3'; editor.fields.thinkingPreset.change();
+  for (const [key, value] of [['thinkingMode', 'always'], ['thinkingFormat', 'zai'], ['supportsReasoningEffort', 'yes']]) {
+    assert.equal(editor.fields[key].value, value); assert.equal(editor.fields[key].disabled, true);
+  }
+  assert.equal(editor.note.hidden, false);
+  const redrawn = thinkingEditor({ thinkingPreset: 'glm-5.3' });
+  ui.bindThinking(redrawn, ui.thinkingDraft(editor));
+  redrawn.fields.thinkingPreset.value = 'custom'; redrawn.fields.thinkingPreset.change();
+  for (const [key, value] of [['thinkingMode', 'controllable'], ['thinkingFormat', 'qwen'], ['supportsReasoningEffort', 'no']]) {
+    assert.equal(redrawn.fields[key].value, value); assert.equal(redrawn.fields[key].disabled, false);
+  }
+  assert.equal(redrawn.note.hidden, true);
+  const original = { config: { thinkingMode: 'controllable', thinkingFormat: 'qwen', thinkingLevelMap: { off: 'none', high: 'high' } } };
+  assert.equal(JSON.stringify(ui.read(redrawn, original).config.thinkingLevelMap), JSON.stringify(original.config.thinkingLevelMap));
+});
 test('model capability view renders inside a host with lexical, rather than window, helpers', () => {
   const ui = load();
   assert.match(ui.badges({ config: { imageRouting: 'native' } }), /图片输入<b>支持/);
@@ -566,4 +614,18 @@ for (const localOnly of [false, true]) test('capability checks refuse a company 
   assert.equal(f.evaluate('_mdChecks.size'), 0);
   assert.equal(f.evaluate('JSON.stringify(_mdMyModels)'), models);
   assert.equal(f.draft(), before);
+});
+
+for (const locale of ['zh-CN', 'en-US']) test('retired v2 tool evidence clearly requests recheck in ' + locale, () => {
+  const host = capabilityLocaleHost(); host.SoduWorkI18n.setLocale(locale); vm.runInContext(source, host);
+  const old = { reportVersion: 2, checks: { toolCalling: { status: 'passed', checkedAt: '2026-11-17' },
+    streaming: { status: 'passed' } }, verifiedChecks: { toolCalling: { status: 'passed', checkedAt: '2026-11-16' } } };
+  const evidence = contract.publicEvidence(old);
+  const model = { capabilityCheck: evidence, capabilityProfile: contract.profile({}, evidence) };
+  const text = badgeText(host.ModelCapabilitiesUI.badges(model), 1);
+  assert.ok(text.includes(host.SoduWorkI18n.translateText('\u65e7\u7248\u68c0\u6d4b\u7ed3\u679c\u9700\u8981\u91cd\u65b0\u9a8c\u8bc1')), text);
+  assert.ok(!text.includes(host.SoduWorkI18n.translateText('\u68c0\u6d4b\u901a\u8fc7')), text);
+  const report = host.ModelCapabilitiesUI.report(evidence);
+  assert.ok(!report.includes('\u4e0a\u6b21\u9a8c\u8bc1\uff1a\u4e0d\u652f\u6301'));
+  assert.equal(old.checks.toolCalling.status, 'passed');
 });

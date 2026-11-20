@@ -44,6 +44,14 @@ function payloadOf(source) {
   try { return JSON.parse(source.slice(start)); } catch (error) { return null; }
 }
 
+function classificationText(source) {
+  const envelope = payloadOf(source);
+  if (!envelope || typeof envelope !== 'object') return source;
+  // Correlation labels are opaque metadata, not provider error semantics.
+  return source.slice(0, source.indexOf('{')) + JSON.stringify(envelope,
+    (key, value) => ['diagnosticId', 'upstreamRequestId'].includes(key) ? undefined : value);
+}
+
 function statusOf(source, payload, error) {
   const explicit = [error, payload].filter(Boolean)
     .flatMap(item => [item.status, item.statusCode, item.code]).map(Number)
@@ -55,18 +63,23 @@ function statusOf(source, payload, error) {
 
 function describe(value, afterToolResult = false) {
   const raw = textOf(value).trim();
+  const source = classificationText(raw);
+  // The Hub issues an opaque correlation token; provider headers/bodies are
+  // never copied into chat. SDKs may retain only this fixed message marker.
+  const diagnosticId = raw.match(/\[soduwork-trace:([a-f0-9]{32})\]/)?.[1] || '';
   const payload = value && typeof value === 'object' ? value : payloadOf(raw);
   const error = payload && payload.error && typeof payload.error === 'object'
     ? payload.error : payload;
-  const quota = require('../../core/token-quota').detail(payload || raw);
+  const quota = require('../../core/token-quota').detail(
+    payload instanceof Error ? { ...payload, message: source } : payload || source);
   if (quota) return { raw, payload, type: 'quota', status: 403, proxy: true, transient: false,
     retryable: false, code: quota.code, quota: quota.quota,
     publicText: '当前 AI 使用额度暂不可用，请查看额度详情' };
   const type = String(error && error.type || '');
-  const status = statusOf(raw, payload, error);
+  const status = statusOf(source, payload, error);
   const upstream = String(error && error.upstream || '');
-  const combined = [raw, String(error && error.message || ''), upstream].join(' ');
-  const proxy = /soduwork(?:_work)?_proxy_error/i.test(type + ' ' + raw);
+  const combined = [source, classificationText(String(error && error.message || '')), upstream].join(' ');
+  const proxy = /soduwork(?:_work)?_proxy_error/i.test(type + ' ' + source);
   const providerCode = String(error?.providerCode || error?.code || '') === '1113' ||
     /供应商错误码\s*[:：]?\s*1113\b/.test(combined) ? '1113' : '';
   const billing = Boolean(providerCode) || /upstream_billing_error|billing_required|insufficient_quota|insufficient_balance|billing_hard_limit_reached|余额不足|计费额度不可用/i.test(combined);
@@ -106,7 +119,9 @@ function describe(value, afterToolResult = false) {
     }
     if (status) publicText += '（HTTP ' + status + '）';
   }
+  if (publicText && diagnosticId) publicText += ' [soduwork-trace:' + diagnosticId + ']';
   return { raw, payload, type, status, proxy, transient, authExpired, retryable, publicText,
+    ...(diagnosticId ? { diagnosticId } : {}),
     ...(billing ? { code: 'upstream_billing_error', providerCode } : {}),
     ...(outputLimit ? { code: 'output_token_limit_exceeded' } : {}) };
 }

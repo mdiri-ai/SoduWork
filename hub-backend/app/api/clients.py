@@ -203,6 +203,8 @@ async def create_team_task(
     r = await team_svc.create_team_task(session, client, body)
     if not r.get("ok"):
         msg = {"forbidden": "无团队管理权限", "no_title": "请填需求标题",
+               "invalid_title": "title must be a string",
+               "invalid_team_org_id": "teamOrgId must be a string of at most 36 characters",
                "no_assignee": "请选择指派成员", "out_of_scope": "该成员不在你的团队内",
                "no_box": "该成员还没有绑定 SoduWork，无法派需求", "inactive": "该成员已停用，无法派需求"}.get(r.get("reason"), "派需求失败")
         raise HTTPException(status_code=400, detail=msg)

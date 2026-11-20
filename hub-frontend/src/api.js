@@ -1,4 +1,4 @@
-import { translateText as tx } from './i18n.js'
+import { serverMessage, translateText as tx } from './i18n.js'
 // Administration API client uses the Vite /api proxy and stores authentication and current-user permissions locally.
 const TOKEN_KEY = 'soduwork_hub_admin_token'
 const USER_KEY = 'soduwork_hub_admin_user'
@@ -42,9 +42,11 @@ function responseError(res, data) {
   if (Array.isArray(detail)) detail = detail.map((item) => item && item.msg || String(item || '')).filter(Boolean).join('；')
   else if (detail && typeof detail === 'object') detail = detail.message || ''
   if (typeof detail !== 'string' || /^\s*</.test(detail)) detail = ''
+  const code = res.headers.get('X-Error-Code') || ''
+  if (code) detail = serverMessage({ key: code }, detail)
   const error = new Error(detail || tx("请求失败（HTTP {0}）", [res.status]))
   error.status = res.status
-  error.code = res.headers.get('X-Error-Code') || ''
+  error.code = code
   error.requestId = res.headers.get('X-Request-ID') || ''
   return error
 }

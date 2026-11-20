@@ -5,6 +5,7 @@
   const statusNames = { passed: '检测通过', failed: '检测失败', unsupported: '不支持', inconclusive: '未能确认', running: '正在检测', cancelled: '已取消', skipped: '未执行' };
   const sources = { configured: '手动配置', 'legacy-native': '已有配置', verified: '实际检测', unknown: '未确认' };
   const diagnostics = {
+    request_rejected: '服务拒绝了检测请求，原因尚未确认',
     timeout: '服务响应超时，可稍后重试', temporarily_unavailable: '服务暂时不可用，可稍后重试',
     credentials_or_access: '请检查凭据及模型访问权限', model_or_endpoint_missing: '请检查模型 ID 和接口地址',
     capability_not_supported: '服务明确返回不支持此能力', request_not_accepted: '服务未接受检测请求，请检查协议配置',
@@ -48,6 +49,36 @@
     return '<label class="md-cap-field"><span>' + label + '</span><select class="md-in" data-mdfield="' + key + '">' +
       Object.entries(options).map(([id, text]) => '<option value="' + id + '"' + (id === value ? ' selected' : '') + '>' + text + '</option>').join('') + '</select></label>';
   }
+  const glmThinkingLevels = { off: null, minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' };
+  const thinkingDrafts = new WeakMap();
+  function thinkingPreset(config) {
+    return config.thinkingMode === 'always' && config.thinkingFormat === 'zai' && config.supportsReasoningEffort === true &&
+      Object.keys(glmThinkingLevels).every(key => config.thinkingLevelMap?.[key] === glmThinkingLevels[key]) ? 'glm-5.3' : 'custom';
+  }
+  function bindThinking(container, restored) {
+    const preset = container.querySelector('[data-mdfield="thinkingPreset"]');
+    if (!preset) return;
+    const controls = [container.querySelector('[data-paddthinking]'), container.querySelector('[data-mdfield="thinkingFormat"]'),
+      container.querySelector('[data-mdfield="supportsReasoningEffort"]')];
+    const current = () => controls.map(field => field?.value || '');
+    thinkingDrafts.set(container, Array.isArray(restored) ? restored.slice() : current());
+    function sync() {
+      const fixed = preset.value === 'glm-5.3';
+      controls.forEach((field, index) => {
+        if (!field) return;
+        field.disabled = fixed;
+        if (fixed) field.value = ['always', 'zai', 'yes'][index];
+      });
+      const note = container.querySelector('[data-md-thinking-preset-note]');
+      if (note) note.hidden = !fixed;
+    }
+    preset.addEventListener('change', () => {
+      if (preset.value === 'glm-5.3') thinkingDrafts.set(container, current());
+      else controls.forEach((field, index) => { if (field) field.value = thinkingDrafts.get(container)[index]; });
+      sync();
+    });
+    sync();
+  }
   function profile(model) {
     const config = model.config || {}, profile = model.capabilityProfile || {};
     return Object.fromEntries(Object.keys(names).map(key => {
@@ -60,6 +91,7 @@
   }
   function badgeLabel(kind, value) {
     const translate = text => global.SoduWorkI18n?.translateText?.(text) || text;
+    if (kind === 'recheck') return translate(diagnostics.legacy_recheck_required);
     if (kind === 'verified') return ['supported', 'unsupported'].includes(value)
       ? translate(value === 'supported' ? '上次验证：支持' : '上次验证：不支持') : '';
     const templates = { configured: '手动配置：{0}', 'legacy-native': '已有配置：{0}', latest: '最近检测：{0}' };
@@ -91,7 +123,8 @@
       const attributed = divergent && ['verified', 'configured', 'legacy-native'].includes(value.source);
       const label = attributed ? badgeLabelHtml('b', value.source, value.state)
         : '<b>' + e(knownMessage(states, value.state) || states.unknown) + '</b>';
-      const recent = lastLabel && (divergent || !knownState) ? badgeLabelHtml('small', 'latest', status) : '';
+      const recent = latest?.code === 'legacy_recheck_required' ? badgeLabelHtml('small', 'recheck', latest.code)
+        : lastLabel && (divergent || !knownState) ? badgeLabelHtml('small', 'latest', status) : '';
       return '<span class="md-cap-badge is-' + (value.state === 'supported' ? 'supported' : 'neutral') + '" title="' +
         e(knownMessage(sources, value.source) || sources.unknown) + '">' + names[key] + label + recent +
         (value.conflict ? '<small title="配置与最近检测结果不一致">配置冲突</small>' : '') + '</span>';
@@ -106,13 +139,15 @@
       '<label class="md-cap-field"><span>上下文窗口</span><input class="md-in" data-mdfield="ctxWindow" type="number" min="1024" max="10000000" step="1" placeholder="自动" value="' +
         e(model.contextWindowKnown === false ? '' : model.ctxWindow || model.contextWindow || '') + '"></label>' +
       '<label class="md-cap-field"><span>最大输出 Token</span><input class="md-in" data-mdfield="maxOutputTokens" type="number" min="1024" max="262144" step="1" placeholder="16384" value="' + e(config.maxOutputTokens || '') + '"><small>留空时使用 16384 Token。请按服务实际限制填写；能力检测不验证最大输出上限。</small></label>' +
+      select('thinkingPreset', '思考策略', { custom: '自定义（保留当前设置）', 'glm-5.3': 'GLM 5.3（始终思考）' }, thinkingPreset(config)) +
       select('thinkingFormat', '思考协议格式', { '': '自动识别（按模型名）', openai: 'OpenAI reasoning_effort',
         deepseek: 'DeepSeek thinking', qwen: 'Qwen enable_thinking', 'qwen-chat-template': 'Qwen chat_template_kwargs',
         'chat-template': '自定义 chat_template_kwargs', zai: 'Z.ai thinking', openrouter: 'OpenRouter reasoning',
         together: 'Together reasoning', baseten: 'Baseten reasoning', 'ant-ling': 'Ant Ling thinking', 'string-thinking': '字符串 thinking' }, config.thinkingFormat || '') +
       select('supportsReasoningEffort', '思考强度参数', { auto: '自动识别', yes: '支持', no: '不支持' },
         typeof config.supportsReasoningEffort === 'boolean' ? config.supportsReasoningEffort ? 'yes' : 'no' : 'auto') +
-      '</div><p>自动选择优先使用已确认的原生视觉能力；兼容识图需要配置独立视觉服务。</p></details></div>';
+      '</div><p data-md-thinking-preset-note' + (thinkingPreset(config) === 'glm-5.3' ? '' : ' hidden') + '>仅当服务实际提供 GLM 5.3 时选择。始终思考，默认低强度；不更改模型 ID、显示名称或输出上限。</p>' +
+      '<p>自动选择优先使用已确认的原生视觉能力；兼容识图需要配置独立视觉服务。</p></details></div>';
   }
   function read(container, model) {
     const config = { ...(model?.config || {}) }, capabilities = { ...config.capabilities };
@@ -122,6 +157,16 @@
     const format = value('thinkingFormat'), effort = value('supportsReasoningEffort');
     if (format) config.thinkingFormat = format; else delete config.thinkingFormat;
     if (effort === 'yes' || effort === 'no') config.supportsReasoningEffort = effort === 'yes'; else delete config.supportsReasoningEffort;
+    config.thinkingMode = container.querySelector('[data-paddthinking]')?.value || 'auto';
+    // Clear obsolete declarations before applying a complete, explicitly chosen policy.
+    if (config.thinkingMode !== model?.config?.thinkingMode) {
+      delete config.reasoning; delete config.thinkingAlwaysOn; delete config.thinkingLevelMap;
+    }
+    if (value('thinkingPreset') === 'glm-5.3') {
+      delete config.reasoning; delete config.thinkingAlwaysOn;
+      Object.assign(config, { thinkingMode: 'always', thinkingFormat: 'zai', supportsReasoningEffort: true,
+        thinkingLevelMap: { ...glmThinkingLevels } });
+    }
     config.imageRouting = value('imageRouting') || 'auto';
     if (config.imageRouting === 'native' && capabilities.imageInput === 'unsupported') throw Error('原生识图与不支持图片输入的配置冲突');
     const number = (key, max) => {
@@ -165,7 +210,8 @@
   function evidenceWarning(model) {
     return model.capabilityEvidenceError ? '<p role="alert" class="md-cap-error">检测记录暂不可用，请重新检测</p>' : '';
   }
-  global.ModelCapabilitiesUI = { names, states, profile, badges, fields, read, report, evidenceWarning };
+  global.ModelCapabilitiesUI = { names, states, profile, badges, fields, read, report, evidenceWarning,
+    bindThinking, thinkingDraft: container => thinkingDrafts.get(container)?.slice() };
   global.addEventListener?.('soduwork-locale-change', () => {
     global.document?.querySelectorAll('[data-md-cap-label]').forEach(element => {
       const label = badgeLabel(element.dataset.mdCapLabel, element.dataset.mdCapValue);

@@ -2,14 +2,15 @@
 other users are scoped to their organization subtree. Clients inherit organization through
 user_ref.
 """
-from sqlalchemy import func, or_, select
+from pydantic import TypeAdapter, ValidationError
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models
 from ..auth import hash_password
 from ..config import get_settings
 from ..permissions import ALL_KEYS, valid_keys
-from ..schemas import _ms
+from ..schemas import AdminName, _ms
 
 _DEPT_ADMIN_PERMS = [
     "client.view", "client.assign", "client.control", "client.update",
@@ -174,6 +175,34 @@ async def scoped_user_ids(session: AsyncSession, scope: set[str] | None) -> set[
 
 # Organization structure.
 
+_org_name = TypeAdapter(AdminName)
+
+
+async def _lock_org_writes(session: AsyncSession) -> None:
+    """Serialize rare tree edits, including insertion of siblings that don't exist yet."""
+    if session.get_bind().dialect.name == "postgresql":
+        await session.execute(text("LOCK TABLE org_unit IN SHARE ROW EXCLUSIVE MODE"))
+    else:
+        # Reserve the SQLite writer without changing any existing row.
+        await session.execute(update(models.OrgUnit).where(False).values(sort=models.OrgUnit.sort))
+
+
+async def _available_org_name(session: AsyncSession, name: str, parent_id: str | None,
+                              exclude_id: str | None = None) -> str:
+    try:
+        name = _org_name.validate_python(name)
+    except ValidationError as exc:
+        # Moving a legacy node can supply its stored name instead of an API field.
+        raise OrgMutationError("invalid_name") from exc
+    query = select(models.OrgUnit.name).where(models.OrgUnit.parent_id == parent_id)
+    if exclude_id is not None:
+        query = query.where(models.OrgUnit.id != exclude_id)
+    # Older names may have Unicode whitespace that SQL trim() doesn't remove.
+    if any(sibling.strip() == name for sibling in await session.scalars(query)):
+        raise OrgMutationError("duplicate_name")
+    return name
+
+
 async def list_orgs(session: AsyncSession, scope: set[str] | None) -> list[dict]:
     q = select(models.OrgUnit).order_by(models.OrgUnit.sort, models.OrgUnit.created_at)
     if scope is not None:
@@ -190,9 +219,10 @@ async def create_org(
     pid = str(parent_id or "").strip() or None
     if scope is not None and (not pid or pid not in scope):
         raise OrgMutationError("out_of_scope")
+    await _lock_org_writes(session)
     if pid and await session.get(models.OrgUnit, pid) is None:
         raise OrgMutationError("parent_not_found")
-    o = models.OrgUnit(name=name or "未命名部门", parent_id=pid, sort=sort)
+    o = models.OrgUnit(name=await _available_org_name(session, name, pid), parent_id=pid, sort=sort)
     session.add(o)
     await session.commit()
     await session.refresh(o)
@@ -204,13 +234,13 @@ async def update_org(
     parent_id: str | None, sort: int | None, *, scope: set[str] | None,
 ) -> dict | None:
     """Update only an authorized node and keep the department tree acyclic."""
-    o = await session.get(models.OrgUnit, oid)
+    await _lock_org_writes(session)
+    o = await session.get(models.OrgUnit, oid, populate_existing=True)
     if o is None:
         return None
     if scope is not None and oid not in scope:
         raise OrgMutationError("out_of_scope")
-    if name is not None:
-        o.name = name
+    pid = o.parent_id
     if parent_id is not None:
         pid = str(parent_id or "").strip() or None
         if scope is not None and (not pid or pid not in scope):
@@ -220,7 +250,9 @@ async def update_org(
                 raise OrgMutationError("parent_not_found")
             if pid == oid or pid in await subtree_org_ids(session, oid):
                 raise OrgMutationError("cycle")
-        o.parent_id = pid  # Only super administrators may use an empty parent to move an organization to the root.
+    if pid != o.parent_id or (name is not None and name != o.name):
+        o.name = await _available_org_name(session, name if name is not None else o.name, pid, oid)
+        o.parent_id = pid
     if sort is not None:
         o.sort = sort
     await session.commit()
@@ -476,12 +508,32 @@ async def update_domain(session: AsyncSession, did: str, name: str | None, sort:
     return domain_to_api(d)
 
 
+async def _lock_domains(session: AsyncSession, ids: list[str]) -> list[models.Domain]:
+    # A user assignment and deletion must agree on which domains still exist.
+    domain = models.Domain
+    if session.get_bind().dialect.name == "sqlite":
+        # SQLite ignores FOR UPDATE. Reserve the writer before checking references.
+        await session.execute(update(domain).where(domain.id.in_(ids)).values(id=domain.id))
+    rows = await session.scalars(select(domain).where(domain.id.in_(ids))
+                                 .order_by(domain.id).with_for_update())
+    return list(rows)
+
+
+async def validate_user_domains(session: AsyncSession, ids: list[str] | None) -> None:
+    if ids and len(await _lock_domains(session, ids)) != len(set(ids)):
+        raise ValueError("所选业务域不存在，请刷新后重新选择")
+
+
 async def delete_domain(session: AsyncSession, did: str) -> dict:
-    d = await session.get(models.Domain, did)
-    if d is None:
+    domains = await _lock_domains(session, [did])
+    if not domains:
         return {"ok": False, "reason": "not_found"}
+    d = domains[0]
     if d.is_system:
         return {"ok": False, "reason": "system"}
+    assignments = await session.scalars(select(models.User.domains))
+    if any(did in (ids or []) for ids in assignments):
+        return {"ok": False, "reason": "in_use"}
     await session.delete(d)
     await session.commit()
     return {"ok": True}

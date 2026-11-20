@@ -16,6 +16,10 @@ _DIRECT = {"requester", "task_creator", "task_assignee", "owner_client", "projec
 _CATALOG = {"user", "role", "position", "permission"}
 
 
+class InvalidApprovalActions(ValueError):
+    """The approval action list has an invalid input type."""
+
+
 def api(row: am.ApprovalPolicy) -> dict:
     return {
         "id": row.id, "orgId": row.org_id, "key": row.key, "name": row.name,
@@ -30,8 +34,11 @@ def _text(value, limit: int) -> str:
 
 def _rules(value) -> dict:
     raw = dict(value or {}) if isinstance(value, dict) else {}
+    action_values = raw.get("actions", [])
+    if not isinstance(action_values, list):
+        raise InvalidApprovalActions("rules.actions must be an array of approval actions")
     actions = []
-    for item in raw.get("actions") or []:
+    for item in action_values:
         action = _text(item, 32).lower()
         if action not in _ACTIONS:
             raise ValueError(f"不支持的审批场景：{action or '空'}")

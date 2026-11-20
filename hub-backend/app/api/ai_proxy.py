@@ -104,7 +104,7 @@ def _upstream_message(status: int, detail: str, *, responses: bool = False) -> s
         return "模型服务当前繁忙或额度受限，请稍后重试"
     hint = {
         401: "密钥不对或已过期",
-        403: "这把密钥没有这个模型的权限",
+        403: "模型请求被拒绝",
         404: "网关地址、模型名或接口不对" if responses else "网关地址或模型名不对",
         405: "当前模型网关尚未开放 Responses 接口",
     }.get(status, "")
@@ -422,14 +422,21 @@ def _proxy_error(exc, *, responses=False):
                   _error_message(exc, responses=responses), exc.body)
     delay = getattr(exc, "retry_after", 0)
     payload = json.loads(result.body)
+    trace = str(getattr(exc, "diagnostic_id", ""))
+    headers = {}
+    if re.fullmatch(r"[a-f0-9]{32}", trace):
+        payload["error"]["diagnosticId"] = trace
+        payload["error"]["message"] += f" [soduwork-trace:{trace}]"
+        request_id = getattr(exc, "upstream_request_id", "")
+        if request_id:
+            payload["error"]["upstreamRequestId"] = request_id
     if (payload.get("error", {}).get("code") != "upstream_billing_error"
             and isinstance(delay, (int, float)) and 0 < delay <= 86400):
         payload["error"]["retry_after_ms"] = int(delay * 1000)
         # Preserve the hint for SDKs that retain only error.message.
         payload["error"]["message"] += f" Retry after {delay:g} seconds."
-        result = JSONResponse(status_code=result.status_code, content=payload,
-                              headers={"Retry-After": str(delay)})
-    return result
+        headers["Retry-After"] = str(delay)
+    return JSONResponse(status_code=result.status_code, content=payload, headers=headers)
 
 
 async def _release_catalog_connection(session):

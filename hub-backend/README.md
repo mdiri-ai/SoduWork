@@ -57,6 +57,16 @@ routing, restart recovery, interrupted archive writes, and Hub delivery preserva
 
 ## Managed Pi execution
 
+Agent discovery searches bounded npm-prefix, Homebrew and nvm locations, including installations absent from a desktop process's inherited PATH. A selected executable's version, Node engine and DeepSeek adapter metadata must belong to that installation; unrelated private packages cannot supply those values. Windows Codex discovery continues after an excluded WindowsApps candidate. Explicit Agent overrides, managed runtime ownership and native dependency checks remain enforced. The DeepSeek desktop application alone does not provide the ACP adapter required by the Runner.
+
+Recognized npm JavaScript Agents use the same validated Node and package entry for version probes and execution. A shim's adjacent Node cannot override that selection. Node candidates must satisfy the selected package and host minimum versions; DeepSeek boot checks and their cache also track the selected Node and entry. Native executables and custom wrappers retain their explicit commands.
+
+DeepSeek native packages follow the selected Node's platform, architecture and Linux libc, including Rosetta and mixed-runtime installations. Unknown Node identities fail closed. Launch and version-probe child processes inherit the selected Node directory without modifying the Runner's global PATH; quoted Windows PATH entries retain their priority.
+
+Model capability report v3 tests streaming continuation after a synthetic tool result, with tools retained and no extra user message. Existing v2 tool successes require rechecking; independent evidence remains available. Deploy the matching desktop update. Model refusals include an opaque `soduwork-trace` marker shared by JSON and SSE errors and the transport log; validated upstream request IDs remain correlation metadata, never error-classification input. Generic 403 guidance does not infer credential permissions from the status alone.
+
+Model transport refusal logs distinguish recognized rate limits, billing failures and unclassified 429 responses without recording provider bodies. Numeric and HTTP-date `Retry-After` values pass through the existing JSON/SSE error contract; waits above one day are bounded to one day, already beyond the desktop retry budget. Billing errors omit retry hints. The Hub does not add a retry loop; the matching desktop update honors the provider wait only within its existing per-turn budget.
+
 Managed Pi execution binds each Runner execution record to its own configuration and session directory under the Runner data root. Startup and follow-up turns use the same explicit path, independent of inherited desktop Pi settings or the operating system home-directory lookup. Model files contain an environment-variable reference for the credential; missing model configuration or failed file publication stops execution before Pi starts. Personal Pi and desktop-local model files are not modified. On upgrade, only the exact native session identified by the Runner record and matching workspace can be copied into the private directory; its original file remains unchanged. Established follow-up turns require an existing session rather than silently starting a new one.
 
 After a Runner restart, recovery terminals bind the same owned history without restoring model credentials or changing its model file. A new managed turn still requires its own model authorization.
@@ -140,6 +150,42 @@ one continuation, plus one more only after successful native compaction. If the
 limit persists, the turn is reported as incomplete with retained progress instead
 of a protocol error. Successful continuation clears the earlier truncation;
 protocol and host-cleanup failures retain priority.
+
+For managed model routes, SoduWork explicitly enables and budgets DeepSeek's
+native automatic compaction. It runs between tool steps within the current turn.
+Its threshold is the smaller of 80% of the
+model context window and the space left after reserving the current output and
+summary budgets. Summary output stays within the model's configured output cap;
+it no longer inherits the native 65,536-token reservation. Ordinary output caps
+are preserved; a cap that would consume almost the whole window is reduced to
+leave input space. Native compaction keeps the existing session, tool results,
+permissions and cancellation ownership, without requiring a new user message.
+This does not turn a provider's individual output limit into a context overflow
+or remove the bounded output recovery described above.
+
+Run `python3 -m unittest test_dsh_gateway test_context_recovery
+test_acp_error_messages test_local_turn_outcome` for model budgets and recovery
+regressions. Configured or inferred context sizes still need to match the actual
+provider; a window too small for the native instructions and tools cannot be made
+usable by compression alone.
+
+For a real native-process check, run `python3 e2e_dsh_auto_compaction.py` with
+the same explicit `--adapter-entry`, `--runtime-root`, `--node` and `--output`
+paths as the lifecycle check above. A synthetic loopback provider drives a 64k
+window through repeated compression in one user prompt. The check compares the
+old provider-only bundle, verifies durable checkpoints and completed tools, and
+requires lower native usage receipts after compaction. This is not a production
+model or desktop UI acceptance test.
+
+Managed Kimi and Qwen also receive the selected model's context window instead
+of inheriting a larger native default. Kimi receives an explicitly configured
+output cap; Qwen retains the operator's sampling and output parameters. Both use
+their own between-step compression. Managed Codex Harness receives the model
+window and an 80% automatic-compaction threshold. Personal-account Codex keeps
+its native model settings, while OpenCode already receives context/output limits
+and retains native automatic compaction. Run `python3 -m unittest
+test_kimi_runtime test_qwen_runtime test_acp_permission_inputs
+test_codex_account_acp` for these configuration and isolation boundaries.
 
 ## Other harness terminal outcomes
 

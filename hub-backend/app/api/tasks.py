@@ -22,6 +22,7 @@ from ..services.task_dispatch_context import (
     _attach_dev_flow, _attach_skills, _fill_repo_wire, _settle_work_dir,
     _aio_thread, _link_task_repo, _stale_runner_hint, _push_task,
 )
+from ..timestamps import iso_utc
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 log = logging.getLogger("uvicorn.error")
@@ -222,7 +223,7 @@ async def get_delivery_state(
         "blockers": truth.get("blockers") or [],
         "approvals": approvals,
         "outputContract": contract,
-        "reviewedAt": task.reviewed_at.isoformat() if task.reviewed_at else None,
+        "reviewedAt": iso_utc(task.reviewed_at) if task.reviewed_at else None,
         "engineering": {
             "projectId": getattr(task, "project_id", None),
             "repoId": str(getattr(task, "repo_id", "") or "").strip(),
@@ -1426,8 +1427,6 @@ async def ai_session_task(
     limit: int = Query(default=400, ge=1, le=1000),
 ):
     """Behavior and constraints for this operation."""
-    import asyncio as _aio
-
     from ..services import ai_exec, execution_sessions
     if not isinstance(limit, int):
         limit = 400
@@ -1466,8 +1465,16 @@ async def ai_session_task(
             return {"ok": False, "items": [], "error": "这条需求还没交给 AI"}
         d = ev_row.detail or {}
         ref = d.get("ref") or d.get("issueId", "")
+        if not d.get("runnerId"):
+            from ..automation_models import ExecutionSession
+            from sqlalchemy import select
+            owner = await session.scalar(select(ExecutionSession).where(
+                ExecutionSession.task_id == tid, ExecutionSession.ref == ref))
+            if owner and owner.runner_id:
+                d = {**d, "runnerId": owner.runner_id}
     ctx = await ai_exec.load(session)
-    live = await _aio.to_thread(ai_exec.session_sync, ctx, ref, int(since or 0))
+    live = await ai_exec.read_session(ctx, ref, int(since or 0),
+        runner_id=str(d.get("runnerId") or ""), limit=limit)
     if live.get("ok"):
         # New Runners push events; older Runners and backend-local execution use read-through persistence during upgrades.
         await execution_sessions.ingest_live_snapshot(session, t, ref, live, d)

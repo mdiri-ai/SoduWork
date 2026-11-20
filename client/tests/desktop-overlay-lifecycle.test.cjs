@@ -286,6 +286,36 @@ test('other work windows cannot supply overlay ready, heartbeat or shape', (t) =
   assert.equal(win.ignored, true);
 });
 
+test('a captured press keeps fast movement outside its last region, then restores passthrough', t => {
+  const h = harness(t), win = h.controller.createWindow();
+  h.ready(win);
+  h.screen.cursor = { x: 120, y: 120 }; h.timers.tick(40);
+  h.send('window-set-overlay-dragging', win, true);
+  h.screen.cursor = { x: 1000, y: 700 };
+  h.workWindows.push({ isDestroyed: () => false, getBounds: () => ({ x: 900, y: 600, width: 400, height: 300 }) });
+  h.timers.tick(120);
+  assert.equal(win.ignored, false);
+  h.send('window-set-overlay-dragging', win, false);
+  assert.equal(win.ignored, true);
+});
+
+test('capture cannot outlive blur, reload, emergency or originate from a work window', t => {
+  const h = harness(t), win = h.controller.createWindow(); h.ready(win);
+  const foreign = { webContents: new EventEmitter() };
+  h.send('window-set-overlay-dragging', foreign, true);
+  assert.equal(win.ignored, true);
+  for (const interrupt of [() => win.emit('blur'), () => win.reload(), () => h.controller.emergencyPassthrough('test')]) {
+    h.send('window-set-overlay-dragging', win, true);
+    assert.equal(win.ignored, false);
+    interrupt();
+    h.send('window-set-overlay-dragging', win, true);
+    assert.equal(win.ignored, true);
+    if (h.controller.emergency) h.controller.recoverFromEmergency();
+    h.ready(win); h.timers.tick(40);
+    assert.equal(win.ignored, true);
+  }
+});
+
 test('single component keeps its visible shape and releases input before notifying renderer of blur', (t) => {
   const h = harness(t);
   const win = h.controller.createWindow();
@@ -310,12 +340,17 @@ test('initial surface is revealed once after paint, readiness and geometry, with
   const h = harness(t), win = h.controller.createWindow();
   win.emit('ready-to-show');
   assert.equal(win.visible, false);
+  h.timers.tick(14000);
   h.send('renderer-ready', win);
+  h.timers.tick(2000);
+  assert.equal(h.controller.emergency, false);
   assert.equal(win.visible, false);
+  assert.equal(win.ignored, true);
   h.send('window-set-overlay-shape', win, [{ x: 100, y: 100, width: 60, height: 180 }]);
   assert.equal(win.visible, true);
   assert.equal(win.focusCount, 0);
-  h.timers.tick(500);
+  h.timers.tick(15000);
+  assert.equal(h.controller.emergency, false);
   assert.equal(win.calls.filter(call => call[0] === 'show').length, 1);
   assert.equal(win.calls.filter(call => call[0] === 'hide').length, 0);
 });
@@ -464,7 +499,10 @@ test('ready without native regions and failed region application stay safely hid
   const h = harness(t);
   const win = h.controller.createWindow();
   h.send('renderer-ready', win);
-  h.timers.tick(600);
+  h.timers.tick(14999);
+  assert.equal(h.controller.emergency, false);
+  h.send('renderer-ready', win);
+  h.timers.tick(1);
   assert.equal(h.controller.emergency, true);
   assert.equal(win.visible, false);
   h.controller.recoverFromEmergency();
@@ -515,6 +553,24 @@ test('close clears all timers/display listeners and stale events cannot mutate r
   assert.equal(h.screen.listenerCount('display-added'), 1);
 });
 
+test('receiving geometry first still requires renderer readiness for the current navigation', t => {
+  const h = harness(t), win = h.controller.createWindow();
+  win.emit('ready-to-show');
+  const shape = [{ x: 10, y: 10, width: 60, height: 180 }];
+  h.send('window-set-overlay-shape', win, shape);
+  h.timers.tick(14999);
+  assert.equal(win.visible, false);
+  h.send('renderer-ready', win);
+  h.timers.tick(15000);
+  assert.equal(win.visible, true);
+  assert.equal(h.controller.emergency, false);
+
+  h.controller.reload();
+  h.send('window-set-overlay-shape', win, shape, h.query('window-get-overlay-shape', win).revision);
+  h.timers.tick(15000);
+  assert.equal(h.controller.emergency, true);
+});
+
 test('new navigation invalidates delayed shape checks and in-flight DPI correction', async (t) => {
   const h = harness(t);
   const win = h.controller.createWindow();
@@ -522,11 +578,12 @@ test('new navigation invalidates delayed shape checks and in-flight DPI correcti
   win.webContents.executeJavaScript = () => new Promise(resolve => { resolveDpi = resolve; });
   win.webContents.emit('dom-ready');
   h.send('renderer-ready', win);
+  h.timers.tick(14000);
   h.controller.reload();
   resolveDpi(2);
   await Promise.resolve();
   assert.equal(win.webContents.zoom, 1);
-  h.timers.tick(700);
+  h.timers.tick(2000);
   assert.equal(h.controller.emergency, false, 'old page shape grace period cannot pause a new page');
   h.ready(win);
   h.timers.tick(15000);

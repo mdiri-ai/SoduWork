@@ -1118,6 +1118,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     const clearPluginSelection = Boolean(rawOptions &&
       (rawOptions.clearPluginSelection === true || rawOptions.pluginSelection === 'clear'));
     const sendOptions = {
+      ...(automationTurn ? { source: 'automation' } : {}),
       ...(taskTurn?.acceptanceOnly ? { beforeTurn: taskTurn.beforeTurn, afterTurn: taskTurn.afterTurn,
         promptText: taskTurn.text } : {}),
       ...(taskLifecycle ? { taskId, taskTitle: taskTurn.task.title || '',
@@ -1253,7 +1254,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     if (!s) return { ok: false, accepted: false, reason: '这条对话已经不在了（可能已关闭）' };
     if (_cloudHandoff.guard(s)) return { ok: false, accepted: false, reason: '请先处理云端交接，再操作本地队列' };
     try {
-      const result = await Promise.resolve(s.cancel());
+      const result = await Promise.resolve(s.cancel({ userInitiated: true }));
       const snapshot = typeof s.uiSnapshot === 'function' ? s.uiSnapshot() : s.snapshot();
       return { ...(result || { ok: true, accepted: true }),
         snapshot: _contextSnapshot(s, snapshot) };
@@ -1265,7 +1266,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
   // after the first click. Keep the legacy one-way channel for older windows
   // and test fixtures that still use ipcRenderer.send().
   ipcMain.handle('pi-session-cancel-request', (_event, ref) => cancelSession(ref));
-  ipcMain.on('pi-session-cancel', (event, ref) => { const s = session.get(ref); if (s) s.cancel(); });
+  ipcMain.on('pi-session-cancel', (event, ref) => { const s = session.get(ref); if (s) s.cancel({ userInitiated: true }); });
   require('./artifact-ipc').install({ app, ipcMain, BrowserWindow, session, workDir,
     resolveSession: handle => _cloudHandoff.artifactSession(handle) });
   require('../conversation/local-delivery-action').install({ app, ipcMain, session, shell,

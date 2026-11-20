@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am, models
 from . import execution_event_policy
+from ..timestamps import iso_utc
 
 _STATE_ALIASES = {
     "complete": "done", "completed": "done", "success": "done", "succeeded": "done",
@@ -249,7 +250,7 @@ def _event_api(row: am.ExecutionEvent) -> dict:
     detail = dict(row.detail or {})
     out = {"seq": int(row.seq or 0), "kind": row.kind or "out",
            "tool": row.tool or "", "text": row.text or "",
-           "at": row.at.isoformat() if row.at else ""}
+           "at": iso_utc(row.at) if row.at else ""}
     for key in ("seg", "round", "admissionKey", "admissionStartSeq", "turnState", "textTruncated", "full", "sourceId", "callId", "isError",
                 "streamId", "done", "delta", "arguments", "usage", "usageScope", "toolKind", "sentAt", "state", "cancelReason", "attachments", "plugins",
                 "serviceUrl", "previewUrl", "host", "port", "services", "phase", "contentUnavailable"):
@@ -263,7 +264,7 @@ def _loaded_iso(row, field: str) -> str:
     server-default values.
     """
     value = row.__dict__.get(field)
-    return value.isoformat() if value else ""
+    return iso_utc(value) if value else ""
 
 
 def _public_execution_context(value: dict | None) -> dict:
@@ -311,8 +312,8 @@ def session_api(row: am.ExecutionSession, *, items: list | None = None) -> dict:
             "reasoningEffort": str(meta.get("reasoningEffort") or "")},
         "status": state, "seq": int(row.seq or 0), "last": int(row.seq or 0),
         "persistedThrough": int(row.persisted_seq or 0),
-        "workDir": row.work_dir, "startedAt": row.started_at.isoformat() if row.started_at else "",
-        "finishedAt": row.finished_at.isoformat() if row.finished_at else "",
+        "workDir": row.work_dir, "startedAt": iso_utc(row.started_at) if row.started_at else "",
+        "finishedAt": iso_utc(row.finished_at) if row.finished_at else "",
         "createdAt": _loaded_iso(row, "created_at"),
         "updatedAt": _loaded_iso(row, "updated_at"),
         "lastEventAt": _loaded_iso(row, "last_event_at"),

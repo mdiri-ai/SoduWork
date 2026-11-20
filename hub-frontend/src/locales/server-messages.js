@@ -1,5 +1,11 @@
 // Only reviewed server message keys are translated; parameters remain business data.
 export const serverMessages = {
+  'org.delete.has_children': ['该部门下还有子部门', 'This department still has subdepartments.', 'この部門には子部門が残っています。', '이 부서에 하위 부서가 남아 있습니다.'],
+  'org.delete.has_users': ['该部门下还有用户', 'This department still has users.', 'この部門にはユーザーが所属しています。', '이 부서에 소속된 사용자가 있습니다.'],
+  'org.delete.not_found': ['部门不存在', 'Department not found.', '部門が見つかりません。', '부서를 찾을 수 없습니다.'],
+  'role.delete.in_use': ['仍有用户在用该角色', 'This role is still assigned to users.', 'このロールはユーザーに割り当てられています。', '이 역할이 할당된 사용자가 있습니다.'],
+  'role.delete.system_role': ['系统内置角色不可删', 'Built-in roles cannot be deleted.', '組み込みロールは削除できません。', '기본 제공 역할은 삭제할 수 없습니다.'],
+  'role.delete.not_found': ['角色不存在', 'Role not found.', 'ロールが見つかりません。', '역할을 찾을 수 없습니다.'],
   'plugin.routes.unneeded': ['这条流程不需要 AI 执行机', 'This workflow does not need an AI Runner.', 'このワークフローには AI Runner は不要です。', '이 워크플로에는 AI Runner가 필요하지 않습니다.'],
   'plugin.check.trust': ['版本已审批', 'Version approved', 'バージョン承認', '버전 승인'],
   'plugin.check.skills': ['技能可用', 'Skills available', 'スキルの利用可否', '스킬 사용 가능 여부'],
@@ -21,4 +27,12 @@ export const serverMessages = {
   'plugin.mcp.missing': ['尚未启用：{names}', 'Not enabled: {names}', '未有効：{names}', '활성화되지 않음: {names}'],
   'plugin.tools.ready': ['已批准 {count} 个具体工具', '{count} specific tools approved.', '{count} 個のツールを承認済みです。', '도구 {count}개 승인됨.'],
   'plugin.tools.missing': ['尚未选择：{names}', 'Not selected: {names}', '未選択：{names}', '선택되지 않음: {names}'],
+  'model.discovery.invalid-url': ['先填写以 http(s):// 开头的服务地址', 'Enter a service address that starts with http(s)://.', 'http(s):// で始まるサービスアドレスを入力してください。', 'http(s)://로 시작하는 서비스 주소를 입력하세요.'],
+  'model.discovery.missing-key': ['先配置组织密钥', 'Configure the organization key first.', '先に組織キーを設定してください。', '먼저 조직 키를 설정하세요.'],
+  'model.discovery.provider-incomplete': ['服务需要先启用，并填写地址与密钥后才能读取模型列表', 'Enable the service and fill in the address and key before reading the model list.', 'モデル一覧を読み取る前に、サービスを有効化しアドレスとキーを入力してください。', '모델 목록을 읽기 전에 서비스를 활성화하고 주소와 키를 입력하세요.'],
+  'model.discovery.unreachable': ['连不上模型服务：{error}', 'Cannot reach the model service: {error}', 'モデルサービスに接続できません：{error}', '모델 서비스에 연결할 수 없습니다: {error}'],
+  'model.discovery.invalid-payload': ['模型列表不是有效的 JSON 响应', 'The model list is not a valid JSON response.', 'モデル一覧が有効な JSON 応答ではありません。', '모델 목록이 올바른 JSON 응답이 아닙니다.'],
+  'model.discovery.empty': ['服务返回了空模型列表', 'The service returned an empty model list.', 'サービスが空のモデル一覧を返しました。', '서비스가 빈 모델 목록을 반환했습니다.'],
+  'model.discovery.no-endpoint': ['这个服务不提供模型列表接口，请手动添加模型标识', 'This service has no model-list endpoint; add model identifiers manually.', 'このサービスはモデル一覧 API を提供していません。モデル識別子を手動で追加してください。', '이 서비스는 모델 목록 API를 제공하지 않습니다. 모델 식별자를 직접 추가하세요.'],
+  'model.discovery.failed': ['读取模型列表失败：{status}', 'Failed to read the model list: {status}', 'モデル一覧の読み取りに失敗しました：{status}', 'モデル 목록을 읽지 못했습니다: {status}'],
 }

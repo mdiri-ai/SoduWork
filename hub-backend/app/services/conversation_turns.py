@@ -182,11 +182,24 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
     received: set[str] = set()
     round_no = 1
     ref = "conversation:" + conversation_id
-    receipts = (await session.execute(select(TaskEvent).where(
-        TaskEvent.task_id == task.id, TaskEvent.kind == EV_ARTIFACTS))).scalars().all()
+    events = (await session.execute(select(TaskEvent).where(
+        TaskEvent.task_id == task.id,
+        TaskEvent.kind.in_([EV_ARTIFACTS, "artifact.delivery_deferred"])))).scalars().all()
+    receipts = [event for event in events if event.kind == EV_ARTIFACTS]
+    # Older receipts lack outcome, but their deferred event identifies the
+    # incomplete round. A resumed completion must validate/freeze final bytes
+    # even when the same filename was already stored as process evidence.
+    deferred = {(str((event.detail or {}).get("ref") or ""),
+                 str((event.detail or {}).get("identifier") or ""),
+                 str((event.detail or {}).get("round") or ""))
+                for event in events if event.kind == "artifact.delivery_deferred"}
     for event in receipts:
         detail = dict(event.detail or {})
-        if str(detail.get("identifier") or "") != turn_id:
+        if str(detail.get("identifier") or "") != turn_id or str(detail.get("ref") or "") != ref:
+            continue
+        incomplete = detail.get("outcome") == "incomplete" or (
+            ref, turn_id, str(detail.get("round") or "")) in deferred
+        if outcome == "completed" and incomplete:
             continue
         received.update(str(x) for x in (detail.get("files") or []) if x)
     for event in receipts:
@@ -264,7 +277,7 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
                 "pendingSubmission": submission_mode == "manual"}
     task_events.record(session, task.id, EV_ARTIFACTS,
                        {"files": got, "identifier": turn_id, "ref": ref,
-                        "provider": provider or "conversation", "round": round_no,
+                        "provider": provider or "conversation", "round": round_no, "outcome": outcome,
                         "valid": sorted(valid), "deliverables": sorted(deliverables),
                         "evidence": sorted(evidence), "ignored": sorted(ignored),
                         "invalid": invalid[-100:]}, actor=who)
@@ -323,6 +336,7 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
         code = await code_delivery.check(session, task, who="SoduWork", force=True)
     except Exception:  # noqa: BLE001 - Code-delivery checks must not prevent artifact storage.
         code = {}
+    review_request_id = ""
     if not code.get("applies"):
         from .artifact_version_guard import OutputAwaitingRework
         artifact = None
@@ -340,8 +354,8 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
                                {"requestId": request.id, "versionId": artifact.id,
                                 "note": "会话产出自动提交验收", "auto": True, "ref": ref},
                                actor=who)
-            from . import code_delivery as _cd
-            await _cd.notify_reviewer(session, task, "、".join(deliverables or got))
+            if request.status == "pending":
+                review_request_id = request.id
         except OutputAwaitingRework:
             # A late delivery receipt cannot undo a reviewer's rejection.
             await session.commit()
@@ -374,12 +388,12 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
                 await publish_owner(session, task, {
                     "type": "notice", "taskId": task.id,
                     "text": f"「{task.title}」的产出自检未通过，未进入待验收：{reason}{('（' + hint + '）') if hint else ''}"})
+    # Persist the review and its notification atomically. A notice must never
+    # invite a click before the gate is committed, nor hold upload completion
+    # hostage to a slow device transport. The existing outbox owns retries.
+    from . import task_notifications
+    task_notifications.enqueue(session, task, "task.updated", review_request_id=review_request_id)
     await session.commit()
-    # Ingestion changes candidate and review state, so push task.updated.
-    # This keeps board and send-queue snapshots synchronized with the task version.
-    from . import task_access, tasks as tasks_svc
-    await task_access.publish_task(session, task, "task.updated",
-                                   await tasks_svc.task_to_api_live(session, task))
     return {"ok": True, "files": got, "round": round_no,
             "invalid": invalid[-100:], "submissionMode": submission_mode,
             **({"deliveryBlocked": True, "reason": task.work_routing["conversationTurn"]["deliveryIssue"]["reason"]}

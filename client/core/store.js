@@ -724,6 +724,23 @@ SoduWorkStoreLifecycle.install(Store,{
   recovered:()=>{if(typeof _otaUpdate==='function')void _otaUpdate(true);},
 });
 
+function watchClientUpdateNotices() {
+  const updater = window.soduWorkAPI;
+  function record(status) {
+    const version = status?.targetVersion;
+    if (!version) return;
+    if (status.state === 'downloaded' && (!status.phase || status.phase === 'ready')) {
+      logNotice(`SoduWork ${version} 安装包已下载并通过校验。`, null, 'client_update',
+        { noticeEventId: 'client_update_ready_' + version });
+    } else if (status.state === 'manual') {
+      logNotice(`请前往下载页手动安装 SoduWork ${version}。`, null, 'client_update',
+        { noticeEventId: 'client_update_manual_' + version });
+    }
+  }
+  updater?.onClientUpdateStatus?.(record);
+  updater?.clientUpdateStatus?.().then(record).catch(() => {});
+}
+
 /* The renderer only triggers full-client updates; the main process owns Hub selection, validation, and execution. */
 async function _otaUpdate(silent){
   if(!window.soduWorkAPI||!soduWorkAPI.checkClientUpdate){

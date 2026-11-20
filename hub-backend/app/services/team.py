@@ -591,13 +591,19 @@ async def create_team_task(session: AsyncSession, client: models.Client, data: d
     me = await session.get(models.User, client.user_ref) if client.user_ref else None
     if not await _can_manage(session, me):
         return {"ok": False, "reason": "forbidden"}
-    title = (data.get("title") or "").strip()
+    title = data.get("title")
+    if title is not None and not isinstance(title, str):
+        return {"ok": False, "reason": "invalid_title"}
+    title = (title or "").strip()
     if not title:
         return {"ok": False, "reason": "no_title"}
     # Inbox mode creates an unassigned task in the selected team pool.
     if data.get("toInbox"):
         from . import inbox as inbox_svc
-        org_id = data.get("teamOrgId") or (me.org_id if me else None)
+        org_id = data.get("teamOrgId")
+        if org_id is not None and (not isinstance(org_id, str) or len(org_id) > 36):
+            return {"ok": False, "reason": "invalid_team_org_id"}
+        org_id = org_id or (me.org_id if me else None)
         if not org_id:
             return {"ok": False, "reason": "out_of_scope"}
         me_name = me.display_name or me.username

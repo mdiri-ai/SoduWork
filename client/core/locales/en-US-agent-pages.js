@@ -3,6 +3,14 @@
  * cli_account_auth.py, codex_runtime_home.py) and the client panel compose. */
 (function (global) {
   const messages = {
+    "无法确认 DeepSeek Harness 所选 Node 的平台和架构": "Unable to verify the platform and architecture of the Node runtime selected for DeepSeek Harness.",
+    "无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "Unable to verify the Linux libc of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "The DeepSeek Harness runtime manifest is incomplete: Unable to verify the platform and architecture of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "The DeepSeek Harness runtime manifest is incomplete: Unable to verify the Linux libc of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness runtime preparation failed: Unable to verify the platform and architecture of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness runtime preparation failed: Unable to verify the Linux libc of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness runtime preparation failed. The runtime manifest is incomplete: Unable to verify the platform and architecture of the Node runtime selected for DeepSeek Harness.",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness runtime preparation failed. The runtime manifest is incomplete: Unable to verify the Linux libc of the Node runtime selected for DeepSeek Harness.",
     /* ---- job headers & generic job lines ---- */
     "正在修复安装": "Repairing installation",
     "修复未完成": "Repair incomplete",

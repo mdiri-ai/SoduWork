@@ -431,10 +431,17 @@
     root.querySelector('[data-rq-dismiss]').focus();
     try {
       const taskRead = ++taskRequest;
-      const value = await global.SoduWorkAPI.getTask(id, { signal: controller?.signal });
+      // Notification links can open this drawer before the board/inbox has
+      // loaded. Read approval authority here rather than relying on that cache.
+      let approvalError = null;
+      const [value] = await Promise.all([
+        global.SoduWorkAPI.getTask(id, { signal: controller?.signal }),
+        Promise.resolve().then(() => global.TaskApprovalInbox?.refresh()).catch(error => { approvalError = error; }),
+      ]);
       if (request !== seq || !root) return;
       if (!value?.id) throw new Error('需求已移除或当前账号无权访问');
       acceptTaskReply(value, taskRead); render();
+      if (approvalError) feedback('验收状态暂时无法读取，请重新打开需求重试。');
       timing?.mark('data');
       root.querySelector('.rq-detail-content').dataset.taskId = id;
       const attachments = await global.SoduWorkAPI.listAttachments(id);

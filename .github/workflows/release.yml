@@ -70,9 +70,12 @@ jobs:
         run: python tools/github/release_notes.py generate
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_NOTES_API_KEY: ${{ secrets.RELEASE_NOTES_API_KEY }}
+          RELEASE_NOTES_API_KEY: ${{ secrets[vars.RELEASE_NOTES_API_KEY_SECRET || 'RELEASE_NOTES_API_KEY'] }}
+          RELEASE_NOTES_API_KEY_SECRET: ${{ vars.RELEASE_NOTES_API_KEY_SECRET }}
           RELEASE_NOTES_API_URL: ${{ vars.RELEASE_NOTES_API_URL }}
           RELEASE_NOTES_MODEL: ${{ vars.RELEASE_NOTES_MODEL }}
+          RELEASE_NOTES_TIMEOUT_SECONDS: ${{ vars.RELEASE_NOTES_TIMEOUT_SECONDS }}
+          RELEASE_NOTES_MAX_TOKENS: ${{ vars.RELEASE_NOTES_MAX_TOKENS }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         id: notes
         if: steps.generate.outputs.artifact-id == ''

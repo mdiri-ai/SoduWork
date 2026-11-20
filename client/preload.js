@@ -327,6 +327,7 @@ const soduWorkBridge = {
   moveWindow: (x, y) => ipcRenderer.send('window-move', x, y),
   setIgnoreMouseEvents: (ignore, opts) => ipcRenderer.send('window-set-ignore-mouse-events', ignore, opts),
   setOverlayShape: sendOverlayShape,
+  setOverlayDragging: (dragging) => ipcRenderer.send('window-set-overlay-dragging', !!dragging),
   getOverlayShape: () => Promise.resolve(ipcRenderer.invoke('window-get-overlay-shape')).then(observeOverlayShapeState),
   getWindowBounds: () => ipcRenderer.invoke('window-get-bounds'),
   getScreenSize: () => ipcRenderer.invoke('screen-get-size'),
