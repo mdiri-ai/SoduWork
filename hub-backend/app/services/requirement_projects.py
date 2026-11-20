@@ -13,6 +13,12 @@ async def visible_query(session, client):
         if scope else query.where(models.Project.org_id.is_(None))
 
 
+async def _require_repo(session, repo_id) -> None:
+    """Reject a repository id that names nothing before it becomes a dangling task reference."""
+    if repo_id and await session.get(models.Repo, repo_id) is None:
+        raise HTTPException(404, "代码仓库不存在")
+
+
 async def _validate_selection(session, client, project_id, repo_id):
     if not project_id:
         return
@@ -37,6 +43,7 @@ async def prepare_create(session, client, data):
     # Repo-only legacy callers retain their established association behavior.
     project_id = str(data.get("projectId") or "").strip()
     if not project_id:
+        await _require_repo(session, str(data.get("repoId") or "").strip())
         return
     repo_id = str(data.get("repoId") or "").strip()
     await _validate_selection(session, client, project_id, repo_id)
@@ -71,4 +78,6 @@ async def prepare_update(session, client, task, data):
             raise HTTPException(409, "请重新加载需求后再更改项目")
     # Existing execution-history and requirement-version locks remain authoritative
     # in task_requirements.apply; selecting a project never rewrites a repository.
+    if repo_changed and not selected:
+        await _require_repo(session, selected_repo)
     await _validate_selection(session, client, selected, selected_repo)
