@@ -93,6 +93,11 @@ async def create_project(body: dict = Body(default_factory=dict),
                          user: User = Depends(require_perm("task.dispatch")),
                          session: AsyncSession = Depends(get_session)):
     from ..models import Project
+    # Project has no "key" column. Dropping unknown keys answered 200 while storing none of them.
+    allowed = {"name", "desc", "group", "repoUrl", "ownerUserId"}
+    unknown = sorted(set(body) - allowed)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"未知字段：{', '.join(unknown)}")
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填工程名")
