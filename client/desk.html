@@ -259,6 +259,11 @@
   <div class="set-group"><div class="k">工作目录</div>
     <div class="hub-row"><input id="workRootInput" class="hub-input" type="text" readonly spellcheck="false" aria-label="工作目录"><button id="workRootSave" class="hub-save" type="button">选择文件夹</button></div>
     <div class="set-note" id="workRootNote" role="status">选择后自动保存，重启后继续使用所选目录。</div></div>
+  <div class="set-group" id="repoPathSettings"><div class="k">仓库本机路径</div>
+    <div class="hub-row"><input id="repoPathUrlInput" class="hub-input" type="text" spellcheck="false" placeholder="Git 仓库地址，例如 https://github.com/org/repo.git" aria-label="Git 仓库地址"></div>
+    <div class="hub-row"><input id="repoPathDirInput" class="hub-input" type="text" readonly spellcheck="false" aria-label="本机仓库路径"><button id="repoPathPick" class="hub-save" type="button">选择文件夹</button><button id="repoPathSave" class="hub-save" type="button">保存映射</button></div>
+    <div id="repoPathList" class="set-repo-path-list"></div>
+    <div class="set-note" id="repoPathNote" role="status">为仓库配置本机工程目录；需求派发到这台设备时会自动进入对应目录。</div></div>
   <div class="set-group set-access-default"><div class="k">默认授权模式</div>
     <div id="defaultAccessModes" class="set-access-options" role="radiogroup" aria-label="默认授权模式" aria-busy="true">
       <button type="button" data-default-access="standard" role="radio" aria-checked="true" disabled><b>默认权限</b><small>工作区内处理文件，其他操作按需确认</small></button>

@@ -20,6 +20,7 @@ function openSettings() {
   if (typeof refreshSkinCurName === 'function') refreshSkinCurName();
   _refreshBindNote();
   _refreshClientUpdateStatus();
+  _refreshRepoPaths();
   panel.classList.add('show');
   /*
    * Reset scroll after showing the panel and again on the next frame; asynchronous binding
@@ -292,6 +293,7 @@ function _bindSettingsEvents() {
     if (typeof render === 'function') render();
   });
   _bindWorkRoot();
+  _bindRepoPaths();
   _bindAccount();
   _bindSkinEntry();
   /* Persist desktop-pet visibility and broadcast it to the overlay window. */
@@ -465,6 +467,128 @@ function _bindWorkRoot() {
       btn.disabled = false;
     }
   });
+}
+/* Issue #495 (方案二): per-member Git repository → local checkout path mapping. */
+function _repoPathBridge() {
+  if (typeof soduWorkAPI === 'undefined') return null;
+  return soduWorkAPI.conversationSession || soduWorkAPI.piSession || null;
+}
+function _repoPathNote(message) {
+  const note = document.getElementById('repoPathNote');
+  if (note) note.textContent = _clientUpdateText(message);
+}
+function _renderRepoPaths(rows) {
+  const list = document.getElementById('repoPathList');
+  if (!list) return;
+  list.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'set-note';
+    empty.textContent = _clientUpdateText('尚未配置仓库本机路径');
+    list.append(empty);
+    return;
+  }
+  rows.forEach(row => {
+    const item = document.createElement('div');
+    item.className = 'set-repo-path-row';
+    const url = document.createElement('span');
+    url.className = 'set-repo-path-url';
+    url.textContent = String(row.gitUrl || '');
+    url.title = url.textContent;
+    const dir = document.createElement('span');
+    dir.className = 'set-repo-path-dir';
+    dir.textContent = String(row.localPath || '');
+    dir.title = dir.textContent;
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'hub-save set-repo-path-remove';
+    del.textContent = _clientUpdateText('删除');
+    del.setAttribute('data-git-url', String(row.gitUrl || ''));
+    item.append(url, dir, del);
+    list.append(item);
+  });
+}
+async function _refreshRepoPaths() {
+  const list = document.getElementById('repoPathList');
+  if (!list || typeof soduWorkAPI === 'undefined' || typeof soduWorkAPI.clientRepoPaths !== 'function') return;
+  try {
+    const rows = await soduWorkAPI.clientRepoPaths();
+    _renderRepoPaths(Array.isArray(rows) ? rows : []);
+  } catch (e) {
+    _repoPathNote('仓库路径映射暂时无法加载，请重试');
+  }
+}
+function _bindRepoPaths() {
+  const urlInput = document.getElementById('repoPathUrlInput');
+  const dirInput = document.getElementById('repoPathDirInput');
+  const pickBtn = document.getElementById('repoPathPick');
+  const saveBtn = document.getElementById('repoPathSave');
+  const list = document.getElementById('repoPathList');
+  if (!urlInput || !dirInput || !pickBtn || !saveBtn || !list) return;
+  pickBtn.addEventListener('click', async () => {
+    const bridge = _repoPathBridge();
+    if (!bridge || typeof bridge.pickWorkdir !== 'function') {
+      _repoPathNote('请在桌面客户端选择文件夹');
+      return;
+    }
+    pickBtn.disabled = true;
+    try {
+      const result = await bridge.pickWorkdir({ defaultPath: dirInput.value, persist: false });
+      if (result?.canceled) return;
+      const dir = String(result?.dir || '').trim();
+      if (!result?.ok || !dir) {
+        _repoPathNote(result?.reason || '未能选择文件夹，请重试');
+        return;
+      }
+      dirInput.value = dir;
+      _repoPathNote('已选择本机目录，点击「保存映射」生效');
+    } catch (e) {
+      _repoPathNote('无法选择文件夹，请重试');
+    } finally {
+      pickBtn.disabled = false;
+    }
+  });
+  saveBtn.addEventListener('click', async () => {
+    if (typeof soduWorkAPI === 'undefined' || typeof soduWorkAPI.saveClientRepoPath !== 'function') {
+      _repoPathNote('当前客户端不支持保存仓库映射');
+      return;
+    }
+    const gitUrl = String(urlInput.value || '').trim();
+    const localPath = String(dirInput.value || '').trim();
+    if (!gitUrl || !localPath) {
+      _repoPathNote('请填写仓库地址并选择本机目录');
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      const rows = await soduWorkAPI.saveClientRepoPath(gitUrl, localPath);
+      _renderRepoPaths(Array.isArray(rows) ? rows : []);
+      urlInput.value = '';
+      dirInput.value = '';
+      _repoPathNote('仓库映射已保存');
+    } catch (e) {
+      _repoPathNote(e?.message || '保存失败，请重试');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+  list.addEventListener('click', async event => {
+    const btn = event.target?.closest?.('.set-repo-path-remove');
+    if (!btn || btn.disabled) return;
+    if (typeof soduWorkAPI === 'undefined' || typeof soduWorkAPI.deleteClientRepoPath !== 'function') return;
+    const gitUrl = btn.getAttribute('data-git-url') || '';
+    if (!gitUrl) return;
+    btn.disabled = true;
+    try {
+      const rows = await soduWorkAPI.deleteClientRepoPath(gitUrl);
+      _renderRepoPaths(Array.isArray(rows) ? rows : []);
+      _repoPathNote('仓库映射已删除');
+    } catch (e) {
+      btn.disabled = false;
+      _repoPathNote('删除失败，请重试');
+    }
+  });
+  _refreshRepoPaths();
 }
 /* Expose the current workspace root in both renderer windows for execution-path construction. */
 function workRoot() {
