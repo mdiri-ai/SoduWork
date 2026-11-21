@@ -920,9 +920,13 @@ async def clear_done(session: AsyncSession, owner_id: str) -> dict:
 
 async def batch_update(session: AsyncSession, owner_id: str, ids: list[str], patch: dict) -> dict:
     count = rejected = 0
+    missing: list[str] = []
     for tid in ids:
         result = await update_task(session, owner_id, tid, patch)
-        if result is not None:
-            count += 1
-            rejected += int(bool(result.get("statusTransition")))
-    return {"updated": count, "statusRejected": rejected}
+        if result is None:
+            # Reported back so a partially applied batch is never mistaken for a fully applied one.
+            missing.append(str(tid))
+            continue
+        count += 1
+        rejected += int(bool(result.get("statusTransition")))
+    return {"updated": count, "statusRejected": rejected, "missing": missing}
