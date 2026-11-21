@@ -686,7 +686,16 @@ async def _generate_media(
     payload.update(body)
     payload["model"] = conf["model"]
     payload.pop("stream", None)
-    endpoint = config["endpointPath"]
+    endpoint = str(config.get("endpointPath") or "")
+    # Pre-flight checks so a misconfigured media endpoint fails with a specific,
+    # actionable message instead of one generic 404 covering four different causes.
+    if endpoint.startswith(("http://", "https://")):
+        return _err(400, f"生成接口路径要填相对路径（如 /v1/images/generations），不要填完整地址；当前为：{endpoint}")
+    base = str(conf.get("base_url") or "")
+    if base and endpoint:
+        joined = base.rstrip("/") + (endpoint if endpoint.startswith("/") else "/" + endpoint)
+        if joined.count("/v1") > 1 or joined.count("/v3") > 1 or joined.count("/v4") > 1:
+            return _err(400, f"接口地址与生成路径重复拼接（会得到 {joined}）；接口地址已含版本后缀时，生成路径只需填 /images/generations")
     log.info("[ai-proxy:%s] %s -> %s (%s)", modality, client.id,
              conf["model"], conf.get("provider") or "")
     await _release_catalog_connection(session)
@@ -695,6 +704,17 @@ async def _generate_media(
             model_transport.open_response(conf, endpoint,
                 json.dumps(payload, ensure_ascii=False).encode("utf-8")))
         raw = await model_transport.until_disconnect(request, response.read(64 * 1024 * 1024))
+        # Save-time validation: an upstream 200 that is neither JSON nor a real media file
+        # would otherwise be persisted as a corrupted deliverable. Surface the raw body instead.
+        ctype = (response.headers.get("content-type") or "").lower()
+        if response.status == 200 and raw and "json" not in ctype and "text" not in ctype:
+            magic_ok = (raw.startswith(b"\x89PNG") or raw.startswith(b"\xff\xd8\xff")
+                        or raw[:4] == b"GIF8" or (raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"))
+            if not magic_ok:
+                return _err(502, f"服务商返回了 {len(raw)} 字节但不是合法的{('图片' if modality == 'image' else '视频')}文件"
+                                f"（content-type: {ctype or '未知'}）；原始响应开头：{raw[:160]!r}")
+        if response.status == 200 and not raw:
+            return _err(502, "服务商返回了空响应，请核对生成接口路径与请求参数")
         return Response(content=raw, media_type=response.headers.get("content-type", "application/json"))
     except model_errors.UpstreamError as exc:
         return _proxy_error(exc)
