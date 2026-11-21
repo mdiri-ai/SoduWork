@@ -142,10 +142,34 @@ export default function Repositories() {
     await finish()
   }
 
-  const shown = catalog.filter((row) => {
+  const needle = query.trim().toLowerCase()
+  // The backend caps each catalog query at 1,000 rows. Once the loaded catalog fills
+  // that window, repositories beyond it exist in the database but never reached this
+  // browser, and local filtering would silently miss them in search results. Repeat
+  // the query server-side (where filtering happens before the cap) with a debounce.
+  const truncated = catalog.length >= 1000
+  const [remoteMatches, setRemoteMatches] = useState(null)
+  const searchRequest = useRef(0)
+  const sourceIds = useMemo(() => sources.map((s) => s.id).join(','), [sources])
+  useEffect(() => {
+    if (!truncated || !needle) { searchRequest.current += 1; setRemoteMatches(null); return }
+    const request = ++searchRequest.current
+    const timer = setTimeout(async () => {
+      try {
+        const ids = sourceIds ? sourceIds.split(',') : ['']
+        const settled = await Promise.allSettled(ids.map((id) => api.repositoryCatalog(id, query.trim())))
+        if (request !== searchRequest.current) return
+        const items = [...new Map(settled.flatMap((r) => r.status === 'fulfilled' ? (r.value.items || []) : [])
+          .map((row) => [row.id, row])).values()]
+        setRemoteMatches({ needle, items })
+      } catch (_e) { if (request === searchRequest.current) setRemoteMatches(null) }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [needle, query, truncated, sourceIds])
+  const shown = (remoteMatches && remoteMatches.needle === needle
+    ? remoteMatches.items : catalog).filter((row) => {
     if (provider && String(row.provider) !== provider) return false
-    const q = query.trim().toLowerCase()
-    return !q || [row.fullName, row.displayName].some((v) => String(v || '').toLowerCase().includes(q))
+    return !needle || [row.fullName, row.displayName].some((v) => String(v || '').toLowerCase().includes(needle))
   })
   const counts = useMemo(() => {
     const by = {}

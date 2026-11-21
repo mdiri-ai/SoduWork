@@ -219,7 +219,24 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
     } catch (e) { toast(tx("仓库没有加入项目：") + e.message) } finally { setBusy(false) }
   }
 
-  const shown = catalog.filter((row) => !query.trim() || [row.fullName, row.displayName].some((v) => String(v || '').toLowerCase().includes(query.trim().toLowerCase())))
+  // Mirror Repositories.jsx: once the loaded catalog fills the backend's 1,000-row
+  // query cap, local filtering would silently miss repositories beyond the window.
+  // Repeat the search server-side (filtering happens before the cap) with a debounce.
+  const needle = query.trim().toLowerCase()
+  const truncated = catalog.length >= 1000
+  const [remoteMatches, setRemoteMatches] = useState(null)
+  useEffect(() => {
+    if (!sourceId || !truncated || !needle) { setRemoteMatches(null); return }
+    const timer = setTimeout(async () => {
+      try {
+        const result = await api.repositoryCatalog(sourceId, query.trim())
+        setRemoteMatches({ needle, items: result.items || [] })
+      } catch (_e) { setRemoteMatches(null) }
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [needle, query, sourceId, truncated])
+  const shown = (remoteMatches && remoteMatches.needle === needle
+    ? remoteMatches.items : catalog).filter((row) => !needle || [row.fullName, row.displayName].some((v) => String(v || '').toLowerCase().includes(needle)))
   return <Modal scope="project-governance" title={tx("从远程仓库目录添加")} icon="box" wide onClose={onClose} foot={<><button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button><button className="btn btn-primary" disabled={busy || !selected} onClick={save}>{busy ? tx("正在添加…") : tx("添加到项目")}</button></>}>
     <div className="pg-catalog-lead"><div><b>{tx("选择真实代码资产，再指定这个项目使用的分支")}</b><span>{tx("同一个远程仓库可以服务多个项目；每个项目独立保存工作分支、合并目标与研发规则。")}</span></div>{canSync && <button className="btn btn-ghost btn-sm" disabled={syncing || !sourceId} onClick={sync}><Icon name="refresh" />{syncing ? tx("同步中…") : tx("同步目录")}</button>}</div>
     <div className="pg-catalog-source">
