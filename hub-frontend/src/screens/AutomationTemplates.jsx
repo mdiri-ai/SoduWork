@@ -94,7 +94,7 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
       <label className="wide"><span>{tx("生成需求标题")}</span><input maxLength="200" value={value.title}
         onChange={(e) => set('title', e.target.value)} placeholder={tx("每日工作总结")} /></label>
       <label className="wide"><span>{tx("交给 AI 的工作说明")}</span><textarea required maxLength="8000" rows="5" value={value.note}
-        onChange={(e) => set('note', e.target.value)} placeholder={tx("说明 AI 每次需要完成的工作、交付物和验收要求")} /></label>
+        onChange={(e) => set('note', e.target.value)} placeholder={tx("例：每天 09:00 汇总昨日完成的任务，生成日报（含完成/阻碍/计划三节），交付到「日报」需求下。验收：三节齐全，每节至少一条。")} /></label>
     </div>
     <LocalesEditor summary={tx("多语言（可选）")} languages={localeFields} value={value}
       onChange={(key, map) => set(key, map)}
