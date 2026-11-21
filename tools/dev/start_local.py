@@ -455,6 +455,48 @@ def wait_session(server: subprocess.Popen, desktop: subprocess.Popen, state: Pat
         return
 
 
+def attach_desktop(state: Path, config: dict, args) -> None:
+    """Attach the desktop client to an already-running source session (#879).
+
+    The running session owns the service and its real credentials; this launcher
+    only prepares and opens the desktop against the same base URL, so no second
+    service or a conflicting lock is created.
+    """
+    log = state / 'startup.log'
+    url_host = f"[{args.host}]" if ":" in args.host else args.host
+    base = f"http://{url_host}:{args.port}"
+    # Confirm the running session actually responds before attaching; a session
+    # that is still initializing cannot serve the desktop yet.
+    try:
+        with HTTP.open(base + "/readyz", timeout=3) as response:
+            ready = json.load(response).get("ready")
+    except (OSError, URLError, ValueError):
+        ready = None
+    if not ready:
+        raise StartupError("The running session did not respond on " + base + "/readyz. "
+                           "Wait for its window to show ready, then run the same launcher "
+                           "with --desktop again.")
+    client = prepare_desktop(state, log)
+    # launch_desktop strips ADMIN_PASS/AUTH_SECRET/DATABASE_URL, and the running
+    # session owns the real credentials, so the placeholder never reaches the
+    # desktop process or any child it spawns.
+    env = runtime_environment(state, config, "attach-placeholder", args.host, args.port)
+    output = log.open('ab')
+    desktop = launch_desktop(state, client, env, base, output)
+    print(f"桌面端已追加到运行中的会话 / Desktop attached to the running session: {base}\n"
+          "登录账号密码用原会话窗口里显示的；关闭桌面端或按 Ctrl+C 结束本次追加。\n"
+          "Sign in with the credentials shown in the running session's window. "
+          "Quit the desktop application or press Ctrl+C here to stop.", flush=True)
+    try:
+        code = desktop.wait()
+        if code:
+            raise StartupError(f"The desktop application exited (code {code}). See {state / 'desktop.log'}; "
+                               "retry with --desktop once the session window shows ready.")
+    finally:
+        desktop.stdin.close()
+        output.close()
+
+
 def main(argv=None) -> int:
     if sys.platform == "win32":
         # Redirected Windows output can use a legacy code page. Keep its encoding
@@ -515,6 +557,19 @@ def main(argv=None) -> int:
         print("\nSoduWork stopped. Your data is retained.")
         return 0
     except (StartupError, OSError, subprocess.SubprocessError) as exc:
+        # An already-running session must not block --desktop: attach to it instead (#879).
+        # --prepare-only keeps its original behavior because writing the shared venv or
+        # UI build while a session is running can corrupt its runtime.
+        if (args.desktop and not args.prepare_only and isinstance(exc, StartupError)
+                and "already running" in str(exc)):
+            state = args.data_dir.expanduser().resolve()
+            if initialized(state):
+                try:
+                    config = initialize(state, args.admin_user.strip())
+                    attach_desktop(state, config, args)
+                    return 0
+                except (StartupError, OSError, subprocess.SubprocessError) as attach_exc:
+                    exc = attach_exc
         print(f"\nSoduWork 启动未完成 / SoduWork could not start: {exc}\n"
               "修正上方问题后，重新运行同一个启动文件；无需删除数据或重装整个工程。\n"
               "Fix the reported issue and run the same launcher again. See docs/getting-started.md.", file=sys.stderr)
