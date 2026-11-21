@@ -15,6 +15,9 @@ const ACTIONS = localeMap(() => ({
   'task.reject': { label: '打回流转', c: 'var(--warn)' },
   'client.assign': { label: '分配 SoduWork 归属', c: 'var(--c-green)' },
   'client.reset_secret': { label: '重置设备密钥', c: 'var(--warn)' },
+  'org.create': { label: '新建部门', c: 'var(--c-green)', noFilter: true },
+  'org.update': { label: '编辑部门', c: 'var(--c-orange)', noFilter: true },
+  'org.delete': { label: '删除部门', c: 'var(--crit)', noFilter: true },
   'role.update': { label: '改角色权限', c: 'var(--c-rose)' },
   'user.create': { label: '新建用户', c: 'var(--c-green)' },
   'user.update': { label: '修改用户', c: 'var(--c-orange)' },
@@ -64,14 +67,16 @@ const ACTIONS = localeMap(() => ({
   'plugin.conversation_use': { label: '对话调用连接器', c: 'var(--accent)' },
   'team.message': { label: '团队消息', c: 'var(--c-blue)' },
 }))
-const actInfo = (a) => ACTIONS[a] || { label: String(a || tx("未知操作")).replaceAll('.', ' · '), c: 'var(--offline)' }
+const actInfo = (a) => Object.hasOwn(ACTIONS, a) ? ACTIONS[a] : {
+  label: tx("未知操作") + (a ? ' (' + String(a) + ')' : ''), c: 'var(--offline)',
+}
 /* Filter common actions directly; retain uncommon and historical actions under All. */
 const FILTERS = localeMap(() => ([['', '全部'], ...Object.entries(ACTIONS).filter(([, v]) => !v.noFilter).map(([k, v]) => [k, v.label])]))
 const PAGE = 30
 function fmtT(ms) {
   if (!ms) return ''
   const d = new Date(ms), p = (n) => (n < 10 ? '0' : '') + n
-  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 export default function Audit() {
   const uiLocale = useLocale();
@@ -128,7 +133,7 @@ export default function Audit() {
                   <tr key={a.id}>
                     <td className="admin-audit-time">{fmtT(a.at) || '—'}</td>
                     <td>{a.actorName || '—'}</td>
-                    <td><span className="admin-audit-action"><i style={{ background: info.c }} />{info.label}</span></td>
+                    <td><span className="admin-audit-action" title={a.action || undefined}><i style={{ background: info.c }} />{info.label}</span></td>
                     <td>{a.targetLabel || '—'}</td>
                     <td className="admin-audit-detail">{detailText(a) || '—'}</td>
                   </tr>
