@@ -15,12 +15,17 @@ async function request(identity, route, body) {
   require('../requirement-diagnostics.cjs').http(identity, route, body, data, response.status);
   if (!response.ok || data.ok === false) {
     const status = Number(response.status) || 0;
+    const validation = status === 422 && data.detail && typeof data.detail === 'object' && !Array.isArray(data.detail)
+      ? data.detail : null;
     const error = new Error(typeof data.detail === 'string' ? data.detail
+      : typeof validation?.message === 'string' ? validation.message
       : status === 401 ? '登录已过期，请重新连接 SoduWork 服务后继续'
       : status === 403 ? '当前连接没有执行此操作的权限'
       : '需求服务暂不可用，请稍后重试');
     error.status = status;
-    error.code = typeof data.code === 'string' ? data.code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_REQUIRED' : 'REQUEST_FAILED';
+    error.code = typeof data.code === 'string' ? data.code
+      : typeof validation?.error_code === 'string' ? validation.error_code
+      : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_REQUIRED' : 'REQUEST_FAILED';
     error.authRequired = status === 401 || error.code === 'AUTH_REQUIRED';
     error.permissionRequired = status === 403 || error.code === 'PERMISSION_REQUIRED';
     error.retryable = error.authRequired || error.permissionRequired ? false : status === 0 || status >= 500 || status === 429;

@@ -124,6 +124,57 @@ test('自动验收仅在本轮成功并提供完整报告后提交当前固定�
   assert.doesNotMatch(f.notices[0][1], /c1:/);
 });
 
+test('automatic review offers bound evidence references to the model and retains them in the report', async t => {
+  const ref = { kind: 'file', ref: 'file-a', fingerprint: 'a'.repeat(64) };
+  const f = fixture(t, { evidenceRefOptions: [ref] });
+  const turn = await prepare({ identity: {}, taskId: 't', requested: { acceptanceMode: 'auto' },
+    runtime: f.runtime, request: f.request });
+  assert.match(turn.text, /evidenceRefs/);
+  assert.ok(turn.text.includes(ref.fingerprint));
+  assert.doesNotMatch(turn.displayText, /evidenceRefs|fingerprint|file-a/);
+  const refs = [{ ...ref, note: 'Checked the fixed file contents' }];
+  fs.writeFileSync(turn.reportPath, JSON.stringify({ verdict: 'approve', summary: 'Counted 400 words',
+    checks: [{ criterion: 'c1', result: 'pass', evidence: 'Read the entire file and counted 400 words', evidenceRefs: refs }] }));
+  await turn.afterTurn('completed');
+  assert.deepEqual(f.calls.find(call => call.body).body.report.checks[0].evidenceRefs, refs);
+});
+
+test('large review context omits complete reference choices without truncating identities or fingerprints', async t => {
+  const refs = Array.from({ length: 100 }, (_, i) => ({ kind: 'file', ref: 'file-' + i + '-' + 'x'.repeat(180), fingerprint: 'a'.repeat(64) }));
+  const f = fixture(t, { evidenceRefOptions: refs, artifact: { manifest: 'Large manifest '.repeat(4000) } });
+  const turn = await prepare({ identity: {}, taskId: 't', requested: { acceptanceMode: 'auto' },
+    runtime: f.runtime, request: f.request });
+  const section = turn.text.split('可选 evidenceRefs（内部版本引用）：\n')[1].split('\n\n')[0];
+  const emitted = section.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line));
+  assert.ok(emitted.length > 0 && emitted.length < refs.length);
+  for (const ref of emitted) assert.ok(refs.some(source => JSON.stringify(source) === JSON.stringify(ref)));
+  assert.ok(turn.text.length <= 50000);
+  assert.doesNotMatch(turn.displayText, /fingerprint|file-0/);
+});
+
+test('queued automatic review rejects changed reference choices or a Hub that no longer supports them', async t => {
+  for (const change of ['changed', 'unsupported']) {
+    const f = fixture(t, { evidenceRefOptions: [{ kind: 'file', ref: 'file-a', fingerprint: 'a'.repeat(64) }] });
+    const turn = await prepare({ identity: {}, taskId: 't', requested: { acceptanceMode: 'auto' },
+      runtime: f.runtime, request: f.request });
+    if (change === 'changed') f.context.evidenceRefOptions[0].fingerprint = 'b'.repeat(64);
+    else delete f.context.evidenceRefOptions;
+    await assert.rejects(turn.beforeTurn(), /验收版本已变化/);
+    assert.ok(f.calls.every(call => !call.body));
+  }
+});
+
+test('queued automatic review accepts equivalent reference choices in a different list or object-field order', async t => {
+  const refs = [{ kind: 'file', ref: 'file-a', fingerprint: 'a'.repeat(64) },
+    { kind: 'text', ref: 'artifact:v1:text', fingerprint: 'b'.repeat(64) }];
+  const f = fixture(t, { evidenceRefOptions: refs });
+  const turn = await prepare({ identity: {}, taskId: 't', requested: { acceptanceMode: 'auto' },
+    runtime: f.runtime, request: f.request });
+  f.context.evidenceRefOptions = refs.toReversed().map(ref => ({ fingerprint: ref.fingerprint, ref: ref.ref, kind: ref.kind }));
+  await turn.beforeTurn();
+  assert.ok(f.calls.every(call => !call.body));
+});
+
 test('停止、失败、缺报告和标准不足都不自动批准', async t => {
   const f = fixture(t);
   const turn = await prepare({ identity: {}, taskId: 't', requested: { acceptanceMode: 'auto' },

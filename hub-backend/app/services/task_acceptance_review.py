@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from .. import automation_models as am, models
 from ..schemas import attachment_to_api
-from . import approval_routing, delivery_bundle, gate_contract, release_control, task_access
+from . import acceptance_evidence_refs, approval_routing, delivery_bundle, gate_contract, release_control, task_access
 
 _locks = weakref.WeakValueDictionary()
 
@@ -110,6 +110,7 @@ async def context(session, client, tid):
             "approvalId": request.id if request else "direct:" + task.id,
             "artifactVersionId": artifact.id, "requirementVersion": task.requirement_version,
             "criteria": _criteria(task, request), "evidence": gate.get("evidence") or [],
+            "evidenceRefOptions": acceptance_evidence_refs.options(artifact, gate.get("evidence") or []),
             "readiness": gate.get("readiness") or {},
             "artifact": release_control.artifact_api(artifact),
             "attachments": [attachment_to_api(row) for row in selected],
@@ -136,7 +137,7 @@ def validate_report(body, criteria):
     labels = {item["id"]: item for item in criteria}
     labels.update({item["label"]: item for item in criteria})
     seen, normalized = set(), []
-    for check in checks:
+    for index, check in enumerate(checks):
         if not isinstance(check, dict):
             raise HTTPException(422, "验收报告检查项格式不正确")
         item = labels.get(str(check.get("criterion") or ""))
@@ -147,7 +148,9 @@ def validate_report(body, criteria):
             raise HTTPException(422, "每项验收结论都必须附上实际核验依据")
         seen.add(item["id"])
         normalized.append({"criterion": item["id"], "label": item["label"],
-                           "result": check["result"], "evidence": evidence.strip()})
+                           "result": check["result"], "evidence": evidence.strip(),
+                           **({"evidenceRefs": acceptance_evidence_refs.normalize(check["evidenceRefs"], index)}
+                              if "evidenceRefs" in check else {})})
     failed = any(item["result"] == "fail" for item in normalized)
     if (verdict == "approve") == failed:
         raise HTTPException(422, "验收总论与逐项核验结果不一致")
@@ -182,15 +185,22 @@ async def _apply(session, client, tid, body):
             body.get("requirementVersion") != task.requirement_version or
             (body.get("approvalId") != expected and not direct_retry)):
         raise HTTPException(409, "需求、交付版本或验收票已经变化，请重新发起验收")
+    # A committed retry must not depend on a referenced attachment still being
+    # present. Read the prior decision before resolving optional evidence.
+    prior = (await session.execute(select(am.ApprovalDecision).where(
+        am.ApprovalDecision.request_id == request.id,
+        am.ApprovalDecision.user_id == actor.id))).scalars().first() if request is not None else None
     report = validate_report(body, _criteria(task, request))
     if report["verdict"] == "approve" and gate_contract.requires_manual_confirmation(artifact):
         raise HTTPException(422, "本轮没有可自动核验的交付物，请使用手动验收确认实际结果")
     if direct_retry and saved.get("report") != report:
         raise HTTPException(409, "本次直验已有其他结论，请刷新后查看")
+    if (prior is None and (request is None or request.status == "pending")
+            and any(check.get("evidenceRefs") for check in report["checks"])):
+        gate = await _packet(session, task, artifact, request)
+        acceptance_evidence_refs.verify(
+            report, acceptance_evidence_refs.options(artifact, gate.get("evidence") or []))
     if request is not None:
-        prior = (await session.execute(select(am.ApprovalDecision).where(
-            am.ApprovalDecision.request_id == request.id,
-            am.ApprovalDecision.user_id == actor.id))).scalars().first()
         if prior is not None:
             return {"ok": True, "already": True, "verdict":
                     "pending" if request.status == "pending" else request.status,

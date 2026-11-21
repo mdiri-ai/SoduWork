@@ -286,6 +286,186 @@ class AcceptanceReviewTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(caught.exception.status_code, 422)
                 self.assertEqual(self.request.status, "pending")
 
+    async def test_report_retains_per_check_references_to_the_fixed_artifact(self):
+        self.artifact.checksum = "a" * 64
+        await self.session.commit()
+        body = self.body()
+        refs = [{"kind": "text", "ref": "artifact:artifact-1:text",
+                 "fingerprint": self.artifact.checksum, "note": "Checked the fixed essay"}]
+        body["report"]["checks"][0]["evidenceRefs"] = refs
+        result = await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertTrue(result["closed"])
+        saved = self.request.context["aiAcceptanceReports"][self.actor.id]["report"]
+        self.assertEqual(saved["checks"][0].get("evidenceRefs"), refs)
+        event = await self.session.scalar(select(models.TaskEvent).where(
+            models.TaskEvent.kind == "artifact.auto_reviewed"))
+        self.assertEqual(event.detail["report"]["checks"][0].get("evidenceRefs"), refs)
+
+    async def test_unresolvable_evidence_reference_never_writes_an_approval(self):
+        body = self.body()
+        body["report"]["checks"][0]["evidenceRefs"] = [
+            {"kind": "file", "ref": "missing-attachment", "fingerprint": "a" * 64}]
+        with self.assertRaises(HTTPException) as caught:
+            await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail["parameters"]["path"],
+                         ["report", "checks", 0, "evidenceRefs", 0])
+        self.assertEqual(self.request.status, "pending")
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 0)
+
+    async def test_text_only_legacy_report_and_missing_digest_remain_usable(self):
+        self.artifact.checksum = ""
+        await self.session.commit()
+        context = await self.context()
+        self.assertEqual(context["evidenceRefOptions"], [])
+        self.assertTrue(context["evidence"], "Historical material remains available")
+        body = self.body()
+        result = await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertTrue(result["closed"])
+        saved = self.request.context["aiAcceptanceReports"][self.actor.id]["report"]
+        self.assertNotIn("evidenceRefs", saved["checks"][0])
+        self.assertEqual(saved["checks"][0]["evidence"], body["report"]["checks"][0]["evidence"])
+        self.assertTrue((await api.auto_review_task_artifact(self.task.id, body, self.client, self.session))["already"])
+
+    async def test_reference_requires_the_current_type_and_fingerprint(self):
+        self.artifact.checksum = "a" * 64
+        await self.session.commit()
+        for ref in ({"kind": "text", "ref": "artifact:artifact-1:text", "fingerprint": "b" * 64},
+                    {"kind": "file", "ref": "artifact:artifact-1:text", "fingerprint": "a" * 64},
+                    {"kind": "text", "ref": "artifact:older-artifact:text", "fingerprint": "a" * 64}):
+            with self.subTest(ref=ref):
+                body = self.body()
+                body["report"]["checks"][0]["evidenceRefs"] = [ref]
+                with self.assertRaises(HTTPException) as caught:
+                    await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertEqual(self.request.status, "pending")
+        self.assertIsNone(self.task.reviewed_at)
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 0)
+
+    async def test_malformed_reference_fields_are_rejected_at_their_report_location(self):
+        valid = {"kind": "text", "ref": "artifact:artifact-1:text", "fingerprint": "a" * 64}
+        cases = [None, {}, "not-an-array", [None], [{**valid, "kind": []}],
+                 [{**valid, "kind": "log"}], [{**valid, "ref": " "}],
+                 [{**valid, "fingerprint": None}], [{**valid, "fingerprint": "not-a-digest"}],
+                 [{**valid, "note": {"private": "not-a-note"}}], [{**valid, "note": "x" * 1001}],
+                 [{**valid, "lineRange": "L1-L2"}], [valid, valid], [valid] * 21]
+        for refs in cases:
+            with self.subTest(refs=refs):
+                body = self.body()
+                body["report"]["checks"][0]["evidenceRefs"] = refs
+                with self.assertRaises(HTTPException) as caught:
+                    await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+                self.assertEqual(caught.exception.status_code, 422)
+                self.assertEqual(caught.exception.detail["parameters"]["path"][:4],
+                                 ["report", "checks", 0, "evidenceRefs"])
+        self.assertEqual(self.request.status, "pending")
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 0)
+
+    async def test_reference_to_another_tasks_attachment_is_not_resolved_or_disclosed(self):
+        self.session.add(models.Attachment(id="other-file", task_id="private-task",
+            filename="Private document.md", size=7, role="output",
+            evidence_meta={"sha256": "a" * 64}))
+        await self.session.commit()
+        body = self.body()
+        body["report"]["checks"][0]["evidenceRefs"] = [
+            {"kind": "file", "ref": "other-file", "fingerprint": "a" * 64}]
+        with self.assertRaises(HTTPException) as caught:
+            await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertNotIn("Private document", str(caught.exception.detail))
+        self.assertNotIn("other-file", str(caught.exception.detail))
+        self.assertEqual(self.request.status, "pending")
+
+    async def test_context_offers_only_matching_frozen_attachment_versions(self):
+        row = models.Attachment(id="fixed-file", task_id=self.task.id, filename="Essay.md",
+            content_type="text/plain", role="output", size=7, source_ref="essay-round",
+            evidence_meta={"sha256": "b" * 64, "verification": {"state": "passed"}})
+        entry = {"id": row.id, "name": row.filename, "sha256": "b" * 64, "size": 7,
+                 "category": "primary", "role": "output", "sourceRef": row.source_ref}
+        self.artifact.source_ref = row.source_ref
+        self.artifact.checksum = "a" * 64
+        self.artifact.kind = "files"
+        self.artifact.manifest = {"complete": True, "files": [entry], "primary": [entry], "problems": []}
+        self.session.add_all([row, models.Attachment(id="old-file", task_id=self.task.id,
+            filename="Essay.md", role="output", size=7, source_ref="prior-round",
+            evidence_meta={"sha256": "c" * 64})])
+        await self.session.commit()
+        original = deepcopy(self.artifact.manifest)
+        refs = (await self.context())["evidenceRefOptions"]
+        fixed = {"kind": "file", "ref": row.id, "fingerprint": "b" * 64}
+        self.assertIn(fixed, refs)
+        self.assertFalse(any(ref["ref"] == "old-file" for ref in refs))
+        self.assertEqual(self.artifact.manifest, original)
+        # Replacing the recorded digest must not silently retarget a frozen citation.
+        row.evidence_meta = {**row.evidence_meta, "sha256": "d" * 64}
+        await self.session.commit()
+        self.assertFalse(any(ref["ref"] == row.id for ref in (await self.context())["evidenceRefOptions"]))
+        body = self.body()
+        body["report"]["checks"][0]["evidenceRefs"] = [fixed]
+        with self.assertRaises(HTTPException) as caught:
+            await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(self.request.status, "pending")
+
+    async def test_empty_reference_list_and_direct_retry_remain_compatible(self):
+        await self.session.delete(self.request)
+        self.artifact.checksum = "a" * 64
+        await self.session.commit()
+        body = self.body()
+        body["approvalId"] = (await self.context())["approvalId"]
+        body["report"]["checks"][0]["evidenceRefs"] = [
+            {"kind": "text", "ref": "artifact:artifact-1:text", "fingerprint": "a" * 64}]
+        body["report"]["checks"][1]["evidenceRefs"] = []
+        first = await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertTrue(first["closed"])
+        repeated = await api.auto_review_task_artifact(self.task.id, body, self.client, self.session)
+        self.assertTrue(repeated["already"])
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 1)
+
+    async def test_fixed_code_commit_is_offered_without_inventing_an_attachment_digest(self):
+        self.artifact.kind = "code"
+        self.artifact.commit_sha = "c" * 40
+        self.artifact.checksum = ""
+        await self.session.commit()
+        refs = (await self.context())["evidenceRefOptions"]
+        self.assertEqual(refs, [{"kind": "commit", "ref": "artifact:artifact-1:commit", "fingerprint": "c" * 40}])
+
+    async def test_committed_countersign_retry_keeps_its_report_after_cited_attachment_is_removed(self):
+        row = models.Attachment(id="reviewed-file", task_id=self.task.id, filename="Essay.md",
+            content_type="text/plain", role="output", size=7,
+            evidence_meta={"sha256": "a" * 64, "verification": {"state": "passed"}})
+        entry = {"id": row.id, "name": row.filename, "sha256": "a" * 64, "size": 7,
+                 "role": "output", "category": "primary", "validation": {"state": "passed"}}
+        self.session.add(row)
+        self.artifact.kind = "files"
+        self.artifact.manifest = {"schemaVersion": "soduwork.delivery/1", "complete": True,
+                                  "files": [entry], "primary": [entry], "problems": []}
+        self.request.required_count = 2
+        await self.session.commit()
+        body = self.body()
+        refs = [{"kind": "file", "ref": row.id, "fingerprint": "a" * 64}]
+        body["report"]["checks"][0]["evidenceRefs"] = refs
+        self.assertEqual((await api.auto_review_task_artifact(self.task.id, body, self.client, self.session))["verdict"], "pending")
+        await self.session.delete(row)
+        await self.session.commit()
+        self.assertTrue((await api.auto_review_task_artifact(self.task.id, body, self.client, self.session))["already"])
+        saved = self.request.context["aiAcceptanceReports"][self.actor.id]["report"]
+        self.assertEqual(saved["checks"][0]["evidenceRefs"], refs)
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 1)
+
+    async def test_legacy_attachment_without_a_frozen_digest_is_still_readable(self):
+        row = models.Attachment(id="legacy-file", task_id=self.task.id, filename="Legacy.md",
+            content_type="text/plain", uploaded_by="agent:old", size=7, role="input")
+        self.artifact.kind = "files"
+        self.artifact.manifest = {"files": [{"id": row.id, "name": row.filename}], "complete": True}
+        self.session.add(row)
+        await self.session.commit()
+        context = await self.context()
+        self.assertEqual(context["attachmentIds"], [row.id])
+        self.assertTrue(any(item["attachmentId"] == row.id for item in context["evidence"] if "attachmentId" in item))
+        self.assertFalse(any(ref["ref"] == row.id for ref in context["evidenceRefOptions"]))
+
     async def test_stale_definition_or_artifact_cannot_be_approved(self):
         for field, value in (("requirementVersion", 999), ("artifactVersionId", "older"), ("approvalId", "another")):
             with self.subTest(field=field):

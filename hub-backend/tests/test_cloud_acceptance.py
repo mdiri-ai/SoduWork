@@ -76,6 +76,25 @@ class MobileAcceptanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await svc.status(self.session, self.task.id))['result'], result)
         self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 1)
 
+    async def test_cloud_report_keeps_the_same_fixed_evidence_reference_as_the_prompt(self):
+        self.fixture.artifact.checksum = "a" * 64
+        await self.session.commit()
+        context = await self.fixture.context()
+        ref = context["evidenceRefOptions"][0]
+        report = self.fixture.body()["report"]
+        report["checks"][0]["evidenceRefs"] = [ref]
+        self.data = json.dumps(report).encode()
+        self.file.size = len(self.data)
+        self.file.evidence_meta = {"round": 1, "sha256": hashlib.sha256(self.data).hexdigest()}
+        await self.session.commit()
+        _, prompt = await svc.inputs(self.session, self.handoff, instruction="Check the essay")
+        self.assertIn('"evidenceRefOptions"', prompt)
+        self.assertIn(ref["fingerprint"], prompt)
+        result = await self.settle()
+        self.assertEqual(result["checks"][0]["evidenceRefs"], [ref])
+        self.assertEqual((await self.settle())["checks"][0]["evidenceRefs"], [ref])
+        self.assertEqual(len((await self.session.scalars(select(am.ApprovalDecision))).all()), 1)
+
     async def test_rejection_uses_original_rework_chain(self):
         self.data = json.dumps(self.fixture.body('reject')['report']).encode()
         self.file.size = len(self.data)
