@@ -82,6 +82,12 @@ An independently started source client defaults to `http://127.0.0.1:18989` when
 
 Run `npm test` and `npm run check:layout` in `client/`. Electron end-to-end checks live in `e2e/`; inspect each script's environment requirements. `dist/`, `.runtime/`, and generated `runner/` files are build outputs. Do not commit them or substitute old release binaries for current source.
 
+### Multi-device login policy
+
+Ordinary interactive desktops on the same Hub follow one account, one desktop. The [login policy](../hub-backend/app/services/desktop_login_policy.py) lowercases the device platform and recognizes `win32/windows/darwin/macos/linux`; other platforms do not trigger desktop replacement. A device with a matching `RunnerNode.client_id == Client.id` and a non-null `owner_user_id` neither triggers replacement nor gets replaced by another desktop. This exemption follows Hub records, not source versus packaged startup or local profile directories.
+
+Both login completion and administrator assignment/activation apply this policy. Other active ordinary desktops for the account become `pending`, increment `auth_version` and clear `activated_at`, retaining `user_ref` for historical attribution; their old connections are disconnected. Existing [regression tests](../hub-backend/tests/test_desktop_login_policy.py) cover desktop replacement, coexistence with phones and personal Runners, and administrator activation. See the [usage and recovery steps](getting-started.en.md#can-i-use-one-account-on-several-computers) for user-facing guidance.
+
 ## Skills and plugins
 
 Bundled skills live at `skills/<name>/SKILL.md`; see the [skill catalog](../skills/README.md) for project-owned guides and reviewed upstream development skills. Generic plugins and workflows live in `hub-backend/plugins/*.json`. Follow the [plugin protocol](plugin-authoring.en.md) for immutable versions, minimal permissions, and import review. Adding a bundled skill also requires explicitly updating the release scope in `tools/distribution/PUBLIC-SOURCE.json` and retaining its original license and provenance.

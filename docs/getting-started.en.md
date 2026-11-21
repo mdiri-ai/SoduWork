@@ -97,6 +97,16 @@ Some older records identify an account but lack verifiable information about the
 
 ## Troubleshooting
 
+### Can I use one account on several computers?
+
+On the same Hub, ordinary interactive desktop clients (Windows, macOS and Linux) follow a **one account, one desktop** policy. A successful new desktop sign-in returns that account's previously active ordinary desktops to **Pending activation** and invalidates their old login credentials. Phones and devices registered with the Hub as personal Runner nodes can coexist and do not participate in ordinary desktop replacement.
+
+Personal Runner status depends on the Hub's device association and ownership records, rather than whether the client was launched from source or installed from a package. Separate `SODUWORK_USER_DATA` directories isolate local client profiles; they do not change the Hub's login policy. Developers can check the [device login policy](development.en.md#multi-device-login-policy).
+
+If the old computer can no longer use Hub resources, first confirm the client points to the intended Hub, then check its authorization state under **Execution network** in the admin console. A replaced device shows **Pending activation**. After rechecking authorization, the old client shows its sign-in or activation screen. Device replacement does not delete existing local data.
+
+Sign in again with the same account on the computer you intend to use. An administrator with device-management permission can also open **Execution network → Manage**, select the device's owner and save to activate it. Restoring an ordinary desktop still replaces the account's other ordinary desktop; repeatedly activating devices does not enable simultaneous ordinary desktop sign-ins. Keep the existing data directory and desktop profile; deleting the database or reinstalling the client is unnecessary.
+
 ### Windows launcher does not start
 
 Read the last lines in the window. If Python or Node is missing, install it using the links above and reopen the launcher. Failures normally keep the window open so you can read the error.

@@ -82,6 +82,12 @@ npm start
 
 在 `client/` 运行 `npm test` 和 `npm run check:layout`。Electron 端到端检查见本目录的 `e2e/`，按脚本选择所需环境。`dist/`、`.runtime/` 和生成的 `runner/` 文件是产物，不要提交或复制旧版二进制替代源码。
 
+### 多设备登录策略
+
+同一 Hub 内的普通交互式桌面采用“一账一桌面”。[登录策略](../hub-backend/app/services/desktop_login_policy.py)先将设备平台转为小写，识别 `win32/windows/darwin/macos/linux`；其他平台不触发桌面替换。若存在 `RunnerNode.client_id == Client.id` 且 `owner_user_id` 非空的记录，该设备不触发替换，也不会被其他桌面替换。这一豁免按 Hub 记录判断，不按源码/安装版启动方式或本机配置目录判断。
+
+登录完成和管理员分配/激活都应用此策略：同账号其他激活的普通桌面变为 `pending`，递增 `auth_version` 并清除 `activated_at`，保留 `user_ref` 供历史归属追溯；旧连接会被断开。已有[回归测试](../hub-backend/tests/test_desktop_login_policy.py)覆盖桌面替换、手机与个人 Runner 共存，以及管理员激活路径。[使用与恢复步骤](getting-started.md#同一账号能在多台电脑上使用吗)面向日常用户。
+
 ## 技能和插件
 
 `skills/<name>/SKILL.md` 描述内置技能，包括项目自有指南和已核对来源的上游开发技能，见[技能目录](../skills/README.zh-CN.md)；`hub-backend/plugins/*.json` 提供通用插件与工作流。遵循[插件协议](plugin-authoring.md)保持版本不可变、权限最小化及导入审查。新增内置技能还需要显式更新 `tools/distribution/PUBLIC-SOURCE.json` 的发布范围，并保留原始许可和来源说明。
