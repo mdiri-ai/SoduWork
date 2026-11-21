@@ -310,6 +310,7 @@ RELEASE_SMOKES = tuple(sorted((
     "smoke/smoke_schedule_ledger.py",
     "smoke/smoke_scheduler_concurrency.py",
     "smoke/smoke_schedules.py",
+    "test_release_schema_history.py",
     "smoke/smoke_schema_migrations.py",
     "smoke/smoke_script_tool.py",
     "smoke/smoke_server_image.py",
