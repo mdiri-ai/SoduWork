@@ -40,8 +40,12 @@ async def add_comment(session: AsyncSession, task: models.Task, author_kind: str
                       author_name: str, body: str, mentions: list) -> dict:
     """Record a comment and notify mentioned colleagues through their clients."""
     mentions = mentions or []
+    text = body or ""
+    if len(text) > 4000:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="评论正文不能超过 4000 字")
     c = models.TaskComment(task_id=task.id, author_kind=author_kind, author_id=author_id,
-                           author_name=author_name or "", body=(body or "")[:4000], mentions=mentions,
+                           author_name=author_name or "", body=text, mentions=mentions,
                            created_at=_now())
     session.add(c)
     await session.commit()
