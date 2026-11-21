@@ -295,6 +295,12 @@ If the default macOS Keychain is missing, startup shows a recovery page before o
 
 The local service has stopped. Run the same launcher again; your data remains available.
 
+### Agent workspace and relative paths
+
+The agent runs inside its own instance workspace. Relative paths in agent output, artifacts, and commands resolve inside that workspace, for example `%LOCALAPPDATA%\SoduWork\source-service\workspaces\temp\<conversation-id>` on Windows or `~/.soduwork/source-service/workspaces/temp/<conversation-id>` on macOS/Linux. A path written during a conversation is not the launcher directory and not the source checkout.
+
+Use the Runner card working directory and the **Open location** button to see where a conversation's files actually are. To write outside the workspace, for example into a source folder, pass an absolute path.
+
 ## Optional commands
 
 Run these from the source root. The table uses the macOS/Linux wrapper. Windows PowerShell uses `.\start.cmd` with the same arguments, and Command Prompt uses `start.cmd`.
