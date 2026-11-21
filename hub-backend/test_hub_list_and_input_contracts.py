@@ -127,6 +127,21 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
             stored = (await session.scalars(select(models.TaskComment.body))).all()
             self.assertEqual(stored, ["x" * 4000])
 
+    async def test_workflow_guide_targets_effective_plugin_in_selected_org(self):
+        async with self.sessions() as session:
+            for plugin_id, org_id, enabled in (
+                ("platform-flow", None, True), ("local-flow", "row-0", False),
+            ):
+                session.add(automation_models.Plugin(id=plugin_id, org_id=org_id,
+                                                     key="shared-flow", name="Flow", enabled=enabled))
+            await session.commit()
+
+        for org_id, plugin_id, enabled in (("row-0", "local-flow", False), ("row-1", "platform-flow", True)):
+            with self.subTest(org_id=org_id):
+                catalog = await self.request("GET", "admin/work-catalog", params={"orgId": org_id})
+                matches = [row for row in catalog["workflows"] if row["key"] == "shared-flow"]
+                self.assertEqual([(row["id"], row["enabled"]) for row in matches], [(plugin_id, enabled)])
+
     async def test_catalog_and_environment_inputs(self):
         for body in ({"name": "fixture", "type": "unlisted"},
                      {"name": "fixture", "type": "generic", "config": {"baseUrl": "unsupported://example.invalid"}}):

@@ -35,6 +35,7 @@ const fmt = (ms) => ms ? new Date(ms).toLocaleString(getLocale(), { hour12: fals
 export default function PluginCenter({ setupContext, onNavigate }) {
   const uiLocale = useLocale();
   const [navigation] = useState(() => setupContext || takeNav('plugins'))
+  const requestedWorkflow = useRef(navigation?.workflowPluginId)
   const setupProject = navigation && navigation.target === 'plugin' ? navigation : null
   const [data, setData] = useState(null)
   const [selected, setSelected] = useState('')
@@ -125,7 +126,13 @@ export default function PluginCenter({ setupContext, onNavigate }) {
     }
     try {
       setData(items)
-      setSelected((old) => old || (items[0] && items[0].id) || '')
+      if (requestedWorkflow.current && items.some(item => item.id === requestedWorkflow.current)) {
+        setSelected(requestedWorkflow.current)
+        setDetailOpen(true)
+      } else {
+        setSelected((old) => old || (items[0] && items[0].id) || '')
+      }
+      requestedWorkflow.current = null
       setError(null)
     } catch (e) { setError(e); setData(null); return }
     if (detailOpen) await refreshRuns(true)
