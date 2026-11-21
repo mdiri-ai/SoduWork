@@ -8,6 +8,7 @@ import re
 from typing import Iterable
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am
@@ -656,7 +657,13 @@ async def save_scenario(
         setattr(row, field, value)
     if current is None:
         session.add(row)
-    await session.commit()
+    # Concurrent creates can pass the check-then-insert race; surface the unique
+    # key violation (uq_work_scenario_org_key) as the same "already exists" 4xx.
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise ValueError("这个场景标识已经存在")
     await session.refresh(row)
     return row
 
