@@ -185,6 +185,9 @@ function compare(before, after, metadata = {}) {
     const index = created.findIndex(newRow => oldRow.before?.hash &&
       oldRow.before.hash === newRow.after?.hash);
     if (index < 0) continue;
+    const digest = oldRow.before.hash;
+    if (deleted.filter(row => row.before?.hash === digest).length !== 1 ||
+        created.filter(row => row.after?.hash === digest).length !== 1) continue;
     const newRow = created[index];
     renamed.push({
       path: newRow.path,

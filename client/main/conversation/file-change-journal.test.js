@@ -92,3 +92,16 @@ test('capture attaches file changes when the wrapped operation fails', async () 
   );
   await fs.rm(cwd, { recursive: true, force: true });
 });
+
+test('ambiguous content does not reuse a rename target or discard unrelated changes', () => {
+  const file = (path, hash) => ({ path, hash, exists: true, text: hash });
+  const before = { files: { 'a.txt': file('a.txt', 'same'), 'b.txt': file('b.txt', 'same'), 'z.txt': file('z.txt', 'old') } };
+  const after = { files: { 'c.txt': file('c.txt', 'same'), 'z.txt': file('z.txt', 'new') } };
+  const result = journal.compare(before, after);
+  assert.deepEqual(result.stats, { created: 1, modified: 1, deleted: 2, renamed: 0, total: 4 });
+  assert.deepEqual(result.files.map(row => [row.path, row.action]), [
+    ['a.txt', 'deleted'], ['b.txt', 'deleted'], ['c.txt', 'created'], ['z.txt', 'modified'],
+  ]);
+  assert.deepEqual(journal.compare(after, before).stats,
+    { created: 2, modified: 1, deleted: 1, renamed: 0, total: 4 });
+});
