@@ -151,6 +151,19 @@ An uninitialized instance needs an administrator password. By default, Python mu
 
 First try the Windows entry point from the source directory in an interactive native PowerShell or CMD window, without a pipe or input redirection. For automation or intentional non-interactive input, explicitly add `--password-stdin` and supply the initial password through protected standard input. This flag does not generate a password or reset an existing one. Do not put passwords in command arguments, scripts, or logs. Keep the existing data directory; deleting the database is unnecessary.
 
+Split downloads from startup in unattended environments. The launcher reads the first password only after preparation succeeds, while the initial preparation downloads pip, npm and Electron and can take several minutes; during that window, standard input supplied by CI or a script may already have reached EOF, so the launcher fails only afterwards even though the installed content stays reusable. Preparing first and starting with the password second keeps the pipe and the long installation from waiting on each other:
+
+```powershell
+# Step 1: download and build without reading a password; rerun as-is on failure
+.\start.cmd --prepare-only --desktop
+
+# Step 2: start once preparation is complete, passing the first password via stdin
+$env:SODUWORK_NO_PAUSE = "1"
+Get-Content .\admin-password.txt | .\start.cmd --desktop --password-stdin --no-browser
+```
+
+Keep the temporary password file used in step 2 in a protected location and delete it after the account exists. Prefer ASCII characters for the first password so native PowerShell pipe encoding cannot alter it. macOS and Linux use `sh start.sh` with the same arguments.
+
 ### Downloads are slow or setup fails
 
 “Still running” means the installation process has not exited; it does not prove a download has succeeded. Read the failing step in the printed `startup.log` before retrying. “Disk full” means you must free space on the volume holding the data directory or an explicitly configured cache; retrying a download does not free space. Missing package versions, permission errors and other failures also need their own remedies. Check network/proxy and package download access when the log reports a connection failure. Then rerun the same launcher; completed steps are reused. Do not delete the data directory. The initial Electron download also needs internet access.
