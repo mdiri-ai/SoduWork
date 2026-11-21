@@ -112,6 +112,11 @@ async def get_tasks(client: Client = Depends(current_client), session: AsyncSess
 async def create_task(
     body: TaskCreate, client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)
 ):
+    uid = str(body.assigneeUserId or "").strip()
+    if uid:
+        target = await session.get(User, uid)
+        if target is None or not target.is_active:
+            raise HTTPException(status_code=400, detail="负责人不存在或已停用")
     return await svc.create_task(session, client.id, body.model_dump(), origin="local")
 
 
