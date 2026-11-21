@@ -1,4 +1,5 @@
 """Real filesystem/ZIP compatibility for per-turn local file delivery."""
+import inspect
 import io
 import os
 from pathlib import Path
@@ -150,6 +151,51 @@ class LocalArtifactContractTests(unittest.TestCase):
             self.assertEqual(bundle['files'], 204)
             with zipfile.ZipFile(self.root / 'archive' / 'bundles' / bundle['filename']) as archive:
                 self.assertEqual(len(archive.namelist()), 204)
+
+    def test_snapshot_budget_cut_does_not_hide_edits_past_the_cut(self):
+        # The baseline snapshot stops once it reaches its budget. Everything past
+        # that cut stays out of the baseline, so an edit the Agent really made
+        # never reaches the post-run diff and the deliverable silently disappears.
+        # The walk checks its budget between directories, so spread the files
+        # over several directories: one huge directory would be collected whole.
+        for bucket in range(4):
+            part = self.workspace / 'zdeep' / ('d%d' % bucket)
+            part.mkdir(parents=True)
+            for index in range(3):
+                path = part / ('f%d.txt' % index)
+                path.write_bytes(b'old')
+                os.utime(path, (1700000000, 1700000000))
+        os.utime(self.workspace / 'zdeep', (1700000000, 1700000000))
+        target = self.workspace / 'zdeep' / 'd3' / 'f2.txt'
+
+        # Budget of 6 truncates part-way through the directory list, so the last
+        # bucket never enters the baseline.
+        baseline = ai_local._snapshot(str(self.workspace), budget=6)
+        self.assertNotIn('zdeep/d3/f2.txt', [rel for rel, _ in baseline],
+                         '这个用例需要目标文件落在截断之后，否则证明不了缺陷')
+
+        # With a budget large enough for the whole tree the same file is tracked.
+        full = ai_local._snapshot(str(self.workspace), budget=100000)
+        self.assertIn('zdeep/d3/f2.txt', [rel for rel, _ in full])
+
+    def test_default_snapshot_budget_tracks_realistic_workspaces(self):
+        # The shipped default must sit far above the old 20000 cut so ordinary
+        # monorepos and generated trees are snapshotted in full. Reading the
+        # signature keeps the assertion cheap: a regression that lowers it back
+        # fails here without writing twenty thousand files.
+        default = inspect.signature(ai_local._snapshot).parameters['budget'].default
+        self.assertGreaterEqual(default, 200000,
+                                '默认预算被调低，大工作区的基线会重新变得不完整')
+
+    def test_workspace_past_the_old_snapshot_cap_still_reports_edits(self):
+        deep = self.workspace / 'wide' / 'd99'
+        deep.mkdir(parents=True)
+        target = deep / 'f0.txt'
+        target.write_bytes(b'old')
+        os.utime(target, (1700000000, 1700000000))
+
+        baseline = ai_local._snapshot(str(self.workspace))
+        self.assertIn('wide/d99/f0.txt', [rel for rel, _ in baseline])
 
 
 if __name__ == "__main__":

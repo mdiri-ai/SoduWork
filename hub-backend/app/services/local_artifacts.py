@@ -6,9 +6,12 @@ and supplies its archive-directory resolver at each bundle call.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 import zipfile
+
+log = logging.getLogger(__name__)
 
 
 
@@ -46,11 +49,19 @@ def _is_noise(rel: str) -> bool:
     return False
 
 
-def _snapshot(ws: str) -> set:
+def _snapshot(ws: str, budget: int = 200000) -> set:
     """Snapshot the workspace before execution so collection includes only files added or changed
     in this run.
+
+    The pre-run snapshot defines which later changes count as deliverables. A
+    low cut-off makes that baseline partial: a file the Agent really edited past
+    the cut never appears in the post-run diff, and the deliverable list
+    silently loses it. Keep a guard for pathological trees only, and say so when
+    it fires instead of truncating without a trace. ``budget`` is a parameter so
+    tests can exercise the cut with a handful of files.
     """
     got = set()
+    truncated = False
     try:
         for root, dirs, names in os.walk(ws):
             # Exclude tool-cache directories from workspace snapshots.
@@ -63,10 +74,13 @@ def _snapshot(ws: str) -> set:
                     got.add((os.path.relpath(p, ws), os.path.getmtime(p)))
                 except OSError:
                     pass
-            if len(got) > 20000:
+            if len(got) >= budget:
+                truncated = True
                 break
     except Exception:  # noqa: BLE001
         pass
+    if truncated:
+        log.warning("工作区文件数达到 %s，快照被截断；截断范围外的改动不会出现在交付物里", budget)
     return got
 
 
