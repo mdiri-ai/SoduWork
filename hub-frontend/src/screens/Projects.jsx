@@ -151,12 +151,12 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
   const [syncing, setSyncing] = useState(false)
   const [busy, setBusy] = useState(false)
   const [form, setForm] = useState({ name: '', kind: 'other', branch: '', mergeBranch: '', localDir: '' })
-  const sources = integrations.filter((item) => String(item.type || '').toLowerCase() === 'gitlab')
+  const sources = integrations.filter((item) => ['gitlab', 'github'].includes(String(item.type || '').toLowerCase()))
   const canSync = can('integration.manage')
 
   useEffect(() => {
     api.integrations().then((items) => {
-      const usable = (items || []).filter((item) => String(item.type || '').toLowerCase() === 'gitlab' && item.enabled !== false)
+      const usable = (items || []).filter((item) => ['gitlab', 'github'].includes(String(item.type || '').toLowerCase()) && item.enabled !== false)
       setIntegrations(usable)
       if (usable[0]) setSourceId(usable[0].id)
       else setLoading(false)
@@ -194,7 +194,7 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
   }
 
   async function sync() {
-    if (!sourceId) return toast(tx("请先接入 GitLab 代码源"))
+    if (!sourceId) return toast(tx("请先接入代码源"))
     if (!clientId) return toast(tx("请选择保存了代码账号的 SoduWork"))
     setSyncing(true)
     try {
@@ -223,10 +223,10 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
   return <Modal scope="project-governance" title={tx("从远程仓库目录添加")} icon="box" wide onClose={onClose} foot={<><button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button><button className="btn btn-primary" disabled={busy || !selected} onClick={save}>{busy ? tx("正在添加…") : tx("添加到项目")}</button></>}>
     <div className="pg-catalog-lead"><div><b>{tx("选择真实代码资产，再指定这个项目使用的分支")}</b><span>{tx("同一个远程仓库可以服务多个项目；每个项目独立保存工作分支、合并目标与研发规则。")}</span></div>{canSync && <button className="btn btn-ghost btn-sm" disabled={syncing || !sourceId} onClick={sync}><Icon name="refresh" />{syncing ? tx("同步中…") : tx("同步目录")}</button>}</div>
     <div className="pg-catalog-source">
-      <Field label={tx("代码源")}><SelectMenu className="f-in" value={sourceId} onChange={(e) => setSourceId(e.target.value)}><option value="">{tx("选择 GitLab…")}</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {String(item.type).toUpperCase()}</option>)}</SelectMenu></Field>
+      <Field label={tx("代码源")}><SelectMenu className="f-in" value={sourceId} onChange={(e) => setSourceId(e.target.value)}><option value="">{tx("选择代码源…")}</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {String(item.type).toUpperCase()}</option>)}</SelectMenu></Field>
       <Field label={tx("用于读取的代码账号")}><SelectMenu className="f-in" value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">{tx("选择 SoduWork…")}</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name || client.id}{client.online ? tx(" · 在线") : tx(" · 离线")}</option>)}</SelectMenu></Field>
     </div>
-    {!sources.length ? <EmptyPanel icon="plug" title={tx("还没有可用代码源")} text={tx("请先在「系统集成」接入 GitLab，然后回到这里同步仓库目录。")} /> : <div className="pg-catalog-layout">
+    {!sources.length ? <EmptyPanel icon="plug" title={tx("还没有可用代码源")} text={tx("请先在「系统集成」接入代码源，然后回到这里同步仓库目录。")} /> : <div className="pg-catalog-layout">
       <section className="pg-catalog-browser">
         <FilterInput className="pg-catalog-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tx("搜索仓库名称或路径")} />
         <div className="pg-catalog-list">{loading ? <Loading /> : shown.length ? shown.map((row) => <button type="button" key={row.id} className={selected && selected.id === row.id ? 'on' : ''} onClick={() => choose(row)}><span className="pg-catalog-provider">{'GL'}</span><span><b>{row.displayName || row.fullName}</b><small>{row.fullName}</small></span><em>{row.defaultBranch || 'main'}</em></button>) : <div className="pg-catalog-none"><b>{tx("目录里还没有仓库")}</b><span>{canSync ? tx("选择代码账号后点击“同步目录”。") : tx("请联系平台管理员同步企业仓库目录。")}</span></div>}</div>
@@ -279,7 +279,7 @@ function RepoSection({ pid, repos, loading, reload, clients, projects }) {
   if (editing) return <RepoEditor repo={editing} isNew={isNew} dfDefault={dfDefault} dfSteps={dfSteps} onCancel={() => { setEditing(null); setIsNew(false) }} onSave={async (form) => { if (isNew) await api.addRepo(pid, form); else await api.updateRepo(editing.id, form); await reload(); setEditing(null); setIsNew(false); toast(isNew ? tx("代码仓库已登记") : tx("仓库配置已保存")) }} />
   const openCatalog = () => setCatalogOpen(true)
   return <section className="pg-work-panel"><header className="pg-panel-head"><div><h3>{tx("代码仓库")}</h3><p>{tx("管理项目分支、研发规则与交付配置。")}</p></div>{can('task.dispatch') && <div className="pg-repo-head-actions"><button className="btn btn-ghost" onClick={() => { setEditing(blank); setIsNew(true) }}>{tx("手动登记")}</button><button className="btn btn-primary" onClick={openCatalog}><Icon name="plus" />{tx("从仓库目录添加")}</button></div>}</header>
-    {loading ? <Loading /> : repos.length === 0 ? <EmptyPanel icon="box" title={tx("还没有项目代码映射")} text={tx("从 GitLab 仓库目录选择仓库和分支，需求才能准确落到对应工程。")} action={can('task.dispatch') ? <button className="btn btn-primary" onClick={openCatalog}>{tx("从仓库目录添加")}</button> : null} /> : <div className="pg-repo-list">{repos.map((r) => {
+    {loading ? <Loading /> : repos.length === 0 ? <EmptyPanel icon="box" title={tx("还没有项目代码映射")} text={tx("从代码仓库目录选择仓库和分支，需求才能准确落到对应工程。")} action={can('task.dispatch') ? <button className="btn btn-primary" onClick={openCatalog}>{tx("从仓库目录添加")}</button> : null} /> : <div className="pg-repo-list">{repos.map((r) => {
       const retired = r.scm === 'gerrit'
       const merged = !retired && r.serverDir && r.mergeBranch; const released = (r.deployTargets || []).length > 0
       const customFlow = Object.values(r.devFlow || {}).some((value) => Array.isArray(value) ? value.length : String(value || '').trim())
