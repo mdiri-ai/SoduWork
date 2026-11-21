@@ -16,8 +16,12 @@ async function until(source, label) {
   throw Error('Timed out: ' + label);
 }
 async function appearance() {
-  await js(`document.querySelector('[data-rail-view="settings"]').click()`);
+  await js(`document.querySelector('#wsRailMine').click()`);
   await until(`!!document.querySelector('[data-view="skin"]')`, 'appearance navigation');
+  assert.equal(await js(`document.querySelector('[data-rail-view="settings"]') === null`), true);
+  assert.equal(await js(`WorkspaceHost.view`), 'account');
+  await js(`document.querySelector('#wsNav [data-view="settings"]').click()`);
+  await until(`WorkspaceHost.view === 'settings' && document.querySelector('#settingsPanel.show')?.checkVisibility()`, 'settings from preferences');
   await js(`document.querySelector('[data-view="skin"]').click()`);
   await until(`!!document.querySelector('.skin-card[data-id="soduwork-enlarged"]')`, 'enlarged theme card');
 }
@@ -48,7 +52,7 @@ app.whenReady().then(async () => {
   win = new BrowserWindow({ show:false, width:1280, height:900, webPreferences:{ session:isolated,offscreen:true,backgroundThrottling:false,contextIsolation:true,nodeIntegration:false } });
   win.webContents.on('console-message', event => { if (/Uncaught|SyntaxError/.test(event.message)) errors.push(event.message); });
   await win.loadURL(origin + '/desk.html?panel=workspace');
-  await until(`!!document.querySelector('[data-rail-view="settings"]')`, 'workspace');
+  await until(`!!document.querySelector('#wsRailMine')`, 'workspace');
   await js(`dispatchEvent(new CustomEvent('soduwork-device-auth',{detail:{state:'active',user:{id:'fixture-user',displayName:'Fixture'}}})); cfg.fontScale='large';cfg.uiScale='medium';saveCfg();applyFontScale();`);
   await appearance();
   const before = await sample();

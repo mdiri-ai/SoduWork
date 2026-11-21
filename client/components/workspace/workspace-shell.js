@@ -292,13 +292,11 @@
       .map(([key, label, iconKey]) => '<button type="button" data-rail-view="' + key + '"><span class="ws-rail-popover-icon">' + icon(iconKey) + '</span><span>' + navLabel(key) + '</span></button>')
       .join('');
     const moreText = wsT('rail.more', '更多');
-    const settingsText = wsT('settings', '设置');
     const noticeText = navLabel('notices');
     const moreMenu = '<div class="ws-rail-more-wrap"><button class="ws-rail-button ws-rail-menu-button" type="button" data-rail-menu="more" aria-label="' + moreText + '" aria-expanded="false" title="' + moreText + '">' + railIcon('more') + '<span>' + moreText + '</span></button>' +
       '<div class="ws-rail-popover ws-rail-more-popover" id="wsRailMoreMenu" hidden><div class="ws-rail-popover-title">' + moreText + '</div>' + more + '</div></div>';
     return '<div class="ws-rail-top">' + primary + '<div id="wsSidebarApps" class="ws-sidebar-apps"></div>' + moreMenu + '</div>' +
       '<div class="ws-rail-bottom">' +
-        '<button class="ws-rail-button ws-rail-settings" type="button" data-rail-view="settings" aria-label="' + settingsText + '" title="' + settingsText + '">' + railIcon('settings') + '<span>' + settingsText + '</span></button>' +
         '<button class="ws-update ws-rail-update" id="wsUpdate" hidden title="有新版本已就绪，点一下重启更新" aria-label="重启并更新">' +
           '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v9"/><path d="m8.5 9.5 3.5 3.5 3.5-3.5"/><path d="M5 15a7 7 0 0 0 14 0"/></svg><i></i></button>' +
         '<button class="ws-rail-button ws-rail-notices" type="button" data-rail-view="notices" aria-label="' + noticeText + '" title="' + noticeText + '" aria-describedby="wsRailNoticeBadge">' +

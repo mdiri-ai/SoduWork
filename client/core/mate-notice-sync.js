@@ -146,8 +146,13 @@
   }
   function rows(folder) {
     const meta = metadata();
-    return (typeof notices === 'undefined' ? [] : notices)
-      .filter(row => folderOf(row) === (folder === 'sent' ? 'sent' : 'received') && visibleRow(row) && !dismissed(row, meta))
+    const list = typeof notices === 'undefined' ? [] : notices;
+    // Hide legacy colleague receipts on the first paint, even while offline.
+    const sentMessages = folder === 'sent' ? new Set() : new Set(list.filter(row =>
+      folderOf(row) === 'sent' && row.kind === 'mate_message').map(row => row.serverMessageId));
+    return list
+      .filter(row => folderOf(row) === (folder === 'sent' ? 'sent' : 'received') && visibleRow(row) && !dismissed(row, meta) &&
+        !(row.kind === 'mate_receipt' && sentMessages.has(row.serverMessageId)))
       .slice().sort((a, b) => Number(b.at || 0) - Number(a.at || 0));
   }
   function repaint() {
@@ -212,7 +217,7 @@
   function receiptFor(row, old, meta) {
     // Administrative publication notices keep their sent history without
     // producing a second inbox notification for each delivery/read receipt.
-    if (row.kind === 'plugin_lifecycle') return null;
+    if (row.kind === 'plugin_lifecycle' || row.kind === 'mate_message') return null;
     // Maintain one receipt per message and merge legacy per-phase records.
     const state = old.reduce((value, item) => statusOrder[item.receiptStatus] > statusOrder[value] ? item.receiptStatus : value,
       row.status in statusOrder ? row.status : 'accepted');
@@ -273,6 +278,15 @@
     }
     for (const row of changedSent.values()) {
       const indexes = receiptIndexes.get(row.serverMessageId) || [];
+      if (row.kind === 'mate_message') {
+        for (const index of indexes) {
+          const old = list[index];
+          if (old.ownerId && old.ownerId !== row.senderId) continue;
+          if (statusOrder[old.receiptStatus] > statusOrder[row.status]) row.status = row.sentStatus = old.receiptStatus;
+          const key = old.receiptStatus === 'read' ? 'readAt' : old.receiptStatus === 'delivered' ? 'deliveredAt' : '';
+          if (key && !row[key]) row[key] = stamp(old.at) || null;
+        }
+      }
       const receipt = receiptFor(row, indexes.map(index => list[index]), meta);
       if (indexes.length) { list[indexes[0]] = receipt; for (const index of indexes.slice(1)) list[index] = null; }
       else if (receipt) list.push(receipt);

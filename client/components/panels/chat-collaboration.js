@@ -179,17 +179,40 @@
   function artifactRows(state) {
     const trace = state && state.trace || {};
     const rows = [];
-    [state && state.outputs, trace.artifacts, state && state.evidence].forEach((list) => {
-      if (Array.isArray(list)) list.forEach((item) => rows.push(item));
-    });
     const seen = new Set();
-    return rows.filter((item) => {
-      const value = item && typeof item === 'object' ? item : { name: item };
-      const name = text(value.name || value.title || value.filename || value.path, '');
-      if (!name || seen.has(name)) return false;
-      seen.add(name);
-      return true;
-    });
+    for (const list of [state.outputs, trace.artifacts, state.evidence]) {
+      for (const item of Array.isArray(list) ? list : []) {
+        const file = item && typeof item === 'object' ? item : {name:item};
+        if (file.taskId && state.taskId && file.taskId !== state.taskId) continue;
+        const name = text(file.name || file.title || file.filename || file.path, '');
+        const target = list === state.outputs ? String(file.artifactId || file.path || '') : '';
+        const key = file.artifactId || file.attachmentId || file.id || file.path || name;
+        if (!name || seen.has(key)) continue;
+        seen.add(key);
+        rows.push({name, target, kind:file.kind || file.type || '交付证据'});
+      }
+    }
+    return rows;
+  }
+
+  function acceptanceReports(state) {
+    const reports = [];
+    for (const gate of state.trace?.approvals || []) {
+      if (gate.action !== 'review' || gate.taskId !== state.taskId || !gate.artifactVersionId) continue;
+      for (const saved of Object.values(gate.context?.aiAcceptanceReports || {})) {
+        const report = saved?.report;
+        if (!report || saved.artifactVersionId !== gate.artifactVersionId ||
+            (saved.sourceApprovalId && saved.sourceApprovalId !== gate.id && saved.sourceApprovalId !== 'direct:' + gate.taskId) ||
+            !['approve','reject'].includes(report.verdict)) continue;
+        const version = gate.confirmation?.lockedArtifact?.seq || state.trace.artifacts?.find(a => a.id === gate.artifactVersionId)?.seq;
+        reports.push('<article class="ncollab-report"><b><span>' + (report.verdict === 'approve' ? '验收通过' : '验收退回') +
+          '</span>' + (version ? ' · v' + esc(version) : '') + '</b><p data-user-content>' + esc(report.summary) + '</p><ul>' +
+          (Array.isArray(report.checks) ? report.checks : []).map(check =>
+            '<li><b>' + (check.result === 'pass' ? '通过' : '未通过') + '</b> <span data-user-content>' +
+            esc(check.label || check.criterion) + '</span><p data-user-content>' + esc(check.evidence) + '</p></li>').join('') + '</ul></article>');
+      }
+    }
+    return reports.join('');
   }
 
   function criteriaRows(task) {
@@ -365,12 +388,13 @@
     const section = (label, body, cls) => '<section class="ncollab-dossier-section ' + (cls || '') + '">' + titleRow(label) + body + '</section>';
     const evidence = artifacts.length
       ? '<div class="ncollab-evidence-list">' + artifacts.map((item) => {
-        const row = item && typeof item === 'object' ? item : { name: item };
-        return '<div class="ncollab-evidence-row"><span>' + icon('task') + '</span><div><b>' +
-          esc(text(row.name || row.title || row.filename || row.path, '成果')) + '</b><small>' +
-          esc(row.kind || row.type || '交付证据') + '</small></div></div>';
+        const tag = item.target ? 'button' : 'div';
+        return '<' + tag + ' class="ncollab-evidence-row"' + (item.target ? ' type="button" data-collab-file="' + esc(item.target) + '"' : '') +
+          '><span>' + icon('task') + '</span><div><b data-user-content>' + esc(item.name) + '</b><small>' +
+          esc(item.kind) + '</small></div><em>' + (item.target ? '查看文件' : '仅有记录') + '</em></' + tag + '>';
       }).join('') + '</div>'
       : '<p class="ncollab-dossier-empty">暂未产生交付成果。文件、截图和验证报告产生后会汇总在这里。</p>';
+    const reports = acceptanceReports(value);
     const acceptance = criteria.length
       ? '<ul class="ncollab-checklist">' + criteria.map(item =>
         '<li><span class="ncollab-check" aria-hidden="true"></span><p>' + esc(item) + '</p></li>').join('') + '</ul>'
@@ -400,7 +424,8 @@
         (gates.length ? section('审批与发布', '<div class="ncollab-gates">' + gates.map(row =>
           '<div class="ncollab-gate-row"><span>' + esc(row[0]) + '</span>' + statusPill(row[1]) + '</div>').join('') + '</div>') : '')) +
       panel('execution', section('执行配置', config)) +
-      panel('artifacts', section('成果与证据', evidence)) +
+      panel('artifacts', (reports ? section('验收详情', reports) : '') + section('成果与证据', evidence) +
+        '<p class="ncollab-file-status" role="status"></p>') +
       '</div><footer class="ncollab-dossier-foot"><div class="ncollab-metrics"><div><span>已用时</span><b>' + esc(duration) +
       '</b></div><div><span>重试</span><b>' + esc(retries) + ' 次</b></div></div>' + (action.key === 'retry' || action.key === 'start' || /^waiting/.test(status)
         ? '<button type="button" class="ncollab-dossier-action" data-collab-action="' + action.key + '">' +
@@ -508,6 +533,13 @@
       const row = (latest.tasks || []).find(item => String(item.taskId || item.task?.id || '') === activeId);
       return Object.assign({}, latest, row || {}, { taskId: activeId });
     };
+    host.querySelectorAll('[data-collab-file]').forEach(button => button.addEventListener('click', () => {
+      const latest = ui.getState();
+      if (latest.sessionId !== value.sessionId || latest.ref !== value.ref) return;
+      const opened = global.ChatWorkbench?.openOutput?.(button.getAttribute('data-collab-file'));
+      if (opened) ui.close();
+      else host.querySelector('.ncollab-file-status').textContent = '文件暂时无法打开，请刷新会话成果后重试。';
+    }));
     host.querySelectorAll('[data-collab-task-select]').forEach((button) => button.addEventListener('click', () => {
       const taskId = button.getAttribute('data-collab-task-select');
       if (button.hasAttribute('data-collab-pin')) {

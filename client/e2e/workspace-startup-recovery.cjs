@@ -50,7 +50,6 @@ const visible = selector => `document.querySelector(${JSON.stringify(selector)})
 const opened = view => `window.WorkspaceHost?.view === ${JSON.stringify(view)}`;
 const retry = '#deskBlankRetry';
 const notices = '.ws-rail-button[data-rail-view="notices"]';
-const settings = '.ws-rail-button[data-rail-view="settings"]';
 
 async function until(get, label, timeout = 25000) {
   const end = Date.now() + timeout;
@@ -233,7 +232,9 @@ app.whenReady().then(async () => {
     assert.equal(await js(visible(retry)), false);
     assert.equal(await js(opened('notices')), true);
     assert.ok((await point(notices)).clickable);
-    await click(settings);
+    await click('#wsRailMine');
+    await until(() => js(opened('account')), 'personal account');
+    await click('#wsNav [data-view="settings"]');
     await until(() => js(opened('settings')), 'settings after startup deadline');
     await js('releaseWorkspaceBoot()');
     await until(() => js('window.workspaceBootFinished'), 'completion of the original startup');
