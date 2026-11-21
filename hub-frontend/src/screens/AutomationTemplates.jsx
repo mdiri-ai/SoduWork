@@ -13,6 +13,13 @@ const capOptions = localeMap(() => ([['browser', '浏览网页'], ['computer', '
 const rhythm = localeMap(() => ({ hourly: '每小时', daily: '每天', weekly: '每周' }))
 // Optional locale maps supply employee display and prefill with base-field fallback.
 const localeFields = ['en-US', 'ja-JP', 'ko-KR'].map((locale) => [locale, LOCALES[locale]])
+// Sample prompts fill the note field in one click, so new templates start from a
+// complete brief (工作内容 + 交付物 + 验收要求) instead of an empty textarea.
+const NOTE_SAMPLES = [
+  ['团队日报', '工作内容：每天 18:00 汇总团队当日进展。\n交付物：一份日报文本，含今日完成、进行中、风险三节。\n验收要求：每人一行、不超过 300 字，缺失项标注"无"。'],
+  ['会议纪要→待办', '工作内容：把会议纪要里的结论和分工转成待办事项。\n交付物：待办列表，每项含负责人和截止日期。\n验收要求：只保留明确分工的事项，没有负责人的标注"待定"。'],
+  ['周报', '工作内容：汇总本周团队工作并生成周报。\n交付物：一份周报，含本周完成、下周计划、需要的支持三节。\n验收要求：每节 3–5 条，语言简洁，不写空话。'],
+]
 
 function templateErrors(value, items = []) {
   const errors = {}, id = value.id, name = value.name
@@ -93,7 +100,10 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
         onChange={(e) => set('description', e.target.value)} placeholder={tx("让团队每天自动收到一份日报")} /></label>
       <label className="wide"><span>{tx("生成需求标题")}</span><input maxLength="200" value={value.title}
         onChange={(e) => set('title', e.target.value)} placeholder={tx("每日工作总结")} /></label>
-      <label className="wide"><span>{tx("交给 AI 的工作说明")}</span><textarea required maxLength="8000" rows="5" value={value.note}
+      <label className="wide"><span>{tx("交给 AI 的工作说明")}</span>
+        <span className="at-samples">{NOTE_SAMPLES.map(([label, sample]) =>
+          <button type="button" key={label} className="admin-text-action" onClick={() => set('note', sample)}>{tx(`样例：${label}`)}</button>)}</span>
+        <textarea required maxLength="8000" rows="5" value={value.note}
         onChange={(e) => set('note', e.target.value)} placeholder={tx("说明 AI 每次需要完成的工作、交付物和验收要求")} /></label>
     </div>
     <LocalesEditor summary={tx("多语言（可选）")} languages={localeFields} value={value}
