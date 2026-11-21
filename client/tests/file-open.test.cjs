@@ -204,3 +204,16 @@ test('large text is prepared as an attachment instead of blocking the text rende
   assert.equal(result.ok, true); assert.equal(result.preview, false);
   assert.equal((await fs.stat(result.file.path)).size, 2 * 1024 * 1024 + 1);
 });
+test('isolated copies use a bounded digest name while keeping the display name and extension', async t => {
+  const h = await setup(t), file = path.join(h.root, '中文 页面.html');
+  await fs.writeFile(file, '<h1>原文件</h1>');
+  h.broker.enqueue([file]);
+  const id = (await h.call('list')).items[0].id;
+  const result = await h.call('claim', id);
+  assert.equal(result.ok, true);
+  assert.equal(result.file.name, '中文 页面.html');
+  assert.equal(result.title, '中文 页面.html');
+  assert.match(path.basename(result.file.path), /^snapshot-[0-9a-f]{40}\.html$/);
+  assert.ok(path.basename(result.file.path).length < 64, 'copy name must stay bounded');
+  assert.equal(await fs.readFile(result.file.path, 'utf8'), '<h1>原文件</h1>');
+});

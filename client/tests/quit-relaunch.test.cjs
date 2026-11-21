@@ -105,3 +105,33 @@ test('real second-instance handler passes trusted file requests into the deferre
   assert.deepEqual(fileOpen.commandFiles(['app', ...app.relaunches[0].args], process.cwd()), [file]);
   assert.ok(!app.relaunches[0].args.includes('--untrusted-switch'));
 });
+
+test('an aborted quit un-marks quitting so later launches are not swallowed', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = fakeApp();
+  const state = quitRelaunch.create(app);
+  state.markQuitting();
+  assert.equal(state.quitting, true);
+  // No will-quit ever arrives: the quit was prevented and never re-entered.
+  t.mock.timers.tick(30000);
+  assert.equal(state.quitting, false);
+  assert.equal(state.deferLaunch(), false);
+  app.emit('will-quit');
+  assert.equal(app.relaunches.length, 0);
+});
+
+test('deferred files beyond the relaunch bound are surfaced instead of dropped silently', (t) => {
+  const app = fakeApp();
+  const state = quitRelaunch.create(app);
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (...args) => warnings.push(args.join(' '));
+  t.after(() => { console.warn = original; });
+  state.markQuitting();
+  state.deferLaunch(Array.from({ length: 20 }, (_, i) => path.resolve('file-' + i)));
+  state.deferLaunch([path.resolve('overflow.txt')]);
+  app.emit('will-quit');
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /dropped/);
+  assert.equal(fileOpen.commandFiles(['app', ...app.relaunches[0].args], process.cwd()).length, 20);
+});

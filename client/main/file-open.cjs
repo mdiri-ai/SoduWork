@@ -142,7 +142,12 @@ function create(deps) {
     assertNoLinks(app.getPath('userData'), dir);
     await fs.mkdir(dir, { recursive: true });
     assertNoLinks(app.getPath('userData'), dir);
-    const target = path.join(dir, path.basename(source));
+    // A long display name can push the copy past the native path limit. Keep a
+    // bounded digest-based on-disk name; the original stays on `file.name`.
+    const suffix = path.extname(source).toLowerCase();
+    const name = `snapshot-${createHash('sha256').update(source).digest('hex').slice(0, 40)}` +
+      (/^\.[a-z0-9]{1,16}$/.test(suffix) ? suffix : '');
+    const target = path.join(dir, name);
     assertNoLinks(dir, target);
     let bytes = 0;
     await pipeline(createReadStream(source), new Transform({
