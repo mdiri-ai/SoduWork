@@ -130,6 +130,23 @@ Microsoft Store Python is a valid interpreter. Windows may redirect its data dir
 
 If startup reports that long paths are unavailable, enable **Win32 long paths** in Windows and reopen the launcher so it uses a new process. The launcher does not change this system setting. Keep existing data in its original directory. A short `--data-dir` is an option for a **new, separate instance**; it does not migrate existing accounts or data.
 
+### Windows cannot find 3.12, or you want a specific interpreter
+
+`start.cmd` tries `py -3.12`, `py -3.13`, `py -3`, `python3.12`, then `python`, and prints the interpreter it uses:
+
+```text
+Python interpreter: py -3
+```
+
+When 3.12 comes from uv, conda or a portable build, `py -3.12` may miss it and the launcher falls back to another version. Set `SODUWORK_PYTHON` to the full path to pin the interpreter:
+
+```powershell
+$env:SODUWORK_PYTHON = 'C:\Users\<you>\AppData\Roaming\uv\python\cpython-3.12.13-windows-x86_64-none\python.exe'
+.\start.cmd --desktop
+```
+
+The launcher prints `Python interpreter: <path> (SODUWORK_PYTHON)`, so you can confirm it used the intended 3.12+ interpreter.
+
 ### macOS launcher permissions
 
 Open Terminal, type `cd ` with a trailing space, drag the extracted source folder into the terminal, then press Enter. Run:

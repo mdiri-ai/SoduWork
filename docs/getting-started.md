@@ -131,6 +131,23 @@ Microsoft Store 版 Python 是有效的解释器，但 Windows 可能将其数�
 
 如果启动时提示无法使用长路径，请在 Windows 中启用 **Win32 长路径**，然后重新打开启动程序，使其使用新进程。启动器不会修改这个系统设置。已有数据请保留在原目录；较短的 `--data-dir` 可用于**新建独立实例**，不会迁移原有账号或数据。
 
+### Windows 上找不到 3.12，或想指定解释器
+
+`start.cmd` 依次尝试 `py -3.12`、`py -3.13`、`py -3`、`python3.12`、`python`，并把最终选用的解释器打印出来：
+
+```text
+Python interpreter: py -3
+```
+
+如果本机的 3.12 来自 uv、conda 或便携版，`py -3.12` 可能找不到它，启动器会退到另一个版本。想固定用某个解释器时，把完整路径设到 `SODUWORK_PYTHON` 再启动：
+
+```powershell
+$env:SODUWORK_PYTHON = 'C:\Users\<你>\AppData\Roaming\uv\python\cpython-3.12.13-windows-x86_64-none\python.exe'
+.\start.cmd --desktop
+```
+
+输出会显示 `Python interpreter: <路径> (SODUWORK_PYTHON)`，据此确认用的是同一个 3.12+ 解释器。
+
 ### macOS 打不开启动文件
 
 打开终端，输入 `cd `（末尾留一个空格），把解压后的源码文件夹拖进终端，再按回车。然后执行：
