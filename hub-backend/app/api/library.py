@@ -150,6 +150,17 @@ def _safe_name(value: str, fallback: str = "未命名资料") -> str:
     return name[:240] or fallback
 
 
+FOLDER_NAME_MAX = 160
+
+
+def _folder_name(value, fallback: str) -> str:
+    """Reject over-long folder names instead of silently truncating them at the storage limit."""
+    name = _safe_name(value, fallback)
+    if len(name) > FOLDER_NAME_MAX:
+        raise HTTPException(400, f"文件夹名称不能超过 {FOLDER_NAME_MAX} 个字符")
+    return name
+
+
 def _validate_metadata(body):
     if "favorite" in body and type(body["favorite"]) is not bool:
         raise HTTPException(400, "收藏状态必须为布尔值")
@@ -704,7 +715,7 @@ async def create_folder(body: dict = Body(default_factory=dict), client: Client 
 async def _create_folder(body, client, session):
     owner = _owner_key(client)
     selected_backend = _select_storage(body.get("storage") or body.get("backend"))
-    name = _safe_name(body.get("name"), "新建文件夹")[:160]
+    name = _folder_name(body.get("name"), "新建文件夹")
     parent_id = str(body.get("parentId") or "").strip() or None
     selected_backend = await _destination_backend(session, owner, parent_id, selected_backend)
     await _ensure_storage(selected_backend)
@@ -736,7 +747,7 @@ async def _update_folder(folder_id, body, client, session):
         raw_name = body.get("name")
         if not isinstance(raw_name, str) or not raw_name.strip():
             raise HTTPException(400, "文件夹名称不能为空")
-        name = _safe_name(raw_name, "")[:160]
+        name = _folder_name(raw_name, "")
         if not name:
             raise HTTPException(400, "文件夹名称不能为空")
         await library_names.ensure_folder_available(session, owner, folder.backend, folder.parent_id, name, folder.id)
