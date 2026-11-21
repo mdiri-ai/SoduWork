@@ -359,6 +359,11 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     await _assert_user_in_scope(session, user, target)
+    if body.password is not None:
+        if len(body.password) < 8:
+            raise HTTPException(status_code=422, detail="密码长度不能少于 8 个字符")
+        if len(body.password) > 128:
+            raise HTTPException(status_code=422, detail="密码长度不能超过 128 个字符")
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)
@@ -1837,20 +1842,25 @@ async def put_alert_config(
 ):
     from ..models import AppSetting
     from ..services import notify
-    url = str(body.get("url") or "").strip()[:600]
-    if url and not url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
-    row = (await session.execute(select(AppSetting).where(
+    url = body.get("url")
+    if url is not None:
+        url = str(url).strip()[:600]
+        if url and not url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
+        row = (await session.execute(select(AppSetting).where(
+            AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
+        if row is None:
+            session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
+        else:
+            row.value = url
+        await session.commit()
+    # Read current state for audit and response.
+    current_row = (await session.execute(select(AppSetting).where(
         AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-    if row is None:
-        session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
-    else:
-        row.value = url
-    await session.commit()
     # Webhook URLs permit message injection if leaked; audit only whether a URL is configured.
     await audit.log(session, user, "alert.config", "setting", None, "告警通道",
-                    {"configured": bool(url)})
-    return {"ok": True, "configured": bool(url)}
+                    {"configured": bool(current_row and current_row.value)})
+    return {"ok": True, "configured": bool(current_row and current_row.value)}
 
 
 @router.post("/alert-config/test")

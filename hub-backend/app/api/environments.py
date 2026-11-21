@@ -7,7 +7,7 @@ from .. import automation_models as am, models
 from ..db import get_session
 from ..deps import require_perm
 from ..models import User
-from ..services import (approval_policies as policy_svc, audit, deployments,
+from ..services import (approval_policies as policy_svc, audit, catalog_names, deployments,
                         environment_service as svc, project_setup, rbac,
                         release_control, runner_hub)
 from .input_validation import parse_integer
@@ -20,8 +20,12 @@ def _bad(error: ValueError) -> HTTPException:
         return HTTPException(status_code=422, detail=str(error))
     if isinstance(error, svc.InvalidEnvironmentTier):
         return HTTPException(status_code=400, detail=str(error), headers={"X-Error-Code": "hub.input.tier"})
-    return HTTPException(status_code=400 if isinstance(error, policy_svc.InvalidPolicyInput) else 409,
-                         detail=str(error))
+    if isinstance(error, catalog_names.DuplicateName):
+        return HTTPException(status_code=409, detail=str(error))
+    if isinstance(error, policy_svc.InvalidPolicyInput):
+        return HTTPException(status_code=400, detail=str(error))
+    # Generic value errors (e.g., invalid key format, bad selector) are 422.
+    return HTTPException(status_code=422, detail=str(error))
 
 
 def _approval_policy_input(body: dict) -> dict:

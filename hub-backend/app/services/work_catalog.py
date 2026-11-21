@@ -497,9 +497,11 @@ async def save_profession(
     raw_name = body.get("name", current.name if current else "")
     if raw_name is not None and not isinstance(raw_name, str):
         raise ValueError("职位名称必须是字符串")
-    name = (raw_name or "").strip()[:48]
+    name = (raw_name or "").strip()
     if not name:
         raise ValueError("请填写职业名称")
+    if len(name) > 48:
+        raise ValueError("职位名称不能超过 48 个字符")
     query = select(models.Position).where(
         models.Position.org_id.is_(None) if org_id is None
         else models.Position.org_id == org_id,

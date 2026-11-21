@@ -392,7 +392,10 @@ async def save_environment(session: AsyncSession, body: dict, row: am.Environmen
                 new_reqs = [k if k != old_key else key for k in reqs]
                 other.promotion_policy = {**pp, "requires": new_reqs}
     if "name" in body:
-        row.name = _text(body.get("name"), 80) or row.name
+        name = str(body.get("name") or "").strip()
+        if len(name) > 80:
+            raise ValueError("环境名称不能超过 80 个字符")
+        row.name = name or row.name
     if "tier" in body:
         row.tier = tier or "custom"
     if "description" in body:
