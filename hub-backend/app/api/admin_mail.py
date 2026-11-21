@@ -30,6 +30,9 @@ async def settings(_user: User = Depends(require_perm("identity.manage")),
 @router.put("/mail-settings")
 async def save(body: dict = Body(default_factory=dict), user: User = Depends(require_perm("identity.manage")),
                session: AsyncSession = Depends(get_session)):
+    if not user.is_super:
+        # Outbound SMTP decides where password-reset codes go; only the platform owner may change it.
+        raise HTTPException(status_code=403, detail="只有超级管理员可以修改账号邮件服务")
     try:
         result = await mail.save_settings(session, body)
         await session.commit()
