@@ -48,6 +48,23 @@ test('snapshot excludes runtime directories and does not follow symlinks', async
   await fs.rm(outside, { recursive: true, force: true });
 });
 
+test('a capped scan does not report unchanged displaced paths as deleted or created', async t => {
+  const cwd = await tempDir();
+  t.after(() => fs.rm(cwd, { recursive: true, force: true }));
+  await fs.writeFile(path.join(cwd, 'b.txt'), 'unchanged');
+  await fs.writeFile(path.join(cwd, 'c.txt'), 'old');
+  const before = await journal.snapshot(cwd);
+  await fs.writeFile(path.join(cwd, 'a.txt'), 'new');
+  await fs.writeFile(path.join(cwd, 'b.txt'), 'modified');
+  const after = await journal.snapshot(cwd, { maxFiles: 2 });
+  assert.equal(after.truncated, true);
+  const changes = journal.compare(before, after);
+  assert.deepEqual(changes.files.map(row => [row.path, row.action]), [['a.txt', 'created'], ['b.txt', 'modified']]);
+  assert.equal(changes.truncated, true);
+  const reverse = journal.compare(after, before);
+  assert.deepEqual(reverse.files.map(row => [row.path, row.action]), [['a.txt', 'deleted'], ['b.txt', 'modified']]);
+});
+
 test('snapshot without a workspace never scans the process cwd', async () => {
   const snap = await journal.snapshot('');
   assert.equal(snap.cwd, '');
