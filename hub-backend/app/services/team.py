@@ -611,6 +611,13 @@ async def create_team_task(session: AsyncSession, client: models.Client, data: d
         scope = await rbac.scope_org_ids(session, me)
         if scope is not None and org_id not in scope:
             return {"ok": False, "reason": "out_of_scope"}
+        # An inbox task can still name an explicit recipient; without this check a ghost user id
+        # was created as a pool task that nobody can ever claim.
+        uid = str(data.get("assigneeUserId") or "").strip()
+        if uid:
+            target = await session.get(models.User, uid)
+            if target is None or not target.is_active:
+                return {"ok": False, "reason": "no_such_assignee"}
         me_name = me.display_name or me.username
         payload = {
             "title": title, "note": data.get("note") or "",
