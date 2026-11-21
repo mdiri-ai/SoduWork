@@ -103,6 +103,24 @@ def _headers(value) -> dict:
     return out
 
 
+def _bounded_int(value, default: int, low: int, high: int, label: str) -> int:
+    # Parse an assertion integer; a wrong shape becomes a readable 400 instead of a 500.
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        raise ValueError(f"{label} 必须是整数")
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and float(value).is_integer():
+        number = int(value)
+    else:
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{label} 必须是整数") from None
+    return max(low, min(number, high))
+
+
 def _checks(value) -> list[dict]:
     """Resolve deployment assertions shared by Runner-local and adapter-based publication.
     Configure each assertion with its environment and deployment entry point rather than
@@ -110,12 +128,14 @@ def _checks(value) -> list[dict]:
     intended change was deployed; support request methods, headers, bodies, and
     contains/notContains response checks."""
     out = []
+    if value is not None and not isinstance(value, list):
+        raise ValueError("healthChecks 必须是数组")
     for raw in (value or [])[:20]:
         if not isinstance(raw, dict):
             continue
         kind = _text(raw.get("type"), 24).lower()
         name = _text(raw.get("name"), 80) or ("HTTP 探活" if kind == "http" else "命令检查")
-        timeout = min(120, max(1, int(raw.get("timeoutSeconds") or 15)))
+        timeout = _bounded_int(raw.get("timeoutSeconds"), 15, 1, 120, f"{name} 的超时时间")
         if kind == "http":
             url = _text(raw.get("url"), 800)
             if not url.startswith(("http://", "https://")):
@@ -124,7 +144,8 @@ def _checks(value) -> list[dict]:
             if method not in {"GET", "POST", "PUT", "HEAD", "DELETE"}:
                 raise ValueError(f"{name} 的请求方法不支持：{method}")
             item = {"type": "http", "name": name, "url": url, "method": method,
-                    "expectStatus": int(raw.get("expectStatus") or 200),
+                    "expectStatus": _bounded_int(raw.get("expectStatus"), 200, 100, 599,
+                                                 f"{name} 的预期状态码"),
                     "timeoutSeconds": timeout}
             # Optional fields affect behavior only when configured, preserving older records.
             if raw.get("headers"):
