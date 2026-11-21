@@ -7,6 +7,7 @@ import ListPager from '../ListPager.jsx'
 import { useViewportHeight } from '../viewport-height.js'
 import './admin-access-pages.css'
 import { detailText } from './audit-detail.js'
+import { validAuditPage } from './audit-pagination.js'
 
 const ACTIONS = localeMap(() => ({
   'task.dispatch': { label: "下发需求", c: 'var(--c-blue)' },
@@ -88,7 +89,16 @@ export default function Audit() {
     setLoading(true)
     setError(null)
     api.audit({ limit: PAGE, offset: (page - 1) * PAGE, ...(action ? { action } : {}) })
-      .then((d) => { if (alive) { setData(d); setLoading(false) } })
+      .then((d) => {
+        if (!alive) return
+        const validPage = validAuditPage(page, d.total, PAGE)
+        if (validPage !== page) {
+          setPage(validPage)
+          return
+        }
+        setData(d)
+        setLoading(false)
+      })
       .catch((err) => { if (alive) { setError(err); setLoading(false) } })
     return () => { alive = false }
   }, [action, page, refreshKey])
