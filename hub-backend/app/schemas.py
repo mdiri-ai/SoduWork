@@ -329,8 +329,10 @@ class UserTokenQuota(BaseModel):
 
 class UserCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    username: str
-    password: str
+    # An empty password still hashes to a valid value, so /admin/login would accept "" and hand
+    # out a session; keep the same 8-128 window the client registration flow enforces.
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=8, max_length=128)
     displayName: str = ""
     orgId: Optional[str] = None
     roleId: Optional[str] = None
@@ -345,7 +347,7 @@ class UserUpdate(BaseModel):
     orgId: Optional[str] = None
     roleId: Optional[str] = None
     isActive: Optional[bool] = None
-    password: Optional[str] = None
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     positions: Optional[list] = None
     domains: Optional[list[str]] = None
     tokenQuota: Optional[UserTokenQuota] = None
