@@ -299,14 +299,16 @@ class OrgCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: AdminName
     parentId: Optional[str] = None
-    sort: int = 0
+    # Bounded so an out-of-range rank cannot overflow the Integer column (500) or a future
+    # PostgreSQL INT4 migration.
+    sort: int = Field(default=0, ge=-99999, le=99999)
 
 
 class OrgUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: Optional[AdminName] = None
     parentId: Optional[str] = None
-    sort: Optional[int] = None
+    sort: Optional[int] = Field(default=None, ge=-99999, le=99999)
 
 
 class RoleCreate(BaseModel):
