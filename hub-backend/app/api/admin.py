@@ -141,7 +141,13 @@ async def _visible_client_ids(session: AsyncSession, user: User) -> set[str] | N
 
 
 async def _assert_org_in_scope(session: AsyncSession, user: User, org_id: str | None):
-    if user.is_super or not org_id:
+    if not org_id:
+        return
+    # Scope membership says nothing about existence: superusers skip the scope check entirely, so
+    # a typo such as "org-ghost" used to be written straight into user.org_id / position.org_id.
+    if await session.get(models.OrgUnit, org_id) is None:
+        raise HTTPException(status_code=400, detail="部门不存在")
+    if user.is_super:
         return
     scope = await rbac.scope_org_ids(session, user)
     if scope is not None and org_id not in scope:
