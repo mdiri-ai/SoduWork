@@ -351,10 +351,16 @@ async def update_repo(rid: str, body: dict = Body(default_factory=dict),
             raise HTTPException(status_code=400, detail=err)
         kept = {}
         for key in ai_prompts.DEFAULTS:
-            raw = str(v.get(key) or "").strip()
-            if not raw:
+            raw = v.get(key)
+            if key == "steps":
+                # steps is a list; stringifying it would corrupt the value and make _clean_steps discard every customized step.
+                if raw:
+                    kept[key] = ai_prompts.normalize({key: raw})[key]
+                continue
+            text = str(raw or "").strip()
+            if not text:
                 continue                                   # An omitted value inherits the global default.
-            kept[key] = ai_prompts.normalize({key: raw})[key]   # Normalize each field and apply its fallback.
+            kept[key] = ai_prompts.normalize({key: text})[key]   # Normalize each field and apply its fallback.
         r.dev_flow = kept
     if "deployTargets" in body:
         # Multiple {name, env, cmd, auto} targets; administrators define commands and SoduWork triggers them.
