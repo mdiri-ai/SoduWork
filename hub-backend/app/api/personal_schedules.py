@@ -278,6 +278,10 @@ async def run_my_schedule(sid: str, body: dict = Body(default_factory=dict),
             receipt = dict(run.receipt or {})
             out["conversationInput"] = dict(claimed.get("input") or {})
             out["instanceId"] = instance_id
+            # Reuse-mode runs continue one conversation; forward the pointer so
+            # the immediate button can open the same chat as the next run.
+            if claimed.get("recurringConversationId"):
+                out["recurringConversationId"] = claimed["recurringConversationId"]
         elif claimed.get("busy"):
             out["busy"] = True
     await session.commit()

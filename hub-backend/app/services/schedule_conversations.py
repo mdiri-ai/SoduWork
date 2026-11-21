@@ -100,6 +100,10 @@ async def prepare(session, schedule, client, repo, run_id, adapter, personal):
     # device-local personal plugin.
     from .schedule_execution import normalize_conversation_schedule
     normalize_conversation_schedule(schedule)
+    # Read the reuse pointer before any later commit can expire schedule
+    # attributes; the claim below must not lazily refresh an async row.
+    session_mode = str(getattr(schedule, 'session_mode', '') or 'fresh')
+    recurring_id = str(getattr(schedule, 'recurring_conversation_id', '') or '')
     run = await session.get(models.AiScheduleRun, run_id)
     if run is None:
         raise ValueError('自动化运行记录尚未建立')
@@ -216,6 +220,11 @@ async def claim(session, client, run_id, instance):
     if not instance or len(instance) > 80:
         raise HTTPException(400, '缺少有效的执行端标识')
     run = await locked_run(session, client, run_id)
+    # The commit below expires ORM rows; read the reuse pointer before
+    # crossing that boundary so the claim can carry it.
+    schedule = await session.get(models.AiSchedule, run.schedule_id)
+    session_mode = str(getattr(schedule, 'session_mode', '') or 'fresh')
+    recurring_id = str(getattr(schedule, 'recurring_conversation_id', '') or '')
     from .schedule_device_liveness import expire_run
     await expire_run(session, run)
     raw_receipt = dict(run.receipt or {})
@@ -281,9 +290,15 @@ async def claim(session, client, run_id, instance):
     receipt.update(worker=instance, leaseUntil=now + RESERVATION_LEASE_SECONDS)
     run.receipt = receipt
     await session.commit()
-    return {'ok': True, 'input': envelope, 'scheduleId': str(run.schedule_id or ''),
-            'trigger': run.trigger,
-            'conversationId': receipt.get('conversationId', '')}
+    claim = {'ok': True, 'input': envelope, 'scheduleId': str(run.schedule_id or ''),
+             'trigger': run.trigger,
+             'conversationId': receipt.get('conversationId', '')}
+    if session_mode == 'reuse':
+        # A separate field, never conversationId: claiming the pointer as
+        # conversationId would make the desktop adopt it as an existing
+        # conversation instead of opening (and recreating) it.
+        claim['recurringConversationId'] = recurring_id
+    return claim
 
 
 async def acknowledge(session, client, run_id, body):
@@ -352,6 +367,10 @@ async def acknowledge(session, client, run_id, body):
     if state in ('running', 'succeeded') and not cid:
         raise HTTPException(400, '缺少普通会话标识')
     receipt.update(conversationId=cid, leaseUntil=datetime.now(timezone.utc).timestamp() + 300)
+    # The desktop recreated the shared conversation after the previous one
+    # disappeared; keep that fact in the receipt for execution history.
+    if body.get('conversationRecreated'):
+        receipt['conversationRecreated'] = True
     if state != 'starting':
         receipt.pop('phase', None)
     if state in ('succeeded', 'failed', 'cancelled'):
@@ -371,7 +390,16 @@ async def acknowledge(session, client, run_id, body):
     if latest == run.id:
         from . import schedule_timing
         schedule = await schedule_timing.locked_schedule(session, run.schedule_id)
-        if schedule is not None and schedule_timing.matches(schedule, run):
-            schedule.last_error = run.error[:400]
+        if schedule is not None:
+            # Reuse-mode runs continue one conversation. Publish the chat id as
+            # soon as the device reports it (starting or terminal), before the
+            # outcome matching below, so the next occurrence opens the same
+            # conversation. Fresh schedules keep their empty pointer.
+            if (str(getattr(schedule, 'session_mode', '') or 'fresh') == 'reuse'
+                    and cid and
+                    str(getattr(schedule, 'recurring_conversation_id', '') or '') != cid):
+                schedule.recurring_conversation_id = cid
+            if schedule_timing.matches(schedule, run):
+                schedule.last_error = run.error[:400]
     await session.commit()
     return {'ok': True, 'state': state}

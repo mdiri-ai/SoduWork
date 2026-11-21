@@ -636,6 +636,12 @@ class AiSchedule(Base):
     # Managed models are resolved by the Hub/Agent; device models remain in the
     # owning desktop's encrypted store and are represented here only by source.
     model_source: Mapped[str] = mapped_column(String(16), default="managed", server_default="managed")
+    # Fresh opens a new ordinary conversation per run; reuse continues the same
+    # one across runs. One-shot and plugin schedules never reuse.
+    session_mode: Mapped[str] = mapped_column(String(16), default="fresh", server_default="fresh")
+    # Conversation the next reuse run continues; written back at acknowledge.
+    # Empty until the first reuse run publishes its chat id.
+    recurring_conversation_id: Mapped[str] = mapped_column(String(180), default="", server_default="")
     repo_id: Mapped[str] = mapped_column(String(36), default="")         # Documentation and research tasks may omit a repository.
     flow: Mapped[bool] = mapped_column(Boolean, default=False)           # Whether to follow the development workflow.
     # Empty selects direct assignment; otherwise start from an immutable plugin binding.

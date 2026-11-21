@@ -60,6 +60,7 @@ def schedule_payload(s, *, timestamp, administrative=False) -> dict:
             # source marker is enough for clients to enforce fail-closed use.
             "modelName": model_name,
             "modelSource": model_source,
+            "sessionMode": str(getattr(s, "session_mode", "") or "fresh"),
             "repoId": s.repo_id, "flow": False, "enabled": bool(s.enabled),
             "pluginBindingId": "",
             "personalPluginKey": personal_key,
@@ -243,6 +244,26 @@ def apply_schedule_update(s, body: dict) -> None:
                 s.plugin_inputs = {}
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Session mode is editor-owned and validated fail-closed. One-shot and
+    # plugin-driven schedules never continue a conversation, and switching the
+    # mode must not reset the retry bookkeeping below.
+    if "sessionMode" in body:
+        requested_mode = str(body.get("sessionMode") or "")
+        if requested_mode not in ("fresh", "reuse"):
+            raise HTTPException(status_code=400, detail="会话模式无效")
+        if requested_mode == "reuse":
+            if "every" in body and str(body.get("every") or "") == "once" or \
+                    str(getattr(s, "every", "") or "") == "once":
+                raise HTTPException(status_code=400,
+                                    detail="一次性调度只运行一次，不支持延续会话")
+            if str(getattr(s, "personal_plugin_key", "") or "") or \
+                    str(body.get("personalPluginKey") or ""):
+                raise HTTPException(status_code=400,
+                                    detail="个人插件调度不支持延续会话")
+            if str(body.get("pluginBindingId") or ""):
+                raise HTTPException(status_code=400,
+                                    detail="工作流型调度不走普通会话，不支持延续会话")
+        s.session_mode = requested_mode
     if "requiredCapabilities" in body:
         s.required_capabilities = sch.clean_required_capabilities(
             body.get("requiredCapabilities"))
