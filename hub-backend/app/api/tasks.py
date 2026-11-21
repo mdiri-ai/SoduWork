@@ -22,6 +22,7 @@ from ..services.task_dispatch_context import (
     _attach_dev_flow, _attach_skills, _fill_repo_wire, _settle_work_dir,
     _aio_thread, _link_task_repo, _stale_runner_hint, _push_task,
 )
+from ..timestamps import iso_utc
 
 router = APIRouter(prefix="/api/v1", tags=["tasks"])
 log = logging.getLogger("uvicorn.error")
@@ -222,7 +223,7 @@ async def get_delivery_state(
         "blockers": truth.get("blockers") or [],
         "approvals": approvals,
         "outputContract": contract,
-        "reviewedAt": task.reviewed_at.isoformat() if task.reviewed_at else None,
+        "reviewedAt": iso_utc(task.reviewed_at) if task.reviewed_at else None,
         "engineering": {
             "projectId": getattr(task, "project_id", None),
             "repoId": str(getattr(task, "repo_id", "") or "").strip(),
@@ -308,7 +309,14 @@ async def get_daily_report(
     u = await _actor_user(session, client)
     if u is None:
         raise HTTPException(status_code=400, detail="本 SoduWork 未绑定用户，请让管理员分配归属")
+    from datetime import date as _date
     day = (date or "").strip() or dr.today_str()
+    try:
+        parsed_date = _date.fromisoformat(day)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="非法日期，请使用 YYYY-MM-DD 格式")
+    if parsed_date > _date.today():
+        raise HTTPException(status_code=400, detail="日报只能查询今天或之前的日期")
     from sqlalchemy import select as _sel
     from ..models import DailyReport
     rep = (await session.execute(
@@ -331,7 +339,14 @@ async def gen_daily_report(
     u = await _actor_user(session, client)
     if u is None:
         raise HTTPException(status_code=400, detail="本 SoduWork 未绑定用户，请让管理员分配归属")
+    from datetime import date as _date
     day = (body.get("date") or "").strip() or dr.today_str()
+    try:
+        parsed_date = _date.fromisoformat(day)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="非法日期，请使用 YYYY-MM-DD 格式")
+    if parsed_date > _date.today():
+        raise HTTPException(status_code=400, detail="不允许为未来日期生成日报")
     rep = await dr.generate_for(session, u, day, notify=False)
     if rep is None:
         raise HTTPException(status_code=400, detail="今天还没有进展记录，先在需求里写一条再生成")
@@ -1426,8 +1441,6 @@ async def ai_session_task(
     limit: int = Query(default=400, ge=1, le=1000),
 ):
     """Behavior and constraints for this operation."""
-    import asyncio as _aio
-
     from ..services import ai_exec, execution_sessions
     if not isinstance(limit, int):
         limit = 400
@@ -1466,8 +1479,16 @@ async def ai_session_task(
             return {"ok": False, "items": [], "error": "这条需求还没交给 AI"}
         d = ev_row.detail or {}
         ref = d.get("ref") or d.get("issueId", "")
+        if not d.get("runnerId"):
+            from ..automation_models import ExecutionSession
+            from sqlalchemy import select
+            owner = await session.scalar(select(ExecutionSession).where(
+                ExecutionSession.task_id == tid, ExecutionSession.ref == ref))
+            if owner and owner.runner_id:
+                d = {**d, "runnerId": owner.runner_id}
     ctx = await ai_exec.load(session)
-    live = await _aio.to_thread(ai_exec.session_sync, ctx, ref, int(since or 0))
+    live = await ai_exec.read_session(ctx, ref, int(since or 0),
+        runner_id=str(d.get("runnerId") or ""), limit=limit)
     if live.get("ok"):
         # New Runners push events; older Runners and backend-local execution use read-through persistence during upgrades.
         await execution_sessions.ingest_live_snapshot(session, t, ref, live, d)
@@ -1923,7 +1944,7 @@ async def submit_task_for_review(
     """
     from ..services import release_control
     from ..services import task_requirements
-    from ..services import task_access
+    from ..services import task_notifications
     from ..services import task_events as ev
 
     # Serialize manual submission with execution starts and approval decisions.
@@ -1968,10 +1989,12 @@ async def submit_task_for_review(
         }, actor=who)
     ev.record(session, tid, "artifact.submitted_for_review",
               {"requestId": request.id, "versionId": artifact.id, "note": note}, actor=who)
+    # Commit the notification with the review, but deliver it outside this HTTP
+    # request. Slow devices must not turn an accepted submission into a timeout.
+    task_notifications.enqueue(session, task, "task.updated")
     await session.commit()
     await session.refresh(task)
     api = await svc.task_to_api_live(session, task)
-    await task_access.publish_task(session, task, "task.updated", api)
     return {"ok": True, "request": release_control.request_api(request), "task": api}
 
 

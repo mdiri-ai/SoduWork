@@ -1,6 +1,14 @@
 /* Agent Management surfaces (Japanese). See en-US-agent-pages.js for key provenance. */
 (function (global) {
   const messages = {
+    "无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness で選択された Node のプラットフォームとアーキテクチャを確認できません。",
+    "无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness で選択された Node の Linux libc を確認できません。",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness ランタイムのマニフェストが不完全です：DeepSeek Harness で選択された Node のプラットフォームとアーキテクチャを確認できません。",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness ランタイムのマニフェストが不完全です：DeepSeek Harness で選択された Node の Linux libc を確認できません。",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness ランタイムの準備に失敗しました：DeepSeek Harness で選択された Node のプラットフォームとアーキテクチャを確認できません。",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness ランタイムの準備に失敗しました：DeepSeek Harness で選択された Node の Linux libc を確認できません。",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness ランタイムの準備に失敗しました。ランタイムのマニフェストが不完全です：DeepSeek Harness で選択された Node のプラットフォームとアーキテクチャを確認できません。",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness ランタイムの準備に失敗しました。ランタイムのマニフェストが不完全です：DeepSeek Harness で選択された Node の Linux libc を確認できません。",
     "重装": "再インストール",
     "更新": "更新",
     "Agent 管理": "Agent 管理",

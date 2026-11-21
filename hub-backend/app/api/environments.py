@@ -10,12 +10,23 @@ from ..models import User
 from ..services import (approval_policies as policy_svc, audit, deployments,
                         environment_service as svc, project_setup, rbac,
                         release_control, runner_hub)
+from .input_validation import parse_integer
 
 router = APIRouter(prefix="/api/v1/admin", tags=["environments"])
 
 
 def _bad(error: ValueError) -> HTTPException:
-    return HTTPException(status_code=409, detail=str(error))
+    return HTTPException(status_code=400 if isinstance(error, policy_svc.InvalidApprovalActions) else 409,
+                         detail=str(error))
+
+
+def _approval_policy_input(body: dict) -> dict:
+    safe = dict(body)
+    rules = safe.get("rules")
+    if isinstance(rules, dict) and "required" in rules:
+        safe["rules"] = {**rules, "required": parse_integer(
+            rules["required"], field="rules.required", default=1)}
+    return safe
 
 
 async def _scope(session: AsyncSession, user: User) -> set[str] | None:
@@ -255,7 +266,7 @@ async def create_approval_policy(
     user: User = Depends(require_perm("flow.manage")),
     session: AsyncSession = Depends(get_session),
 ):
-    safe = dict(body)
+    safe = _approval_policy_input(body)
     safe["orgId"] = body.get("orgId") if user.is_super else user.org_id
     try:
         row = await policy_svc.save(session, safe)
@@ -282,7 +293,7 @@ async def update_approval_policy(
     if scope is not None and row.org_id is not None and row.org_id not in scope:
         raise HTTPException(status_code=403, detail="这项审批职责不在你的组织范围内")
     try:
-        row = await policy_svc.save(session, body, row)
+        row = await policy_svc.save(session, _approval_policy_input(body), row)
     except ValueError as e:
         raise _bad(e) from e
     await audit.log(session, user, "approval_policy.update", "approval_policy",
@@ -329,6 +340,10 @@ async def create_environment(
     try:
         safe = dict(body)
         safe["orgId"] = body.get("orgId") if user.is_super else user.org_id
+        if not user.is_super and not safe["orgId"]:
+            raise ValueError("请先加入组织后再创建环境")
+        if "sort" in safe:
+            safe["sort"] = parse_integer(safe["sort"], field="sort", default=0)
         row = await svc.save_environment(session, safe)
     except ValueError as e:
         raise _bad(e) from e
@@ -353,7 +368,10 @@ async def update_environment(
     if scope is not None and row.org_id is not None and row.org_id not in scope:
         raise HTTPException(status_code=403, detail="这个环境不在你的组织范围内")
     try:
-        row = await svc.save_environment(session, body, row)
+        safe = dict(body)
+        if "sort" in safe:
+            safe["sort"] = parse_integer(safe["sort"], field="sort", default=0)
+        row = await svc.save_environment(session, safe, row)
     except ValueError as e:
         raise _bad(e) from e
     await audit.log(session, user, "environment.update", "environment", row.id, row.name, {})
@@ -589,6 +607,8 @@ async def probe_secret_reference(
     row = await session.get(am.SecretReference, ref_id)
     if row is None:
         raise HTTPException(status_code=404, detail="密钥引用不存在")
+    if row.org_id is None and not user.is_super:
+        raise HTTPException(status_code=403, detail="系统级密钥引用只能由超级管理员操作")
     scope = await _scope(session, user)
     if scope is not None and row.org_id is not None and row.org_id not in scope:
         raise HTTPException(status_code=403, detail="这个密钥引用不在你的组织范围内")

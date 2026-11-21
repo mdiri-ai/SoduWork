@@ -184,6 +184,40 @@ class AdminProjectRouterTests(unittest.IsolatedAsyncioTestCase):
                 models.AuditLog.target_id == rid))).scalars().all()
             self.assertCountEqual(events, ["repo.create", "repo.update", "repo.delete"])
 
+    async def test_project_deletion_requires_removing_its_repository_mappings(self):
+        async with self.sessions() as session:
+            session.add_all([
+                models.Task(id="keep", title="Keep this task", owner_client_id="box", project_id="project"),
+                models.Repo(id="manual", project_id="project"),
+                models.Repo(id="mapped", project_id="project", source_repository_id="catalog"),
+                models.Repo(id="unrelated", project_id="hidden"),
+            ])
+            await session.commit()
+
+        denied = await self.request("DELETE", "/projects/project", who="outsider")
+        self.assertEqual(denied.status_code, 403)
+        for rid, count in (("manual", 2), ("mapped", 1)):
+            response = await self.request("DELETE", "/projects/project")
+            self.assertEqual(response.status_code, 409, response.text)
+            self.assertIn(f"{count} 个仓库", response.json()["detail"])
+            async with self.sessions() as session:
+                self.assertIsNotNone(await session.get(models.Project, "project"))
+                self.assertEqual((await session.get(models.Task, "keep")).project_id, "project")
+                self.assertEqual((await session.get(models.Repo, rid)).project_id, "project")
+            removed = await self.request("DELETE", "/repos/" + rid)
+            self.assertEqual(removed.status_code, 200, removed.text)
+
+        for _ in range(2):
+            response = await self.request("DELETE", "/projects/project")
+            self.assertEqual(response.json(), {"ok": True})
+        async with self.sessions() as session:
+            self.assertIsNone(await session.get(models.Project, "project"))
+            self.assertIsNone((await session.get(models.Task, "keep")).project_id)
+            self.assertEqual((await session.get(models.Repo, "unrelated")).project_id, "hidden")
+            deleted = await session.scalars(select(models.AuditLog.target_id).where(
+                models.AuditLog.action == "project.delete"))
+            self.assertEqual(deleted.all(), ["project"])
+
     async def test_all_repository_writers_reject_nonrelative_directories(self):
         from app import automation_models as am
         from app.api import repositories

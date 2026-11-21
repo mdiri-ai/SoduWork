@@ -49,6 +49,7 @@
 
   function install(store, hooks) {
     const api = () => global.SoduWorkAPI;
+    const canPoll = () => !['pending', 'quota'].includes(api()?.clientAuthSnapshot?.().state);
     const emit = (type, detail) => {
       try { global.dispatchEvent(new global.CustomEvent(type, { detail })); } catch (_) {}
     };
@@ -289,6 +290,7 @@
         return job;
       },
       heartbeat() {
+        if (!canPoll()) return Promise.resolve({ online: false, authenticationRequired: true });
         if (this._heartbeatPromise) return this._heartbeatPromise;
         const epoch = this._taskEpoch, key = scope();
         const job = (async () => {
@@ -311,13 +313,14 @@
     });
 
     function connectRealtime() {
-      if (!api()?.connectWS || store._wsOff) return;
+      if (!canPoll() || !api()?.connectWS || store._wsOff) return;
       store._wsOff = api().connectWS(event => store.applyServerEvent(event));
     }
     async function startup() {
       const revision = store._cfgRevision, epoch = store._taskEpoch;
       try { await api().registerClient(); } catch (_) {}
       if (epoch !== store._taskEpoch) return { online: false, stale: true };
+      if (!canPoll()) return { online: false, authenticationRequired: true };
       const result = await store.hydrate(false, revision);
       if (result.stale) return result;
       hooks.syncBindings();
@@ -326,6 +329,22 @@
       return result;
     }
     global.addEventListener?.('soduwork-data-scope-changed', () => { store.beginEnvironmentSwitch(); hooks.scopeChanged(); });
+    function syncAuthLifecycle() {
+      if (!canPoll()) {
+        clearInterval(store._hbTimer); store._hbTimer = null;
+        if (store._wsOff) { store._wsOff(); store._wsOff = null; }
+        store._startupPromise = null;
+        return;
+      }
+      if (store._localReady) {
+        if (!store._hbTimer) store._hbTimer = setInterval(() => { void store.heartbeat(); }, 20000);
+        // Enrollment itself publishes auth state. Defer startup so its original
+        // caller can install the single-flight promise before this listener runs.
+        Promise.resolve().then(() => { if (!store._startupPromise && canPoll()) store._startupPromise = startup(); });
+      }
+    }
+    global.addEventListener?.('soduwork-device-auth', syncAuthLifecycle);
+    global.addEventListener?.('soduwork-client-auth-required', syncAuthLifecycle);
     global.addEventListener?.('soduwork-ws-open', () => {
       if (store._remoteReady && !store._waitingHeartbeat) void store.refreshTasks();
       global.MateNoticeSync?.tick(true);
@@ -336,6 +355,7 @@
     global.initData = async function initData() {
       store.initLocal(); hooks.syncBindings();
       if (!api()) return;
+      if (!canPoll()) return;
       if (!store._hbTimer) store._hbTimer = setInterval(() => { void store.heartbeat(); }, 20000);
       if (!store._startupPromise) store._startupPromise = startup();
     };

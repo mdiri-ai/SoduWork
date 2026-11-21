@@ -467,6 +467,8 @@ async def ensure_request(session: AsyncSession, task: models.Task, artifact: am.
                   ((env.approval_policy_id if action == "deploy" else
                     env.acceptance_policy_id) if env else "") or pid)
     policy = await session.get(am.ApprovalPolicy, pid)
+    if policy and not policy.enabled:
+        raise ValueError("该审批策略已停用，无需审批")
     rules = dict((policy.rules if policy else {}) or {})
     # Freeze version, criteria and evidence refs when a gate is created.
     from . import gate_contract

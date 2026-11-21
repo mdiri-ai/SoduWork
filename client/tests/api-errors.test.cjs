@@ -17,7 +17,7 @@ function load(fetchImpl, seed = {}, internal = false) {
     window, localStorage, fetch: fetchImpl, User: { id: 'u-test' },
     navigator: { platform: 'test' }, console: { log() {}, error() {} },
     AbortController: class { constructor() { this.signal = {}; } abort() {} },
-    FormData: class { append() {} }, WebSocket: class {},
+    FormData: class { append() {} }, WebSocket: class {}, URLSearchParams,
     setTimeout: () => 0, clearTimeout() {},
   };
   vm.createContext(context);
@@ -28,6 +28,34 @@ function load(fetchImpl, seed = {}, internal = false) {
 function response(status, body) {
   return { ok: status >= 200 && status < 300, status, text: async () => body || '' };
 }
+
+test('session read failures preserve Hub reachability and expose a retryable timeout', async () => {
+  let mode = 'online';
+  const api = load(async (_url, options) => {
+    assert.equal(options.sessionRead, undefined);
+    if (mode === 'network') throw new TypeError('network down');
+    if (mode === 'timeout') return response(504, JSON.stringify({ detail: {
+      code: 'SESSION_READ_TIMEOUT', retryable: true, message: 'Session read timed out',
+    } }));
+    return response(200, '[]');
+  });
+  await api.getProjects();
+  for (const failure of ['network', 'timeout']) {
+    mode = failure;
+    const page = await api.aiSession('task', 42, 'run');
+    assert.equal(page.ok, false);
+    assert.equal(page.last, undefined);
+    assert.equal(api.online, true);
+    if (failure === 'timeout') {
+      assert.equal(page.httpStatus, 504);
+      assert.equal(page.code, 'SESSION_READ_TIMEOUT');
+      assert.equal(page.retryable, true);
+    }
+  }
+  mode = 'network';
+  await api.getTasks();
+  assert.equal(api.online, false);
+});
 
 test('business project lookup distinguishes a successful empty list from HTTP and malformed responses', async () => {
   assert.equal((await load(async()=>response(200,'[]')).getProjects()).length,0);

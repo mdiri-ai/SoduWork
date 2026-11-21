@@ -82,6 +82,25 @@ function fixture(api, seed, options) {
   };
 }
 
+test('pending before initialization stays idle and login immediately hydrates and subscribes once', async () => {
+  let state = 'pending', reads = 0, connections = 0, registrations = 0;
+  const f = fixture({
+    online: true, clientAuthSnapshot: () => ({ state }),
+    registerClient: async () => { registrations++; return { ok: true, authState: state, activationRequired: state !== 'active' }; },
+    getTasksSnapshot: async () => { reads++; return { online: true, items: [] }; },
+    getConfig: async () => ({}),
+    connectWS: () => { connections++; return () => {}; },
+  });
+  await f.initData();
+  assert.equal(registrations, 0); assert.equal(reads, 0); assert.equal(f.Store._startupPromise, null);
+  assert.equal(f.timers.filter(row => row.interval).length, 0);
+  state = 'active'; f.context.dispatchEvent({ type: 'soduwork-device-auth' }); await settle();
+  assert.equal(reads, 1); assert.equal(connections, 1); assert.equal(f.Store.taskState, 'ready');
+  f.context.dispatchEvent({ type: 'soduwork-device-auth' }); await settle();
+  assert.equal(reads, 1); assert.equal(connections, 1);
+  assert.equal(f.timers.filter(row => row.interval).length, 1);
+});
+
 test('有本地缓存时首屏也不展示缓存，后台校准后就地填入同一任务数组', async () => {
   let releaseRegistration;
   const registration = new Promise((resolve) => { releaseRegistration = resolve; });

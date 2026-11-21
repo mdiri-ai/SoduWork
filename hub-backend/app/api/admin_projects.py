@@ -14,6 +14,7 @@ from ..models import Task, User
 from ..schemas import task_to_api
 from ..services import audit, rbac
 from ..services import tasks as svc
+from ..services.repository_catalog import lock_mapping_project
 
 router = APIRouter()
 
@@ -226,8 +227,8 @@ async def add_repo(pid: str, body: dict = Body(default_factory=dict),
     """Add a repository using local_dir relative to the device's configured workspace; resolve
     machine-specific absolute paths at dispatch.
     """
-    from ..models import Project, Repo
-    p = await session.get(Project, pid)
+    from ..models import Repo
+    p = await lock_mapping_project(session, pid)
     if p is None:
         raise HTTPException(status_code=404, detail="工程所属项目不存在")
     name = (body.get("name") or "").strip()
@@ -241,8 +242,13 @@ async def add_repo(pid: str, body: dict = Body(default_factory=dict),
         local = validate_repo_local_dir(body.get("localDir"))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    from ..services.repo_urls import validate_git_url
+    try:
+        git_url = validate_git_url(body.get("gitUrl"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     r = Repo(project_id=pid, name=name, kind=kind,
-             git_url=(body.get("gitUrl") or "").strip(),
+             git_url=git_url,
              default_branch=(body.get("branch") or "main").strip() or "main",
              local_dir=local, note=(body.get("note") or "").strip()[:2000],
              # Accept automatic merge and dispatch settings during creation as well as updates.
@@ -284,11 +290,17 @@ async def update_repo(rid: str, body: dict = Body(default_factory=dict),
         if scm not in ("git", "gitlab"):
             raise HTTPException(status_code=400, detail=scm_support.GERRIT_RETIRED if scm == "gerrit" else "scm 只能是 git 或 gitlab")
         r.scm = "git"
-    for k, f in (("name", "name"), ("gitUrl", "git_url"), ("branch", "default_branch"),
+    from ..services.repo_urls import validate_git_url
+    for k, f in (("name", "name"), ("branch", "default_branch"),
                  ("note", "note"), ("serverDir", "server_dir"), ("mergeBranch", "merge_branch"),
                  ("aiWorkDir", "ai_work_dir")):
         if k in body:
             setattr(r, f, str(body.get(k) or "").strip())
+    if "gitUrl" in body:
+        try:
+            r.git_url = validate_git_url(body.get("gitUrl"))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     if "routeKeywords" in body:
         kws = body.get("routeKeywords")
         if not isinstance(kws, list):
@@ -425,14 +437,22 @@ async def delete_project(pid: str, user: User = Depends(require_perm("task.dispa
     """Delete the project while retaining its tasks and clearing their project_id association."""
     from .admin import _assert_org_in_scope
 
-    from ..models import Project
-    p = await session.get(Project, pid)
+    from ..models import Repo
+    p = await lock_mapping_project(session, pid)
     if p is None:
         return {"ok": True}
     await _assert_org_in_scope(session, user, p.org_id)
+    repo_count = await session.scalar(select(func.count()).select_from(Repo).where(Repo.project_id == pid))
+    if repo_count:
+        raise HTTPException(status_code=409, detail=f"该项目仍关联 {repo_count} 个仓库，请先移除仓库配置后再删除项目。")
     ts = (await session.execute(select(Task).where(Task.project_id == pid))).scalars().all()
     for t in ts:
         t.project_id = None
+    # Clear project reference on sub-repos to avoid dangling links.
+    from ..models import Repo
+    repos = (await session.execute(select(Repo).where(Repo.project_id == pid))).scalars().all()
+    for r in repos:
+        r.project_id = None
     name = p.name
     await session.delete(p); await session.commit()
     await audit.log(session, user, "project.delete", "project", pid, name, {})

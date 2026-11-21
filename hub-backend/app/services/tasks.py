@@ -38,6 +38,73 @@ _FIELD_MAP = {
 # Keep content concurrency checks independent of execution progress.
 _REQ_CONTENT_KEYS = {"title", "note", "description", "acceptanceCriteria",
                      "kind", "priority", "tags", "deps"}
+_VALID_RECUR = {"daily", "weekly", "monthly"}
+_TAG_MAX = 20
+_DUE_MIN_MS = 0  # 1970-01-01
+_DUE_MAX_MS = 4102444800000  # 2100-01-01
+
+
+def _validate_tags(tags) -> list[str]:
+    """Deduplicate and cap task tags."""
+    if not isinstance(tags, list):
+        raise HTTPException(status_code=400, detail="tags 必须是数组")
+    seen = set()
+    result = []
+    for t in tags:
+        if not isinstance(t, str):
+            continue
+        t = t.strip()
+        if not t or t in seen:
+            continue
+        seen.add(t)
+        result.append(t)
+    if len(result) > _TAG_MAX:
+        result = result[:_TAG_MAX]
+    return result
+
+
+def _validate_due(ms):
+    """Validate a due timestamp in milliseconds."""
+    if ms is None:
+        return None
+    try:
+        val = int(ms)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="due 必须是数字")
+    if val < _DUE_MIN_MS:
+        raise HTTPException(status_code=400, detail="due 不能早于 1970-01-01")
+    if val > _DUE_MAX_MS:
+        raise HTTPException(status_code=400, detail="due 不能晚于 2100-01-01")
+    return val
+
+
+def _validated_recur(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="recur 必须是 daily、weekly 或 monthly")
+    value = value.strip().lower()
+    if value not in _VALID_RECUR:
+        raise HTTPException(status_code=400, detail="recur 必须是 daily、weekly 或 monthly")
+    return value
+
+
+async def _validate_assignee(session: AsyncSession, owner_id: str, value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="assigneeUserId 必须是字符串")
+    uid = value.strip()
+    target = await session.get(models.User, uid)
+    client = await session.get(models.Client, owner_id)
+    owner = await session.get(models.User, client.user_ref) if client and client.user_ref else None
+    if target is None or not target.is_active or owner is None:
+        raise HTTPException(status_code=400, detail="接收人不存在或已停用")
+    from . import rbac
+    scope = await rbac.subtree_org_ids(session, owner.org_id) if owner.org_id else set()
+    if target.org_id not in scope:
+        raise HTTPException(status_code=403, detail="接收人不在当前组织范围内")
+    return uid
 
 
 def stamp_progress(new_list, old_list, uid, uname):
@@ -108,13 +175,14 @@ def apply_detail(t: "models.Task", data: dict) -> None:
     if "start" in data:
         t.start_at = ms_to_dt(data.get("start"))
     if "due" in data:
-        t.due_at = ms_to_dt(data.get("due"))
+        due = _validate_due(data.get("due"))
+        t.due_at = ms_to_dt(due)
     if "actualStart" in data:
         t.actual_start_at = ms_to_dt(data.get("actualStart"))
     if "actualEnd" in data:
         t.actual_end_at = ms_to_dt(data.get("actualEnd"))
     if data.get("tags") is not None:
-        t.tags = list(data.get("tags") or [])
+        t.tags = _validate_tags(data.get("tags"))
     if data.get("assigneeUserId") is not None:
         t.assignee_user_id = data.get("assigneeUserId") or None
     if "recur" in data:
@@ -449,6 +517,11 @@ async def create_task(
     from . import task_status, work_catalog
 
     data = await work_catalog.enrich_task_data(session, owner_id, data)
+    if "recur" in data:
+        data["recur"] = _validated_recur(data.get("recur"))
+    if data.get("assigneeUserId"):
+        data["assigneeUserId"] = await _validate_assignee(
+            session, owner_id, data.get("assigneeUserId"))
     status = str(data.get("status") or "todo")
     if status not in task_status.VALID:
         raise HTTPException(status_code=400, detail="需求状态不正确")
@@ -559,6 +632,7 @@ async def update_task(session: AsyncSession, owner_id: str, tid: str, patch: dic
     from . import task_access
     await task_access.reserve_task_write(session, tid, owner_id)
     client = await session.get(models.Client, owner_id)
+    patch = dict(patch or {})
     t = (await session.execute(select(models.Task).where(
         models.Task.id == tid, task_access.owner_clause(client)
     ).with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
@@ -569,12 +643,21 @@ async def update_task(session: AsyncSession, owner_id: str, tid: str, patch: dic
         from . import task_requirements
         if candidate is None or client is None or not await task_requirements.can_read(session, client, candidate):
             return None
-        return await task_requirements.update_shared(session, client, candidate, dict(patch or {}))
+        if "recur" in patch:
+            patch["recur"] = _validated_recur(patch.get("recur"))
+        if patch.get("assigneeUserId"):
+            patch["assigneeUserId"] = await _validate_assignee(
+                session, owner_id, patch.get("assigneeUserId"))
+        return await task_requirements.update_shared(session, client, candidate, patch)
     prev_status = t.status
     from . import requirement_timeline
     previous_definition = requirement_timeline.definition(t)
     previous_definition_version = int(t.requirement_version or 1)
-    patch = dict(patch or {})
+    if "recur" in patch:
+        patch["recur"] = _validated_recur(patch.get("recur"))
+    if patch.get("assigneeUserId"):
+        patch["assigneeUserId"] = await _validate_assignee(
+            session, owner_id, patch.get("assigneeUserId"))
     from . import task_requirements
     if patch.get("status") == "cancel" and t.status != "cancel":
         from . import task_maintenance
@@ -623,7 +706,7 @@ async def update_task(session: AsyncSession, owner_id: str, tid: str, patch: dic
         if k == "start":
             t.start_at = ms_to_dt(v)
         elif k == "due":
-            t.due_at = ms_to_dt(v)
+            t.due_at = ms_to_dt(_validate_due(v))
         elif k == "actualStart":
             t.actual_start_at = ms_to_dt(v)
         elif k == "actualEnd":
@@ -633,7 +716,7 @@ async def update_task(session: AsyncSession, owner_id: str, tid: str, patch: dic
         elif k == "remindAt":
             t.remind_at = ms_to_dt(v); t.reminded = False
         elif k == "tags":
-            t.tags = list(v or [])
+            t.tags = _validate_tags(v or [])
         elif k == "deps":
             t.deps = list(v or [])
         else:

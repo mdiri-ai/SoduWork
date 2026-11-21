@@ -22,7 +22,7 @@ class DomainSortValidationTests(unittest.IsolatedAsyncioTestCase):
         # Only the real tables used by these endpoints and their associations.
         tables = [model.__table__ for model in (
             models.User, models.Role, models.Domain, models.AuditLog,
-            models.Client, models.Task,
+            models.Client, models.Task, models.OrgUnit, models.Position, models.AppSetting,
         )]
         async with self.engine.begin() as conn:
             await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
@@ -57,6 +57,35 @@ class DomainSortValidationTests(unittest.IsolatedAsyncioTestCase):
         headers = {"Authorization": "Bearer " + sign_token(who, 1)} if who else {}
         headers.update(kwargs.pop("headers", {}))
         return await self.http.request(method, "/api/v1/admin" + path, headers=headers, **kwargs)
+
+    async def test_user_assignments_protect_domains_and_reject_stale_ids(self):
+        async with self.sessions() as session:
+            session.add(models.OrgUnit(id="team", name="Team"))
+            actor = await session.get(models.User, "manager")
+            actor.org_id = "team"
+            await session.commit()
+
+        body = {"username": "new-user", "password": "isolated-fixture", "orgId": "team"}
+        invalid = await self.request("POST", "/users", json={**body, "domains": ["missing"]})
+        self.assertEqual(invalid.status_code, 400, invalid.text)
+        created = await self.request("POST", "/users", json={**body, "domains": ["existing"]})
+        self.assertEqual(created.status_code, 200, created.text)
+        user_path = "/users/" + created.json()["id"]
+        bad_patch = await self.request("PATCH", user_path, json={"domains": ["existing", "missing"]})
+        self.assertEqual(bad_patch.status_code, 400, bad_patch.text)
+        renamed = await self.request("PATCH", user_path, json={"displayName": "Renamed"})
+        self.assertEqual(renamed.json()["domains"], ["existing"])
+
+        for path in ("/users/manager", user_path):
+            blocked = await self.request("DELETE", "/domains/existing")
+            self.assertEqual(blocked.status_code, 400, blocked.text)
+            self.assertIn("仍有用户", blocked.json()["detail"])
+            cleared = await self.request("PATCH", path, json={"domains": []})
+            self.assertEqual(cleared.json()["domains"], [])
+        deleted = await self.request("DELETE", "/domains/existing")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        stale = await self.request("PATCH", user_path, json={"domains": ["existing"]})
+        self.assertEqual(stale.status_code, 400, stale.text)
 
     async def assert_unchanged(self):
         async with self.sessions() as session:

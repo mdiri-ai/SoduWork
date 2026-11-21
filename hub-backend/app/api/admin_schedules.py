@@ -192,6 +192,8 @@ async def run_ai_schedule(sid: str, user: User = Depends(require_perm("task.disp
     from ..models import AiSchedule
     from ..services import schedules as sch
     s = await _scoped_ai_schedule(session, sid, user)
+    if not s.enabled:
+        raise HTTPException(status_code=400, detail="任务已停用，无法运行")
     out = await sch.execute_one(
         session, s, trigger="manual",
         who=(user.display_name or user.username or "管理员"))

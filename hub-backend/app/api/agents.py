@@ -304,13 +304,37 @@ async def get_my_git(
     suitable for a connection probe.
     """
     from sqlalchemy import select
+    from urllib.parse import urlsplit, urlunsplit
 
+    from .. import models as m
     from ..models import Repo
-    from ..services import code_creds
-    repos = (await session.execute(select(Repo))).scalars().all()
+    from ..services import code_creds, rbac
+
+    def _mask_git_url(url):
+        """Mask credentials in a Git URL for safe display."""
+        if not url:
+            return url
+        try:
+            parts = urlsplit(url)
+            if parts.username or parts.password:
+                masked = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, parts.fragment))
+                return masked
+        except (ValueError, AttributeError):
+            pass
+        return url
+
+    # Scope to user's org
+    user = await session.get(m.User, client.user_ref) if client.user_ref else None
+    org_ids = await rbac.subtree_org_ids(session, user.org_id) if user and user.org_id else set()
+    if org_ids:
+        repos = (await session.execute(select(Repo).where(
+            (Repo.org_id.in_(org_ids)) | Repo.org_id.is_(None)
+        ))).scalars().all()
+    else:
+        repos = (await session.execute(select(Repo).where(Repo.org_id.is_(None)))).scalars().all()
     return {
         "git": code_creds.api_view(client),
-        "repos": [{"id": r.id, "name": r.name, "url": r.git_url}
+        "repos": [{"id": r.id, "name": r.name, "url": _mask_git_url(r.git_url)}
                   for r in repos if (r.git_url or "").strip()],
     }
 

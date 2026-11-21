@@ -14,7 +14,8 @@ router = APIRouter(prefix="/api/v1/admin", tags=["repository-catalog"])
 
 
 def _conflict(exc: Exception) -> HTTPException:
-    return HTTPException(status_code=400 if isinstance(exc, InvalidRepositoryDirectory) else 409,
+    return HTTPException(status_code=400 if isinstance(
+        exc, (InvalidRepositoryDirectory, catalog.InvalidRepositoryInput)) else 409,
                          detail=str(exc))
 
 

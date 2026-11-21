@@ -1,6 +1,14 @@
 /* Agent Management surfaces (Korean). See en-US-agent-pages.js for key provenance. */
 (function (global) {
   const messages = {
+    "无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness에서 선택한 Node의 플랫폼과 아키텍처를 확인할 수 없습니다.",
+    "无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness에서 선택한 Node의 Linux libc를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness 런타임 매니페스트가 불완전합니다: DeepSeek Harness에서 선택한 Node의 플랫폼과 아키텍처를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness 런타임 매니페스트가 불완전합니다: DeepSeek Harness에서 선택한 Node의 Linux libc를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness 런타임 준비에 실패했습니다: DeepSeek Harness에서 선택한 Node의 플랫폼과 아키텍처를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时准备失败：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness 런타임 준비에 실패했습니다: DeepSeek Harness에서 선택한 Node의 Linux libc를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的平台和架构": "DeepSeek Harness 런타임 준비에 실패했습니다. 런타임 매니페스트가 불완전합니다: DeepSeek Harness에서 선택한 Node의 플랫폼과 아키텍처를 확인할 수 없습니다.",
+    "DeepSeek Harness 运行时准备失败：DeepSeek Harness 运行时清单不完整：无法确认 DeepSeek Harness 所选 Node 的 Linux libc": "DeepSeek Harness 런타임 준비에 실패했습니다. 런타임 매니페스트가 불완전합니다: DeepSeek Harness에서 선택한 Node의 Linux libc를 확인할 수 없습니다.",
     "重装": "재설치",
     "正在修复安装": "설치 복구 중",
     "修复未完成": "복구가 완료되지 않았습니다",

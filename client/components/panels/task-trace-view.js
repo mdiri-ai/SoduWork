@@ -87,8 +87,11 @@
   }
 
   function duration(start, end) {
-    if (!start) return '';
-    const seconds = Math.max(0, Math.round(((end || Date.now()) - start) / 1000));
+    if (!start || !end) return '';
+    const startMs = new Date(start).getTime();
+    const endMs = new Date(end).getTime();
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return '';
+    const seconds = Math.max(0, Math.round((endMs - startMs) / 1000));
     if (seconds < 60) return seconds + ' 秒';
     if (seconds < 3600) return Math.floor(seconds / 60) + ' 分钟';
     return (seconds / 3600).toFixed(1) + ' 小时';
@@ -379,7 +382,10 @@
         // Artifact fingerprints describe a bundle; they are not downloadable
         // attachment IDs. Do not offer a link that can only return a 404.
         const downloadable = Boolean(item.url || item.attachmentId || /^[a-f0-9]{8}-[a-f0-9-]{27}$/i.test(String(item.id || '')));
-        const label = downloadable ? '<a href="' + esc(fullUrl(item)) + '" target="_blank" rel="noreferrer">' + esc(title) + '</a>' : '<span>' + esc(title) + '</span>';
+        const nativeDownload = item.attachmentId && item.url
+          ? ' data-tfd-evidence-filename="' + esc(title) + '"' : '';
+        const label = downloadable ? '<a href="' + esc(fullUrl(item)) + '" target="_blank" rel="noreferrer"' +
+          nativeDownload + '>' + esc(title) + '</a>' : '<span>' + esc(title) + '</span>';
         return '<li class="is-file"><i></i>' + label + '<small>' + esc([fileSize(item.size || item.value), item.mime,
             ((item.producer || {}).name || '')].filter(Boolean).join(' · ')) + '</small></li>';
       }
@@ -503,6 +509,8 @@
   function nodeHtml(node, runId, current) {
     const state = String(node.state || '');
     const key = 'node:' + runId + ':' + String(node.key || '') + ':' + Number(node.attempt || 0);
+    // Keep running markup stable across polling refreshes.
+    const elapsed = node.startedAt && (node.finishedAt ? duration(node.startedAt, node.finishedAt) : '进行中');
     /*
      * Expand the selected node by default, then preserve manual disclosure choices across
      * polling refreshes.
@@ -512,11 +520,7 @@
       '<summary><i class="tfd-node-dot"></i><span><b>' + esc(node.name || node.key || '流程节点') + '</b><small>' +
         esc(nodeText(node.kind || node.type)) + '</small></span><em class="tfd-state">' + esc(stateText(state)) + '</em>' +
         (node.attempt > 1 ? '<em>第 ' + Number(node.attempt) + ' 轮</em>' : '') +
-        /*
-         * Avoid Date.now() in running markup so polling does not replace unchanged content. Show
-         * fixed elapsed time after completion.
-         */
-        (node.startedAt ? '<em>' + esc(node.finishedAt ? duration(node.startedAt, node.finishedAt) : '进行中') + '</em>' : '') +
+        (elapsed ? '<em>' + esc(elapsed) + '</em>' : '') +
         '<em>' + Number((node.evidence || []).length) + ' 条证据</em><svg viewBox="0 0 24 24"><path d="m8 10 4 4 4-4"/></svg></summary>' +
       executorHtml(node) + TaskTraceExecutionDetails.handoffHtml(node, { esc }) +
       TaskTraceExecutionDetails.failureHtml(node, { esc, errorText }) +
@@ -781,21 +785,31 @@
     if (typeof openDetail === 'function') return openDetail(taskId);
   }
 
-  function openExternal(link) {
+  async function openLink(link) {
     const href = String((link && link.href) || '');
     if (!/^https?:\/\//i.test(href)) return;
     const bridge = window.soduWorkAPI;
+    const filename = link.dataset?.tfdEvidenceFilename;
+    if (filename && typeof bridge?.downloadAttachment === 'function') {
+      try {
+        // The native downloader can renew access to this exact Hub attachment.
+        const result = await bridge.downloadAttachment({ url: href, filename });
+        if (result?.ok === false && !result.canceled) throw new Error(result.error || '');
+      } catch (error) {
+        const fallback = '证据文件暂时没能保存';
+        if (typeof petSay === 'function') petSay(typeof _humanErr === 'function' ? _humanErr(error, fallback) : fallback);
+      }
+      return;
+    }
     /*
-     * Open evidence and delivery links in the system browser from Electron; use window.open
-     * only in browser previews.
+     * Open ordinary links in the system browser from Electron.
      */
     if (bridge && typeof bridge.openExternal === 'function') {
-      Promise.resolve(bridge.openExternal(href)).then((result) => {
+      return Promise.resolve(bridge.openExternal(href)).then((result) => {
         if (result && result.ok === false && typeof petSay === 'function') petSay('这个链接暂时没能打开');
       }).catch(() => {
         if (typeof petSay === 'function') petSay('这个链接暂时没能打开');
       });
-      return;
     }
     window.open(href, '_blank', 'noopener,noreferrer');
   }
@@ -869,7 +883,7 @@
   function bind(root, trace, opts, state) {
     root.querySelectorAll('a[target="_blank"]').forEach((link) => link.addEventListener('click', (event) => {
       event.preventDefault(); event.stopPropagation();
-      openExternal(link);
+      void openLink(link);
     }));
     root.querySelectorAll('[data-tfd-stage]').forEach((button) => button.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -904,7 +918,7 @@
   }
 
   const api = { html, bind, stateText, tone, esc, timelineHtml,
-    gateHtml: gatePacketHtml, openEvidence: openExternal,
+    gateHtml: gatePacketHtml, openEvidence: openLink,
     isLive: (value) => LIVE.has(String(value || '')),
   };
   window.TaskExecutionJourney = api;

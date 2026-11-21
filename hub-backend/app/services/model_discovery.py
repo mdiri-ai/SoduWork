@@ -61,9 +61,11 @@ async def discover(base: str, key: str, kind: str = "openai-compat") -> dict:
     """Return {"ok", "models", "path", "detail"}; never raises for upstream shape."""
     base = str(base or "").strip().rstrip("/")
     if not base.startswith(("http://", "https://")):
-        return {"ok": False, "models": [], "detail": "先填写以 http(s):// 开头的服务地址"}
+        return {"ok": False, "models": [], "code": "model.discovery.invalid-url",
+                "detail": "先填写以 http(s):// 开头的服务地址"}
     if not str(key or "").strip():
-        return {"ok": False, "models": [], "detail": "先配置组织密钥"}
+        return {"ok": False, "models": [], "code": "model.discovery.missing-key",
+                "detail": "先配置组织密钥"}
     client = httpx.AsyncClient(trust_env=False, follow_redirects=False,
                                timeout=httpx.Timeout(TIMEOUT_SECONDS))
     try:
@@ -72,7 +74,8 @@ async def discover(base: str, key: str, kind: str = "openai-compat") -> dict:
             try:
                 response = await client.get(base + path, headers=_headers(kind, key))
             except httpx.HTTPError as exc:
-                return {"ok": False, "models": [],
+                return {"ok": False, "models": [], "code": "model.discovery.unreachable",
+                        "params": {"error": type(exc).__name__},
                         "detail": "连不上模型服务：" + type(exc).__name__}
             if response.status_code != 200:
                 last_status = f"HTTP {response.status_code}"
@@ -81,15 +84,20 @@ async def discover(base: str, key: str, kind: str = "openai-compat") -> dict:
                 payload = json.loads(response.content[:MAX_BYTES].decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):
                 return {"ok": False, "models": [], "path": path,
+                        "code": "model.discovery.invalid-payload",
                         "detail": "模型列表不是有效的 JSON 响应"}
             names = _names(payload)
             if not names:
                 return {"ok": False, "models": [], "path": path,
+                        "code": "model.discovery.empty",
                         "detail": "服务返回了空模型列表"}
             return {"ok": True, "models": names, "path": path, "detail": ""}
         if last_status in ("HTTP 404", "HTTP 405"):
             return {"ok": False, "models": [],
+                    "code": "model.discovery.no-endpoint",
                     "detail": "这个服务不提供模型列表接口，请手动添加模型标识"}
-        return {"ok": False, "models": [], "detail": "读取模型列表失败：" + (last_status or "未知响应")}
+        return {"ok": False, "models": [], "code": "model.discovery.failed",
+                "params": {"status": last_status or "unknown"},
+                "detail": "读取模型列表失败：" + (last_status or "未知响应")}
     finally:
         await client.aclose()

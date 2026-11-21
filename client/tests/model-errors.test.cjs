@@ -1,7 +1,31 @@
 'use strict';
+
+require('node:test')('opaque Hub diagnostic survives SDK message-only errors without changing retry policy', () => {
+  const assert = require('node:assert/strict');
+  const errors = require('../main/pi-session/model-errors');
+  const trace = '0123456789abcdef0123456789abcdef';
+  const info = errors.describe(new Error('HTTP 403: rejected [soduwork-trace:' + trace + ']'), true);
+  assert.equal(info.publicText, '工具已完成，请求模型继续生成时被拒绝（HTTP 403） [soduwork-trace:' + trace + ']');
+  assert.equal(info.retryable, false);
+  assert.equal(info.diagnosticId, trace);
+  assert.equal(errors.describe('HTTP 403 [soduwork-trace:https://private.invalid]').publicText, '模型请求被拒绝（HTTP 403）');
+});
 const test = require('node:test'), assert = require('node:assert/strict');
 const errors = require('../main/pi-session/model-errors');
 const stream = require('../main/pi-session/event-stream');
+test('correlation metadata never changes error classification or retry eligibility', () => {
+  for (const upstreamRequestId of ['billing-183', 'insufficient_balance', 'context_length_exceeded', 'image_input_rejected', 'TOKEN_QUOTA_EXCEEDED']) {
+    const envelope = { error: { type: 'soduwork_proxy_error', status: 503, code: 503,
+      message: 'HTTP 503: unavailable', upstreamRequestId } };
+    for (const input of [envelope, JSON.stringify(envelope), '503 ' + JSON.stringify(envelope),
+      new Error(JSON.stringify(envelope)), new Error('503 ' + JSON.stringify(envelope))]) {
+      const result = errors.describe(input);
+      assert.equal(result.retryable, true, upstreamRequestId);
+      assert.equal(result.code, undefined);
+      assert.equal(result.publicText, '模型服务暂时不可用（HTTP 503）');
+    }
+  }
+});
 const secretBody = '<html><body><h1>504 Gateway Time-out</h1>' +
   "The server didn't respond in time. http://192.0.2.40:8181/private?token=fixture-secret" +
   '<p>Authorization: Bearer fixture-secret</p></body></html>';

@@ -53,6 +53,24 @@ test('initial HTTP 403 returns one neutral error without tools or retries', asyn
   assert.doesNotMatch(snapshot.statusText, /synthetic-|fixture\.invalid/);
 });
 
+test('a Hub trace reaches the real session after a rejected tool continuation', async t => {
+  const f = await fixture(t);
+  const trace = '0123456789abcdef0123456789abcdef';
+  f.reply((_body, count) => count === 1 ? { tool: 'write', args: { path: 'trace.txt', content: 'retained' } }
+    : { respond(response) {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.end('data: ' + JSON.stringify({ error: { type: 'soduwork_proxy_error', code: 403,
+        message: 'HTTP 403: rejected [soduwork-trace:' + trace + ']', upstreamRequestId: 'private-provider-id' } }) + '\n\n');
+    } });
+  await f.handle.submit('Write trace.txt and summarize.').completion;
+  const snapshot = f.handle.snapshot();
+  assert.equal(snapshot.completion.error, '工具已完成，请求模型继续生成时被拒绝（HTTP 403） [soduwork-trace:' + trace + ']');
+  assert.equal(snapshot.completion.retryable, false);
+  assert.equal(fs.readFileSync(path.join(f.cwd, 'trace.txt'), 'utf8'), 'retained');
+  assert.equal(f.requests.length, 2);
+  assert.doesNotMatch(snapshot.statusText, /private-provider-id/);
+});
+
 for (const status of [200, 403]) {
   test('same model and credentials succeed on direct inference, tool continuation returns ' + status, async t => {
     const f = await fixture(t);

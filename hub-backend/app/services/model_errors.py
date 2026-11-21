@@ -50,6 +50,23 @@ def billing_message(diagnostic: dict) -> str:
             "），请检查供应商账单、API Key 类型和接口地址；重试不会恢复额度")
 
 
+def refusal_category(status: int, body: str) -> str:
+    """Return an allowlisted log category without assuming every 429 is throttling."""
+    if billing_diagnostic(body):
+        return "billing"
+    if status != 429:
+        return "upstream_error"
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        payload = None
+    error = payload.get("error", payload) if isinstance(payload, dict) else None
+    if isinstance(error, dict) and any(error.get(field) in (
+            "rate_limit_exceeded", "rate_limit_error") for field in ("code", "type")):
+        return "rate_limit"
+    return "unclassified_429"
+
+
 def public_failure(value) -> str:
     """Classify provider diagnostics without exposing response bodies or credentials."""
     raw = str(value or "")[:16000]

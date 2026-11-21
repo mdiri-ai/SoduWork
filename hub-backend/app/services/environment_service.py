@@ -41,15 +41,20 @@ def _providers() -> set[str]:
 
 
 async def _assert_promotion_graph(session: AsyncSession, row: am.Environment) -> None:
-    """Require acyclic environment relationships within an organization; retain unresolved keys for
-    staged template imports.
+    """Require acyclic environment relationships within an organization; validate that requires
+    references existing keys.
     """
     rows = list((await session.execute(select(am.Environment).where(
         (am.Environment.org_id == row.org_id) | am.Environment.org_id.is_(None)
     ))).scalars().all())
+    existing_keys = {x.key for x in rows}
+    requires = promotion_policy(row.promotion_policy).get("requires") or []
+    missing = [k for k in requires if k not in existing_keys]
+    if missing:
+        raise ValueError(f"前置环境不存在：{', '.join(missing)}")
     graph = {x.key: list(promotion_policy(x.promotion_policy).get("requires") or [])
              for x in rows}
-    graph[row.key] = list(promotion_policy(row.promotion_policy).get("requires") or [])
+    graph[row.key] = requires
     if row.key in graph[row.key]:
         raise ValueError("环境不能依赖自己")
     visiting, visited = set(), set()
@@ -322,6 +327,11 @@ async def save_environment(session: AsyncSession, body: dict, row: am.Environmen
     creating = row is None
     key = _text(body.get("key"), 64).lower()
     tier = _text(body.get("tier"), 24).lower() or "custom"
+    if tier not in {"dev", "development", "test", "qa", "quality", "staging",
+                    "customer-staging", "prod", "production", "customer-production",
+                    "custom", "regulated"} and not (
+                        not creating and row is not None and row.tier == tier):
+        raise ValueError("环境层级不受支持")
     if creating:
         if not _KEY.fullmatch(key):
             raise ValueError("环境标识只允许小写字母、数字和短横线，且以字母开头")
@@ -339,7 +349,19 @@ async def save_environment(session: AsyncSession, body: dict, row: am.Environmen
                 am.Environment.key == key, am.Environment.org_id == row.org_id,
                 am.Environment.id != row.id)):
             raise ValueError("环境标识已经存在")
+        old_key = row.key
         row.key = key
+        # Update promotion chains that reference the old key
+        others = (await session.execute(select(am.Environment).where(
+            am.Environment.id != row.id,
+            (am.Environment.org_id == row.org_id) | am.Environment.org_id.is_(None)
+        ))).scalars().all()
+        for other in others:
+            pp = promotion_policy(other.promotion_policy)
+            reqs = pp.get("requires") or []
+            if old_key in reqs:
+                new_reqs = [k if k != old_key else key for k in reqs]
+                other.promotion_policy = {**pp, "requires": new_reqs}
     if "name" in body:
         row.name = _text(body.get("name"), 80) or row.name
     if "tier" in body:
@@ -367,7 +389,13 @@ async def save_environment(session: AsyncSession, body: dict, row: am.Environmen
     if "enabled" in body:
         row.enabled = bool(body.get("enabled"))
     if "sort" in body:
-        row.sort = int(body.get("sort") or 0)
+        raw_sort = body.get("sort")
+        if isinstance(raw_sort, (list, dict)):
+            raise ValueError("排序必须是数字")
+        try:
+            row.sort = int(raw_sort or 0)
+        except (TypeError, ValueError):
+            raise ValueError("排序必须是数字")
     await session.flush()
     await _assert_promotion_graph(session, row)
     await session.commit()
@@ -380,6 +408,22 @@ async def delete_environment(session: AsyncSession, row: am.Environment) -> None
         am.DeploymentTarget.environment_id == row.id))
     if used:
         raise ValueError("这个环境还有部署目标，先处理部署目标")
+    # Check for pending approval requests referencing this environment
+    pending = await session.scalar(select(func.count(am.ApprovalRequest.id)).where(
+        am.ApprovalRequest.environment_id == row.id,
+        am.ApprovalRequest.status == "pending"))
+    if pending:
+        raise ValueError("该环境还有未决审批单，请先处理")
+    # Check if other environments depend on this one via promotion chain
+    others = (await session.execute(select(am.Environment).where(
+        am.Environment.id != row.id,
+        (am.Environment.org_id == row.org_id) | am.Environment.org_id.is_(None)
+    ))).scalars().all()
+    for other in others:
+        pp = promotion_policy(other.promotion_policy)
+        reqs = pp.get("requires") or []
+        if row.key in reqs:
+            raise ValueError(f"环境 {other.key} 的推进链依赖此环境，请先解除依赖")
     await session.delete(row)
     await session.commit()
 

@@ -16,6 +16,10 @@ _DIRECT = {"requester", "task_creator", "task_assignee", "owner_client", "projec
 _CATALOG = {"user", "role", "position", "permission"}
 
 
+class InvalidApprovalActions(ValueError):
+    """The approval action list has an invalid input type."""
+
+
 def api(row: am.ApprovalPolicy) -> dict:
     return {
         "id": row.id, "orgId": row.org_id, "key": row.key, "name": row.name,
@@ -30,8 +34,11 @@ def _text(value, limit: int) -> str:
 
 def _rules(value) -> dict:
     raw = dict(value or {}) if isinstance(value, dict) else {}
+    action_values = raw.get("actions", [])
+    if not isinstance(action_values, list):
+        raise InvalidApprovalActions("rules.actions must be an array of approval actions")
     actions = []
-    for item in raw.get("actions") or []:
+    for item in action_values:
         action = _text(item, 32).lower()
         if action not in _ACTIONS:
             raise ValueError(f"不支持的审批场景：{action or '空'}")
@@ -39,8 +46,11 @@ def _rules(value) -> dict:
             actions.append(action)
     if not actions:
         raise ValueError("至少选择一个适用场景")
+    raw_approvers = raw.get("approvers")
+    if not isinstance(raw_approvers, list):
+        raise ValueError("审批职责必须是数组")
     approvers = []
-    for source in (raw.get("approvers") or [])[:30]:
+    for source in raw_approvers[:30]:
         if not isinstance(source, dict):
             continue
         kind = _text(source.get("type"), 32)
@@ -48,7 +58,12 @@ def _rules(value) -> dict:
             raise ValueError(f"不支持的审批职责：{kind or '空'}")
         item = {"type": kind, "label": _text(source.get("label"), 80) or "流程指定审批人"}
         if kind in _CATALOG:
-            ids = [str(x)[:64] for x in (source.get("ids") or [source.get("id")]) if x]
+            raw_ids = source.get("ids")
+            if isinstance(raw_ids, dict):
+                raise ValueError("审批人 ID 必须是数组，不能是对象")
+            if not isinstance(raw_ids, list) and raw_ids is not None:
+                raw_ids = [raw_ids]
+            ids = [str(x)[:64] for x in (raw_ids or [source.get("id")]) if x]
             key = _text(source.get("key"), 80)
             if kind == "permission":
                 if not key:
@@ -61,8 +76,14 @@ def _rules(value) -> dict:
         approvers.append(item)
     if not approvers:
         raise ValueError("至少选择一种审批职责")
-    # A role selector may expand to several people; do not cap countersigners by selector count.
-    required = min(50, max(1, int(raw.get("required") or 1)))
+    raw_required = raw.get("required")
+    if raw_required is not None:
+        try:
+            required = min(50, max(1, int(raw_required)))
+        except (TypeError, ValueError):
+            raise ValueError("会签人数必须是数字")
+    else:
+        required = 1
     return {
         "actions": actions, "mode": "any" if required == 1 else "threshold",
         "required": required, "approvers": approvers,
@@ -115,7 +136,7 @@ async def delete(session: AsyncSession, row: am.ApprovalPolicy) -> None:
     if row.is_system:
         raise ValueError("内置策略可以调整，不能删除")
     used = await session.scalar(select(func.count(am.Environment.id)).where(
-        am.Environment.approval_policy_id == row.id))
+        (am.Environment.approval_policy_id == row.id) | (am.Environment.acceptance_policy_id == row.id)))
     if used:
         raise ValueError("仍有环境使用这项审批职责，先更换环境策略")
     await session.delete(row)

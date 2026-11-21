@@ -229,7 +229,7 @@ async def main() -> None:
         ok("必须配置交付" in contract_error,
            "enabled scenario accepted an empty delivery contract")
         other_profile = await work_catalog.save_profession(session, {
-            "name": "其他企业专属职业", "category": "隔离测试",
+            "name": "其他企业专属职业", "category": "研发交付",
             "competencies": ["不可见"],
         }, outsider.id)
         visible = await work_catalog.profession_rows(session, child.id)

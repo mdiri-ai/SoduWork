@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import AsyncMock, call, patch
 
 _root = tempfile.TemporaryDirectory(prefix='soduwork-smoke-execution-context-http-')
 os.environ['DATABASE_URL'] = (
@@ -116,7 +116,7 @@ async def main() -> None:
         'zero_route': zero_work_route.try_route,
         'settle_work_dir': tasks_api._settle_work_dir,
         'attach_skills': tasks_api._attach_skills,
-        'session_sync': ai_exec.session_sync,
+        'read_session': ai_exec.read_session,
     }
 
     async def fake_load(_session, force=False):
@@ -144,8 +144,9 @@ async def main() -> None:
         zero_work_route.try_route = lambda *args, **kwargs: async_none()
         tasks_api._settle_work_dir = fake_settle
         tasks_api._attach_skills = lambda *args, **kwargs: async_none()
-        ai_exec.session_sync = lambda *args, **kwargs: {
-            'ok': False, 'error': 'smoke runner unavailable'}
+        read_session = AsyncMock(return_value={
+            'ok': False, 'error': 'smoke runner unavailable'})
+        ai_exec.read_session = read_session
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -181,9 +182,16 @@ async def main() -> None:
                 execution)
 
             recovered = await client.get(
-                '/api/v1/tasks/%s/ai-session' % TASK, headers=headers())
+                '/api/v1/tasks/%s/ai-session' % TASK, headers=headers(),
+                params={'since': 7, 'limit': 25})
             recovered_body = recovered.json() if recovered.status_code == 200 else {}
             recovered_context = recovered_body.get('executionContext') or {}
+            check(
+                'HTTP 会话恢复定向已鉴权执行端并保留读取游标',
+                read_session.await_args_list == [call(
+                    {'name': 'local', 'cfg': {}, 'localCfg': {}},
+                    'local-http-context-ref-1', 7, runner_id='backend-local', limit=25)],
+                read_session.await_args_list)
             check(
                 '执行会话离线恢复仍带执行上下文',
                 recovered.status_code == 200
@@ -266,7 +274,7 @@ async def main() -> None:
         zero_work_route.try_route = old['zero_route']
         tasks_api._settle_work_dir = old['settle_work_dir']
         tasks_api._attach_skills = old['attach_skills']
-        ai_exec.session_sync = old['session_sync']
+        ai_exec.read_session = old['read_session']
         await engine.dispose()
 
 
