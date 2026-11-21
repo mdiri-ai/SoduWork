@@ -577,7 +577,7 @@ async function _sendCore(textOverride, sendOptions) {
       new Promise((resolve) => { releaseSubmit = resolve; })]).then(() => {});
     let localQueue = null, sendToken = null;
     try {
-    ctx._dismissProposal(true);
+    ctx._dismissProposal(false);
     ctx._workCards?.capture();
     if (global.ComposeDraft) ComposeDraft.clear({ preserveCreatedRequirement: true });
     if (global.ChatChrome && !wasRunning) ChatChrome.begin(text);

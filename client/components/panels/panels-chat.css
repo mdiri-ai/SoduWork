@@ -551,11 +551,14 @@
 .nts-command{display:flex;align-items:center;gap:5px;flex:none}
 .nts-command kbd{padding:4px 7px;border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line));border-radius:7px;
   background:var(--accent-soft);color:var(--accent);font:500 14.5px/1.2 var(--font-ui,inherit)}
+.nts-create{appearance:none;padding:7px 10px;border:1px solid var(--line);border-radius:8px;
+  background:var(--bg-1);color:var(--ink);font:inherit;cursor:pointer;flex:none}
+.nts-create:disabled{opacity:.6;cursor:wait}
 .nts-close{appearance:none;border:0;font:inherit;flex:none;cursor:pointer}
 .nts-close{width:30px;height:30px;display:grid;place-items:center;border-radius:8px;background:transparent;color:var(--ink-5)}
 .nts-close:hover{background:var(--bg-2);color:var(--ink-2)}
 .nts-close svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
-.nts-close:focus-visible,.nchat-draft .cp-card-close:focus-visible{
+.nts-create:focus-visible,.nts-close:focus-visible,.nchat-draft .cp-card-close:focus-visible{
   outline:2px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px}
 .nts-plugin-picker{appearance:none;margin-left:auto;padding:7px 11px;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));border-radius:8px;
   background:var(--bg-0);color:var(--accent);font:500 max(var(--font-min-readable,14.5px),12px)/1.2 var(--font-ui);cursor:pointer;white-space:nowrap;
