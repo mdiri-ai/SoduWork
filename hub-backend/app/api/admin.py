@@ -1837,6 +1837,10 @@ async def put_alert_config(
 ):
     from ..models import AppSetting
     from ..services import notify
+    if "url" not in body:
+        # Omitting the key used to fall through to "" and silently disable every alert channel;
+        # clearing alerting has to be an explicit {"url": ""}.
+        raise HTTPException(status_code=422, detail="缺少 url；如需关闭告警请显式传 url 为空字符串")
     url = str(body.get("url") or "").strip()[:600]
     if url and not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
