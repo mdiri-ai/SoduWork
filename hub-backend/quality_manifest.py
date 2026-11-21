@@ -44,6 +44,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_remote_local_model_privacy.py",
     "test_private_agent_probe.py",
     "test_runner_usage_receipts.py",
+    "test_usage_finite_diagnostics.py",
     "test_schedule_conversations.py",
     "test_schedule_local_models.py",
     "test_im_primitives.py",
