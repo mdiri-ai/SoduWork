@@ -325,6 +325,49 @@ def prepare_environment(state: Path) -> dict[str, str]:
     return env
 
 
+def venv_pip_ready(python: Path) -> bool:
+    """Probe pip without logging; a half-created venv can keep its interpreter.
+
+    A venv command that fails inside ensurepip still leaves bin/python behind,
+    so interpreter presence alone cannot prove the environment is usable.
+    """
+    try:
+        child = subprocess.run([str(python), "-m", "pip", "--version"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=60, **spawn_options())
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return child.returncode == 0
+
+
+def venv_pip_error(python: Path, log: Path) -> StartupError:
+    """Explain an unrepairable pip bootstrap, and record the reason in the log.
+
+    Standalone interpreters (for example uv-managed builds) can ship without
+    ensurepip, so recreating the venv with the same interpreter fails the same
+    way; the recovery has to change the interpreter or seed pip up front.
+    """
+    message = (
+        f"独立环境 {python} 缺少 pip，且当前解释器 {sys.executable} 无法通过 ensurepip 补齐。"
+        "这个解释器可能是不带 ensurepip 的独立构建（例如 uv 安装的 Python）。"
+        "请改用 python.org 或 Homebrew 的 Python 3.12+ 后重跑同一入口；"
+        "若使用 uv，可先执行 `uv venv --seed --python 3.12 <数据目录>/venv` 预置 pip 再重试。"
+        "已经创建的数据目录会直接复用，不需要删除。\n"
+        f"The private environment at {python} has no pip, and the interpreter {sys.executable} "
+        "cannot bootstrap it with ensurepip. This interpreter may be a standalone build without "
+        "ensurepip (for example a uv-managed Python). Use a python.org or Homebrew Python 3.12+ "
+        "and run the same launcher again; with uv, pre-seed pip via "
+        "`uv venv --seed --python 3.12 <data-dir>/venv` before retrying. "
+        "The existing data directory is reused.")
+    try:
+        with log.open("ab") as output:
+            output.write(("\n--- 独立环境诊断 / private environment diagnosis ---\n"
+                          + message + "\n").encode("utf-8"))
+    except OSError:
+        pass  # A diagnosis must never mask the original failure.
+    return StartupError(message)
+
+
 def venv_interpreter_error(python: Path, venv: Path, log: Path) -> StartupError:
     """Explain a missing venv interpreter, and record the same reason in the log.
 
@@ -398,6 +441,18 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
             label="[1/4] 创建独立环境 / Creating a private Python environment")
         if not python.is_file():
             raise venv_interpreter_error(python, venv, log)
+    if not venv_pip_ready(python):
+        # A failed ensurepip leaves the interpreter behind; retrying must repair
+        # pip instead of trusting the half-created environment and failing at install.
+        try:
+            run([str(python), "-m", "ensurepip", "--upgrade", "--default-pip"], cwd=state, log=log,
+                env=cache_env, label="[1/4] 修复独立环境 pip / Repairing pip in the private Python environment")
+        except DiskFullError:
+            raise
+        except StartupError as exc:
+            raise venv_pip_error(python, log) from exc
+        if not venv_pip_ready(python):
+            raise venv_pip_error(python, log)
     requirements = [ROOT / "hub-backend" / name for name in ("requirements.txt", "requirements-runner.txt")]
     py_stamp = state / "python-dependencies.sha256"
     wanted = digest_files(requirements, ROOT)
