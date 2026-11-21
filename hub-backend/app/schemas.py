@@ -118,7 +118,7 @@ class TaskCreate(BaseModel):
     visibility: str = "related"
     workScenarioName: str = ""
     workRouting: dict[str, Any] = Field(default_factory=dict)
-    title: str = Field(default="未命名", max_length=200)
+    title: str = Field(default="未命名", min_length=1, max_length=200)
     source: str = Field(default="", max_length=120)
     note: str = ""
     status: str = "todo"
@@ -329,8 +329,8 @@ class UserTokenQuota(BaseModel):
 
 class UserCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    username: str
-    password: str
+    username: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+    password: Annotated[str, StringConstraints(min_length=8, max_length=128)]
     displayName: str = ""
     orgId: Optional[str] = None
     roleId: Optional[str] = None
@@ -345,7 +345,7 @@ class UserUpdate(BaseModel):
     orgId: Optional[str] = None
     roleId: Optional[str] = None
     isActive: Optional[bool] = None
-    password: Optional[str] = None
+    password: Optional[Annotated[str, StringConstraints(min_length=8, max_length=128)]] = None
     positions: Optional[list] = None
     domains: Optional[list[str]] = None
     tokenQuota: Optional[UserTokenQuota] = None
