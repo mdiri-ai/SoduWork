@@ -124,3 +124,13 @@ The following screenshots show Firefox proxy settings for browser downloads; the
 ![Firefox proxy configuration entry](assets/desktop-quickstart/en-14.png)
 
 ![Firefox connection settings](assets/desktop-quickstart/en-15.png)
+
+### 4. macOS Client Exits Immediately When Started from a Terminal
+
+If the terminal was spawned by another Electron app (or explicitly sets `ELECTRON_RUN_AS_NODE=1`), running `SoduWork.app/Contents/MacOS/SoduWork` starts the client in Node mode and it exits immediately: no window, no error. Launch it from Finder, or clear the variable first:
+
+```bash
+env -u ELECTRON_RUN_AS_NODE open -a /Applications/SoduWork.app
+```
+
+Running the same binary with `--help` and getting the Node.js CLI help instead of the app confirms this cause.
