@@ -268,11 +268,23 @@ async function prepare({ identity, taskId, turnId = '', instruction = '', reques
     let submitted = false;
     result.afterTurn = async status => {
       if (status !== 'completed' || submitted) return;
-      const report = reportOf(reportPath, criteria);
-      const currentIdentity = runtime.identityOf ? await runtime.identityOf() : identity;
-      const reply = await request(currentIdentity, route + '/auto-review', { ...snapshot, report,
-        execution: { conversationId: runtime.handle.sessionId, agent: runtime.handle.adapterId || 'pi',
-          pluginId: (runtime.handle.pluginIds || []).join(',') } });
+      let report, currentIdentity, reply;
+      try {
+        report = reportOf(reportPath, criteria);
+        currentIdentity = runtime.identityOf ? await runtime.identityOf() : identity;
+        reply = await request(currentIdentity, route + '/auto-review', { ...snapshot, report,
+          execution: { conversationId: runtime.handle.sessionId, agent: runtime.handle.adapterId || 'pi',
+            pluginId: (runtime.handle.pluginIds || []).join(',') } });
+      } catch (error) {
+        // Surface auto-review failures on the acceptance card instead of failing silently:
+        // the card already promises 启动失败可重试, so the user must see the reason.
+        const detail = error && error.message ? String(error.message).slice(0, 200) : '未知错误';
+        await runtime.handle.appendTaskMessage?.('assistant',
+          ['【自动验收失败】', '需求：' + (task.title || ''), '验收报告提交失败：' + detail,
+           '可重新发起自动验收重试；也可改用手动验收在需求详情中确认。'].join('\n'), [], taskId,
+          'acceptance-error:' + snapshot.artifactVersionId);
+        throw error;
+      }
       submitted = true;
       const lines = report.checks.map(item => {
         const index = criteria.findIndex(c => c.id === item.criterion || c.label === item.criterion);
