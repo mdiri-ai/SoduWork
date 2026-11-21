@@ -47,6 +47,52 @@ class DesktopLoginTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             self.assertEqual((await session.get(Client, "old")).auth_state, "active")
 
+    async def test_desktop_reporting_arch_suffix_replaces_previous_desktop(self):
+        # Desktop clients report "<os>/<arch>"; Client.platform stores that string
+        # verbatim, so the arch suffix must not stop a previous desktop signing out.
+        async with self.sessions() as session:
+            session.add(User(id="three", username="three", is_active=True))
+            for identity, platform in (("old-arm", "darwin/arm64"), ("new-arm", "darwin/arm64")):
+                session.add(Client(id=identity, name=identity, platform=platform,
+                                   user_ref="three", auth_state="active", auth_version=1))
+            await session.commit()
+        async with self.sessions() as session:
+            client = await session.get(Client, "new-arm")
+            self.assertEqual(await policy.replace_previous(session, client, SimpleNamespace(id="three")), ["old-arm"])
+            await session.commit()
+        async with self.sessions() as session:
+            previous = await session.get(Client, "old-arm")
+            self.assertEqual((previous.auth_state, previous.auth_version), ("pending", 2))
+
+    async def test_arch_suffixed_platform_still_matches_for_linux(self):
+        async with self.sessions() as session:
+            session.add(User(id="four", username="four", is_active=True))
+            for identity in ("old-linux2", "new-linux2"):
+                session.add(Client(id=identity, name=identity, platform="linux/x64",
+                                   user_ref="four", auth_state="active", auth_version=1))
+            await session.commit()
+        async with self.sessions() as session:
+            client = await session.get(Client, "new-linux2")
+            self.assertEqual(await policy.replace_previous(session, client, SimpleNamespace(id="four")),
+                             ["old-linux2"])
+            await session.commit()
+
+    async def test_arch_suffixed_phone_platform_is_not_treated_as_desktop(self):
+        async with self.sessions() as session:
+            session.add(Client(id="desk", name="desk", platform="linux/x64",
+                               user_ref="one", auth_state="active", auth_version=1))
+            await session.commit()
+        async with self.sessions() as session:
+            client = await session.get(Client, "phone")
+            client.platform = "android/arm64"
+            await session.commit()
+        async with self.sessions() as session:
+            client = await session.get(Client, "phone")
+            self.assertEqual(await policy.replace_previous(session, client, SimpleNamespace(id="one")), [])
+            await session.commit()
+        async with self.sessions() as session:
+            self.assertEqual((await session.get(Client, "desk")).auth_state, "active")
+
     async def test_administrative_assignment_cannot_bypass_desktop_replacement(self):
         from app.api import admin
         for endpoint in (admin.assign_client, admin.activate_client):
