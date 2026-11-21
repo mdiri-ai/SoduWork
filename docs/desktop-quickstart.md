@@ -131,3 +131,13 @@
 ![3. 下载缓慢或无法连接服务操作示意](assets/desktop-quickstart/zh-17.png)
 
 ![3. 下载缓慢或无法连接服务操作示意](assets/desktop-quickstart/zh-18.png)
+
+### 4. macOS 从终端启动客户端后立即退出
+
+如果启动客户端的终端本身是 Electron 应用（或显式设置了 `ELECTRON_RUN_AS_NODE=1`），直接执行 `SoduWork.app/Contents/MacOS/SoduWork` 时，客户端会以 Node 模式启动并立即退出，不显示窗口，也没有报错。此时改用 Finder 启动，或先清掉该环境变量：
+
+```bash
+env -u ELECTRON_RUN_AS_NODE open -a /Applications/SoduWork.app
+```
+
+以 `--help` 运行该二进制时，如果打印的是 Node.js 帮助而不是打开应用，就可以确认是这个原因。
