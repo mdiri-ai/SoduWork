@@ -8,6 +8,7 @@ import re
 from typing import Iterable
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am
@@ -656,7 +657,13 @@ async def save_scenario(
         setattr(row, field, value)
     if current is None:
         session.add(row)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError as error:
+        # Concurrent creates race past the SELECT above; the unique constraint is the real arbiter,
+        # so report a duplicate instead of an unlabelled 500.
+        await session.rollback()
+        raise ValueError("这个场景标识已经存在") from error
     await session.refresh(row)
     return row
 
