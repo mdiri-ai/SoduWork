@@ -101,14 +101,16 @@ def _extract_json(s: str) -> dict:
     """
     import json
     import re
-    m = re.search(r"\{.*\}", (s or "").strip(), re.S)
-    if not m:
-        return {}
-    try:
-        d = json.loads(m.group(0))
-    except Exception:
-        return {}
-    return d if isinstance(d, dict) else {}
+    text = (s or "").strip()
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            value, _ = decoder.raw_decode(text, match.start())
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(value, dict):
+            return value
+    return {}
 
 
 def _sanitize_parsed(d: dict) -> dict:
