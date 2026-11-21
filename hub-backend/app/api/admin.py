@@ -208,7 +208,8 @@ async def delete_org(
     if not r["ok"]:
         msg = {"has_children": "该部门下还有子部门", "has_users": "该部门下还有用户", "not_found": "部门不存在"}
         reason = r["reason"]
-        raise HTTPException(status_code=400, detail=msg.get(reason, "无法删除"),
+        raise HTTPException(status_code=404 if reason == "not_found" else 400,
+                            detail=msg.get(reason, "无法删除"),
                             headers={"X-Error-Code": f"org.delete.{reason}"})
     await audit.log(session, user, "org.delete", "org", oid, r.get("name", ""), {})
     return r
@@ -259,7 +260,8 @@ async def delete_role(rid: str,
     if not r["ok"]:
         msg = {"system_role": "系统内置角色不可删", "in_use": "仍有用户在用该角色", "not_found": "角色不存在"}
         reason = r["reason"]
-        raise HTTPException(status_code=400, detail=msg.get(reason, "无法删除"),
+        raise HTTPException(status_code=404 if reason == "not_found" else 400,
+                            detail=msg.get(reason, "无法删除"),
                             headers={"X-Error-Code": f"role.delete.{reason}"})
     await audit.log(session, user, "role.delete", "role", rid, label, {})
     return r
