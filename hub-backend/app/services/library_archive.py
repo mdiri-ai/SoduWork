@@ -110,8 +110,18 @@ def _display_name(info):
             decoded = raw.decode(encoding)
         except UnicodeError:
             continue
-        if encoding == "utf-8" or re.search(r"[\u3400-\u9fff\uf900-\ufaff]", decoded):
+        if encoding == "utf-8":
             return decoded
+        # A legacy Chinese ZIP is not required to contain a Han character: a name
+        # like 【1】.txt or （2026）.csv is entirely CJK punctuation and fullwidth
+        # forms, yet it round-trips through gb18030 exactly. Only accept the
+        # decode when it survives re-encoding; otherwise cp437 bytes that happen
+        # to be valid gb18030 would silently become mojibake.
+        try:
+            if decoded.encode("gb18030") == raw:
+                return decoded
+        except UnicodeError:
+            continue
     return info.orig_filename
 
 
