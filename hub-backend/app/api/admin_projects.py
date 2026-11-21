@@ -388,6 +388,15 @@ async def delete_repo(rid: str, user: User = Depends(require_perm("task.dispatch
     r = await session.get(Repo, rid)
     if r is None:
         return {"ok": True}
+    from ..automation_models import DeploymentTarget
+    linked = await session.scalar(select(func.count()).select_from(DeploymentTarget).where(
+        DeploymentTarget.repo_id == rid))
+    if linked:
+        # Targets keep the repository id as a soft reference: deleting the repository first left
+        # rows no list could show and no endpoint could repair.
+        raise HTTPException(
+            status_code=409,
+            detail=f"该仓库还被 {linked} 个部署目标引用，请先删除或改绑这些目标后再删仓库")
     name = r.name
     await session.delete(r)
     await session.commit()
