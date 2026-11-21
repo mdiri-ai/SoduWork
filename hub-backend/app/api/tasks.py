@@ -1006,7 +1006,7 @@ async def put_milestones(
     """Replace the human-edited milestone list while preserving state and round counts for
     milestones already executed.
     """
-    from ..models import Milestone
+    from ..models import Milestone, Repo
     from ..services import task_events as ev
     t = await _my_task(session, client, tid)
     items = body.get("items")
@@ -1030,7 +1030,10 @@ async def put_milestones(
         m.seq = i
         m.title = title
         m.accept = str(it.get("accept") or "").strip()[:2000]
-        m.repo_id = str(it.get("repoId") or "")[:36]
+        rid = str(it.get("repoId") or "").strip()[:36]
+        if rid and await session.get(Repo, rid) is None:
+            raise HTTPException(status_code=404, detail=f"里程碑引用的代码仓库不存在：{rid}")
+        m.repo_id = rid
         m.parallel_ok = bool(it.get("parallelOk"))
         # Each stage may override its executor and model.
         m.agent_id = str(it.get("agentId") or "")[:64]
