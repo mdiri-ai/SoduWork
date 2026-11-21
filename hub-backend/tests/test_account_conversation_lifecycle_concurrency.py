@@ -15,7 +15,9 @@ import httpx
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.account_conversation_models import AccountConversation, AccountConversationCursor
+from app.account_conversation_models import (
+    AccountConversation, AccountConversationCursor, AccountConversationMessage,
+)
 from app.api import account_conversations
 from app.db import Base, get_session
 from app.deps import current_client
@@ -29,7 +31,8 @@ class AccountConversationLifecycleConcurrencyTests(unittest.IsolatedAsyncioTestC
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         async with self.engine.begin() as connection:
             await connection.run_sync(lambda sync: Base.metadata.create_all(sync, tables=[
-                AccountConversation.__table__, AccountConversationCursor.__table__]))
+                AccountConversation.__table__, AccountConversationCursor.__table__,
+                AccountConversationMessage.__table__]))
 
         app = FastAPI()
         app.include_router(account_conversations.router)
@@ -115,3 +118,52 @@ class AccountConversationLifecycleConcurrencyTests(unittest.IsolatedAsyncioTestC
 
     async def test_stale_restore_cannot_succeed_after_concurrent_delete(self):
         await self.race("delete", "restore")
+
+    async def test_concurrent_checkpoints_allocate_distinct_message_revisions(self):
+        # Two checkpoints of the same conversation must not reuse a message
+        # revision. SQLite's SELECT FOR UPDATE is a no-op, so the allocator
+        # serializes behind the pending conversation write (the flush in
+        # _next_message_revision) before reading max(revision).
+        async with self.sessions() as session:
+            session.add_all([
+                AccountConversation(id="conversation", owner_user_id="owner", source_client_id="device",
+                                    source_session_id="native", revision=1),
+                AccountConversationCursor(owner_user_id="owner", revision=1),
+            ])
+            await session.commit()
+
+        ready = {name: asyncio.Event() for name in ("first", "second")}
+        release = {name: asyncio.Event() for name in ready}
+        revisions: dict[str, int] = {}
+
+        async def checkpoint(name: str, message_id: str) -> None:
+            async with self.sessions() as session:
+                row = await session.get(AccountConversation, "conversation")
+                row.revision = await account_conversations._next_directory_revision("owner", session)
+                ready[name].set()
+                await release[name].wait()
+                revision = await account_conversations._next_message_revision(row.id, session)
+                session.add(AccountConversationMessage(
+                    id=message_id, conversation_id=row.id, position=0, role="user",
+                    text="hello", revision=revision))
+                await session.commit()
+                revisions[name] = revision
+
+        tasks = [asyncio.create_task(checkpoint("first", "m1"), name="first"),
+                 asyncio.create_task(checkpoint("second", "m2"), name="second")]
+        try:
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in ready.values())), 5)
+            release["first"].set()
+            release["second"].set()
+            await asyncio.wait_for(asyncio.gather(*tasks), 10)
+        finally:
+            for event in release.values():
+                event.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self.assertEqual(set(revisions.values()), {1, 2}, revisions)
+
+        async with self.sessions() as session:
+            first = await session.get(AccountConversationMessage, "m1")
+            second = await session.get(AccountConversationMessage, "m2")
+            self.assertEqual({int(first.revision), int(second.revision)}, {1, 2})

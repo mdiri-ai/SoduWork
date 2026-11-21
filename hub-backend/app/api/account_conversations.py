@@ -201,6 +201,12 @@ async def _next_directory_revision(owner: str, session: AsyncSession) -> int:
 
 
 async def _next_message_revision(conversation_id: str, session: AsyncSession) -> int:
+    # SQLite does not implement SELECT FOR UPDATE. Flush the pending
+    # conversation update first so the single-writer lock serializes this
+    # checkpoint against a concurrent one before the max() read below;
+    # otherwise two checkpoints can both observe the same max() and reuse a
+    # revision, corrupting cursor pagination.
+    await session.flush()
     current = await session.scalar(
         select(func.max(AccountConversationMessage.revision)).where(
             AccountConversationMessage.conversation_id == conversation_id
@@ -530,7 +536,14 @@ async def sync_account_conversation(
         foreign = [item for item in existing.values() if item.conversation_id != row.id]
         if foreign:
             raise HTTPException(status_code=409, detail="消息已属于另一条会话")
-    next_message_revision = await _next_message_revision(row.id, session)
+    try:
+        next_message_revision = await _next_message_revision(row.id, session)
+    except OperationalError as exc:
+        await session.rollback()
+        if session.get_bind().dialect.name == "sqlite" and any(
+                reason in str(exc.orig).lower() for reason in ("locked", "busy")):
+            raise HTTPException(status_code=409, detail="会话同步发生并发冲突，请重试原批次") from exc
+        raise
     incoming_id_set = set(incoming_ids)
     if snapshot_complete:
         for stored in existing.values():
