@@ -100,6 +100,8 @@ Administrator: admin
 
 ### Windows 双击没有正常启动
 
+若在国内网络环境下从 Git Bash 以源码方式启动，另见 [Windows 源码启动排障（国内网络环境）](windows-startup-troubleshooting.zh-CN.md)，其中覆盖了证书吊销检查、非交互终端设置管理员密码、Electron 与 PortableGit 下载失败的处理方式。
+
 先看窗口最后几行。提示找不到 Python 或 Node 时，安装上面的对应软件并重新打开启动文件。窗口会在失败时保留错误，不必反复双击。
 
 若窗口仍一闪而过，在源码文件夹空白处右键，选择「在终端中打开」，运行：
