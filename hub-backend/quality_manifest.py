@@ -230,6 +230,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_task_goal_stop_races.py",
     "test_local_task_goal_integration.py",
     "smoke/smoke_mcp_runner_probe.py",
+    "test_mcp_sse_leading_bom.py",
     "smoke/smoke_mcp_ui.py",
     "smoke/smoke_merge_reauth.py",
     "smoke/smoke_model_alias.py",
