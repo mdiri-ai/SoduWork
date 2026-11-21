@@ -306,9 +306,11 @@ Run these from the source root. The table uses the macOS/Linux wrapper. Windows 
 | Check prerequisites only | `sh start.sh --check --desktop` |
 | Download and build without starting | `sh start.sh --prepare-only --desktop` |
 | Do not open a browser automatically | `sh start.sh --desktop --no-browser` |
-| Use a dedicated data directory | `sh start.sh --desktop --data-dir "D:/SoduWork-data"` |
+| Use a dedicated data directory | `sh start.sh --desktop --data-dir "$HOME/SoduWork-data"` |
 
-Use the same data directory for preparation and startup. With `--password-stdin`, the launcher reads the first password only after preparation succeeds. Keep passwords out of command arguments and scripts. On Windows this mode returns immediately on failure. For other unattended invocations, set `SODUWORK_NO_PAUSE=1` to skip the keypress on failure.
+Choose an absolute path outside the source checkout. On Windows, pass a Windows path, such as `D:/SoduWork-data` if you have a writable `D:` drive. Use the same data directory for preparation and startup.
+
+With `--password-stdin`, the launcher reads the first password only after preparation succeeds. Keep passwords out of command arguments and scripts. On Windows this mode returns immediately on failure. For other unattended invocations, set `SODUWORK_NO_PAUSE=1` to skip the keypress on failure.
 
 For independent source development, see the [developer guide](development.en.md). The Vite proxy defaults to `http://127.0.0.1:9080`; set `SODUWORK_DEV_HUB=http://127.0.0.1:18989` when using this launcher. The default service is accessible only on this computer. For team deployment, see [Docker self-hosting](../ops/self-host/README.md).
 

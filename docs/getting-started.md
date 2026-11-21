@@ -307,9 +307,11 @@ macOS 桌面进程保留当前用户的系统主目录，以便访问默认钥�
 | 只检查环境 | `sh start.sh --check --desktop` |
 | 提前下载和构建，暂不启动 | `sh start.sh --prepare-only --desktop` |
 | 不自动打开浏览器 | `sh start.sh --desktop --no-browser` |
-| 指定独立的数据目录 | `sh start.sh --desktop --data-dir "D:/SoduWork-data"` |
+| 指定独立的数据目录 | `sh start.sh --desktop --data-dir "$HOME/SoduWork-data"` |
 
-准备和启动应使用同一个数据目录。指定 `--password-stdin` 后，启动器只在准备成功后才从标准输入读取首次密码。请勿将密码写入命令参数或脚本。Windows 在此模式下失败会直接返回错误码。其他无人值守的启动命令可设置 `SODUWORK_NO_PAUSE=1` 跳过失败后的按键等待。
+选择源码目录之外的绝对路径。Windows 使用本机路径，例如在 `D:` 盘可写时使用 `D:/SoduWork-data`。准备和启动应使用同一个数据目录。
+
+指定 `--password-stdin` 后，启动器只在准备成功后才从标准输入读取首次密码。请勿将密码写入命令参数或脚本。Windows 在此模式下失败会直接返回错误码。其他无人值守的启动命令可设置 `SODUWORK_NO_PAUSE=1` 跳过失败后的按键等待。
 
 开发者需要分别调试前后端时，见[开发指南](development.md)。Vite 开发代理默认连接 `http://127.0.0.1:9080`，连接本启动器时使用 `SODUWORK_DEV_HUB=http://127.0.0.1:18989`。本指南默认只供当前电脑访问；团队部署见 [Docker 自托管](../ops/self-host/README.zh-CN.md)。
 
