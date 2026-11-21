@@ -618,12 +618,14 @@ async def paged_clients(
     keyword = q.strip().lower()
     search = []
     if keyword:
-        like = f"%{keyword}%"
+        # Escape wildcards so a device search remains literal and bounded: % and _ in user
+        # input must not act as SQL wildcards (consistent with quotas.py member search) (#941).
+        like = "%" + keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         search = [or_(
-            func.lower(func.coalesce(Client.name, "")).like(like),
-            func.lower(Client.id).like(like),
-            func.lower(func.coalesce(User.display_name, "")).like(like),
-            func.lower(func.coalesce(User.username, "")).like(like),
+            func.lower(func.coalesce(Client.name, "")).like(like, escape="\\"),
+            func.lower(Client.id).like(like, escape="\\"),
+            func.lower(func.coalesce(User.display_name, "")).like(like, escape="\\"),
+            func.lower(func.coalesce(User.username, "")).like(like, escape="\\"),
         )]
 
     total = int(await session.scalar(
