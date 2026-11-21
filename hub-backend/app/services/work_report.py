@@ -9,7 +9,7 @@ import json
 import logging
 import os
 from datetime import date as _date
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import String, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,7 +105,13 @@ async def collect_period(session: AsyncSession, user_id: str, period_type: str =
                  if str(entry.get("text") or "").strip()]
         closed = False
         if task.status == "done":
-            if entries:
+            completed = task.actual_end_at if owned_here else None
+            if completed:
+                # SQLite returns naive UTC values for DateTime(timezone=True).
+                # Later metadata updates must not move a completion to a new report.
+                completed = completed.replace(tzinfo=completed.tzinfo or timezone.utc)
+                closed = lo <= int(completed.timestamp() * 1000) < hi
+            elif entries:
                 closed = any(entry.get("status") == "done" for entry in entries)
             elif task.updated_at and owned_here:
                 updated = task.updated_at

@@ -5,7 +5,7 @@ collection isolation, and idempotent generation.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
@@ -162,6 +162,40 @@ async def main() -> None:
               [event["type"] for event in alice_socket.events] == ["notice", "work.report"]
               and alice_socket.events[1]["report"]["userId"] == "u-r"
               and bob_socket.events == [], (alice_socket.events, bob_socket.events))
+
+    async with SessionLocal() as session:
+        session.add_all([
+            models.User(id="u-dates", username="completion-dates", is_active=True),
+            models.Client(id="c-dates", name="Completion dates", user_ref="u-dates"),
+            models.Task(id="t-old-completion", title="Completed last week", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        actual_end_at=datetime(2026, 8, 10, 10, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc)),
+            models.Task(id="t-completion-progress", title="Completed with earlier progress", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        actual_end_at=datetime(2026, 8, 18, 11, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 8, 25, 10, tzinfo=timezone.utc),
+                        progress=[{"at": at("2026-08-18"), "by": "u-dates",
+                                   "status": "doing", "text": "Implementation ready"}]),
+            models.Task(id="t-legacy-completion", title="Legacy completion", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        updated_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc)),
+        ])
+        await session.commit()
+        # Reload through SQLite so its naive UTC DateTime representation is exercised.
+        session.expire_all()
+        old_day = await work_report.collect_period(session, "u-dates", "daily", "2026-08-10")
+        new_day = await work_report.collect_period(session, "u-dates", "daily", "2026-08-18")
+        new_week = await work_report.collect_period(session, "u-dates", "weekly", "2026-08-18")
+        check("后续更新不改变历史日报的实际完成日期",
+              old_day["done"] == ["Completed last week"], old_day)
+        check("修改旧任务不会在新的日报或周报中重复计算完成",
+              "Completed last week" not in new_day["done"]
+              and "Completed last week" not in new_week["done"], (new_day, new_week))
+        check("实际完成时间保留当日完成事实，无需进展再写一次 done",
+              "Completed with earlier progress" in new_day["done"], new_day)
+        check("缺少实际完成时间的旧任务保留更新时间回退",
+              "Legacy completion" in new_day["done"], new_day)
 
     api_source = (BACKEND / "app" / "api" / "reports.py").read_text(encoding="utf-8")
     check("客户端 API 同时保护个人与团队边界",
