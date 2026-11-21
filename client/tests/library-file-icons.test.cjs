@@ -42,3 +42,24 @@ test('a broken shell handler times out to the real system generic icon', async (
   assert.equal(result.ok, true); assert.equal(result.fallback, true);
   assert.equal(result.dataUrl, 'data:image/png;base64,AA==');
 });
+
+test('native icon lookup recovers after its temporary directory becomes available', async t => {
+  const fs = require('node:fs/promises'), os = require('node:os'), path = require('node:path');
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sodu-icon-recovery-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const temp = path.join(root, 'not-ready'); let calls = 0;
+  const service = createService({ platform: 'linux', app: { getPath: () => temp,
+    getFileIcon: async target => {
+      await fs.stat(target); calls++;
+      return { isEmpty: () => false, toDataURL: () => 'data:image/png;base64,AA==' };
+    },
+  } });
+  assert.equal((await service.get('pdf')).ok, false);
+  assert.equal(calls, 0);
+  await fs.mkdir(temp);
+  const restored = await service.get('pdf');
+  assert.equal(restored.ok, true);
+  assert.equal(restored.fallback, false);
+  assert.equal((await service.get('PDF')).dataUrl, restored.dataUrl);
+  assert.equal(calls, 1);
+});

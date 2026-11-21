@@ -24,7 +24,10 @@ function createService({ app, platform = process.platform, timeoutMs = 2500 }) {
         // or its shell extension. An empty, existing PDF can invoke a handler.
         target = path.join(temp, namespace, 'type.' + (type || 'soduwork-unassociated-file'));
         if (platform !== 'win32') {
-          markerDirectory ||= fs.mkdtemp(path.join(temp, 'soduwork-file-type-icons-'));
+          markerDirectory ||= fs.mkdtemp(path.join(temp, 'soduwork-file-type-icons-')).catch(error => {
+            markerDirectory = undefined;
+            throw error;
+          });
           target = path.join(await markerDirectory, 'type' + (type ? '.' + type : ''));
           await fs.writeFile(target, '', { flag: 'a' });
         }
