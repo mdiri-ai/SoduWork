@@ -64,8 +64,13 @@ def promotion_policy(value) -> dict:
     semantics.
     """
     raw = dict(value or {}) if isinstance(value, dict) else {}
+    requires_raw = raw.get("requires") or []
+    if not isinstance(requires_raw, list) or any(not isinstance(item, str) for item in requires_raw):
+        # Type guard before iteration: int/bool would raise TypeError (wrapped as an opaque 500),
+        # and a bare string like "dev" would be silently split into single characters (#939).
+        raise ValueError("requires 必须是环境标识数组")
     requires = []
-    for item in raw.get("requires") or []:
+    for item in requires_raw:
         key = _text(item, 64).lower()
         if not _KEY.fullmatch(key):
             raise ValueError(f"前置环境标识不合法：{key or '空'}")
@@ -110,11 +115,20 @@ def _checks(value) -> list[dict]:
     intended change was deployed; support request methods, headers, bodies, and
     contains/notContains response checks."""
     out = []
+    if value is not None and not isinstance(value, list):
+        # Type guard before slicing: int/dict/bool are not sliceable and raise TypeError,
+        # which the unified handler wraps into an opaque 500 (#938).
+        raise ValueError("healthChecks 必须是检查项数组")
     for raw in (value or [])[:20]:
         if not isinstance(raw, dict):
             continue
         kind = _text(raw.get("type"), 24).lower()
         name = _text(raw.get("name"), 80) or ("HTTP 探活" if kind == "http" else "命令检查")
+        for field in ("timeoutSeconds", "expectStatus"):
+            field_raw = raw.get(field)
+            if field_raw is not None and not isinstance(field_raw, (int, float)):
+                # int(["x"])/int({...}) raise TypeError/ValueError before validation (#938)
+                raise ValueError(f"{name} 的 {field} 必须是数字")
         timeout = min(120, max(1, int(raw.get("timeoutSeconds") or 15)))
         if kind == "http":
             url = _text(raw.get("url"), 800)
