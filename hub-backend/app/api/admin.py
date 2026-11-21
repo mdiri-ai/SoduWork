@@ -1114,6 +1114,9 @@ async def put_dev_flow(body: dict = Body(default_factory=dict),
                        session: AsyncSession = Depends(get_session)):
     from ..services import ai_prompts
     cfg = body.get("cfg") if isinstance(body.get("cfg"), dict) else body
+    if not cfg:
+        raise HTTPException(status_code=422,
+                            detail="请求体不能为空，避免把研发流程配置重置为默认值")
     err = ai_prompts.check(cfg)
     if err:
         raise HTTPException(status_code=400, detail=err)
