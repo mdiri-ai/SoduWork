@@ -19,7 +19,7 @@ from ..config import get_settings
 from ..services.catalog_names import DuplicateName
 from ..pagination import PageQuery
 from ..db import get_session
-from ..deps import current_user, has_perm, require_perm
+from ..deps import current_user, has_perm, require_any_perm, require_perm
 from ..models import Attachment, Client, Role, Task, TaskEvent, User
 from ..permissions import ALL_KEYS, PERMISSIONS
 from ..realtime import hub
@@ -1743,9 +1743,13 @@ async def my_inbox(user: User = Depends(current_user), session: AsyncSession = D
 
 @router.post("/me/inbox/{tid}/claim")
 async def claim_my_inbox_task(
-    tid: str, user: User = Depends(current_user), session: AsyncSession = Depends(get_session)
+    tid: str,
+    user: User = Depends(require_any_perm("task.view", "task.dispatch")),
+    session: AsyncSession = Depends(get_session),
 ):
     """Claim an inbox task for the current client, matching the desktop claim action."""
+    # Claiming a task is a task-handling action: a zero-permission account must not be able
+    # to bind public-pool tasks to its own client or rewrite task ownership (#931).
     r = await inbox_svc.claim_for_user(session, user, tid)
     if not r.get("ok"):
         code = {"already_claimed": 409, "not_found": 404}.get(r.get("reason"), 400)
@@ -1886,6 +1890,11 @@ async def put_llm_config(
     session: AsyncSession = Depends(get_session),
 ):
     """Update LLM settings; omitted or empty apiKey preserves the existing credential."""
+    # LLM endpoint/keys are platform-level credentials: a scoped integration.manage in a
+    # sub-department must not be able to redirect the whole instance's AI traffic (#929).
+    if not user.is_super:
+        raise HTTPException(status_code=403,
+                            detail="LLM 配置为平台级凭据，仅超级管理员可修改")
     import json as _json
 
     from ..models import AppSetting
