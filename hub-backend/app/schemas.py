@@ -4,7 +4,7 @@
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StringConstraints
 
 from .models import Client, Task
 
@@ -119,7 +119,7 @@ class TaskCreate(BaseModel):
     # Task metadata.
     priority: str = "normal"                 # low|normal|high|critical
     start: Optional[int] = None              # Planned start time in milliseconds.
-    due: Optional[int] = None                # Due time in milliseconds.
+    due: Optional[Annotated[StrictInt, Field(ge=1, le=253402300799000)]] = None  # Due time in milliseconds.
     actualStart: Optional[int] = None
     actualEnd: Optional[int] = None
     tags: list[str] = Field(default_factory=list)
@@ -170,7 +170,7 @@ class TaskUpdate(BaseModel):
     result: Optional[str] = None
     priority: Optional[str] = None
     start: Optional[int] = None
-    due: Optional[int] = None
+    due: Optional[Annotated[StrictInt, Field(ge=1, le=253402300799000)]] = None
     actualStart: Optional[int] = None
     actualEnd: Optional[int] = None
     tags: Optional[list[str]] = None
@@ -222,7 +222,7 @@ class DispatchCreate(BaseModel):
     handler: str = "me"
     priority: str = "normal"
     start: Optional[int] = None
-    due: Optional[int] = None
+    due: Optional[Annotated[StrictInt, Field(ge=1, le=253402300799000)]] = None
     tags: list[str] = []
     domainId: str = ""
     workScenarioKey: str = ""
