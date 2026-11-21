@@ -158,6 +158,12 @@ async def save_draft(session, kind, revision, payload, actor):
         session.add(LegalDraft(kind=kind, revision=1, payload=clean, updated_by=actor.id, updated_at=now()))
         await session.flush()
     else:
+        draft = await session.get(LegalDraft, kind)
+        if draft and isinstance(draft.payload, dict):
+            # Editing one locale must not silently clear the other languages: merge the
+            # submitted translations over the saved draft instead of replacing them.
+            clean = normalize(kind, {**draft.payload, **clean,
+                "translations": {**draft.payload.get("translations", {}), **clean["translations"]}})
         result = await session.execute(update(LegalDraft).where(LegalDraft.kind == kind,
             LegalDraft.revision == revision).values(revision=revision + 1, payload=clean,
                 updated_by=actor.id, updated_at=now()).execution_options(synchronize_session=False))
