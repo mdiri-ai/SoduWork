@@ -301,6 +301,7 @@ function resolve(modelRef) {
     keyFrom: 'local' };
 }
 async function test(providerId, modelName, fetchImpl = global.fetch) {
+  const record = require('./agent-runtime/local-call-usage.cjs').recorder(deps?.app, 'model_check');
   const value = readRaw(), provider = value.providers.find(row => row.id === text(providerId, 48));
   if (!provider) return { ok: false, detail: '本地模型服务不存在' };
   const models = value.models.filter(row => row.providerId === provider.id);
@@ -354,6 +355,12 @@ async function test(providerId, modelName, fetchImpl = global.fetch) {
   try {
     const response = await fetchImpl(base + '/chat/completions', { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: selected.name, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }), redirect: 'error', signal: AbortSignal.timeout(15000) });
+    if (record && response.ok) {
+      // The connectivity indicator depends only on HTTP status. Read the
+      // bounded receipt separately so a slow body cannot delay that indicator.
+      void require('./model-response-json.cjs').boundedJSON(response).then(
+        data => record(selected.id, data?.usage), () => record(selected.id, null));
+    }
     if (!matches(readRaw())) return stale;
     return response.ok ? { ok: true, detail: '连接通过，已使用「' + selected.name + '」测试' } : { ok: false, detail: 'HTTP ' + response.status };
   } catch (error) { return { ok: false, detail: '连接失败：' + String(error?.message || error).slice(0, 120) }; }

@@ -104,10 +104,21 @@ test('local image choices survive unified selection persistence and cannot seed 
 });
 
 test('a local image turn posts only to its configured provider and retains ordinary local output artifacts', async t => {
-  const f = fixture(t), requests = [];
+  const f = fixture(t), requests = [], receipts = [];
+  f.params.onLocalUsage = row => receipts.push(row);
   const result = await f.generate(async (url, options) => { requests.push({ url, options });
     return Response.json({ data: [{ b64_json: png.toString('base64') }], model: 'private-wire', usage: { total_tokens: 99 } }); });
   assert.equal(result.ok, true);
+  assert.equal(receipts.length, 1);
+  assert.equal(receipts[0].usage.total, 99);
+  assert.equal(receipts[0].usage.costKnown, false);
+  assert.equal(receipts[0].model, f.ref);
+  assert.equal(receipts[0].localOnly, true);
+  const acc = require('../main/pi-session/event-stream').create();
+  require('../main/pi-session/history-seed').seed(acc, { state: { messages: [] },
+    sessionManager: { getEntries: () => [{ type: 'message', message: { role: 'user', content: 'draw' } },
+      { type: 'custom', customType: media.USAGE_ENTRY, data: receipts[0] }] } });
+  assert.deepEqual(acc.snapshot().usageReceipts[0], receipts[0]);
   assert.equal(requests.length, 1); assert.equal(requests[0].url, 'http://127.0.0.1:11434/v1/images/generations');
   assert.equal(requests[0].options.redirect, 'error');
   assert.equal(requests[0].options.headers.Authorization, 'Bearer synthetic-private-key');

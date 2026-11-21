@@ -83,15 +83,8 @@ module.exports = async function ({js, click, type, navigate, until, report, win,
     await navigate('library'); await navigate('memory');
     assert.equal(await js('document.querySelector("[data-personal-content]").value'), 'Personal audit draft');
   });
-  await scenario('usage', 'range and refresh failure preserve data', async () => {
-    await js('fixtureData.myUsage={days:7,summary:{tokens:12345,sessions:3,durationMs:90000},quality:{coveragePct:100},byAgent:[],bySource:[],recent:[],trend:[]};void 0;');
-    await click('[data-days="7"]'); await until('document.querySelector("#usageBody").textContent.includes("1.2")');
-    await js('fixtureFailures.add("myUsage");void 0;'); await click('#usageRefresh');
-    await until('document.querySelector("#usageRefresh").classList.contains("has-error")');
-    assert.ok(await js('document.querySelector("#usageBody").textContent.includes("1.2")'));
-    await js('fixtureFailures.delete("myUsage");void 0;'); await click('#usageRefresh');
-    await until('!document.querySelector("#usageRefresh").classList.contains("has-error")');
-  });
+  await scenario('usage', 'personal totals, source and rank filters, quota details and history', () =>
+    require('./page-audit-usage.cjs')({js, click, until, win, delay, shot}));
   await scenario('agents', 'Agent/Runner tabs and refresh', async () => {
     await click('[data-agtab=runners]'); await until('document.querySelector("[data-agtab=runners]").getAttribute("aria-selected")==="true"');
     await click('#agRefresh'); await click('[data-agtab=agents]');

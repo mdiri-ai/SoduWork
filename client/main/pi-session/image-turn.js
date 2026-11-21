@@ -6,12 +6,12 @@ const { fetchWithDeviceAuthRetry } = require('../device-auth-request');
 
 /* A direct image turn uses the ordinary session transcript, tool events and
  * output index. It never calls the text model or invents token usage. */
-async function generate({ handle, identity, choice, text, submissionId, signal, push, emit,
+async function generate({ handle, identity, choice, text, submissionId, signal, push, emit, onLocalUsage,
   fetchImpl = global.fetch }) {
   const selected = imageChoice(choice);
   if (!selected) return { ok: false, reason: '请选择可用的图片模型' };
   if (selected.name.startsWith('local:')) return require('./local-image-turn.cjs').generate({
-    handle, selected, text, submissionId, signal, push, emit, fetchImpl,
+    handle, selected, text, submissionId, signal, push, emit, onLocalUsage, fetchImpl,
   });
   const generationId = submissionId || randomUUID();
   const callId = 'image-' + generationId;

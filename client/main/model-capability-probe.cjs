@@ -49,7 +49,7 @@ async function run(conf, requested = CHECKS, options = {}) {
       if (continuation) delete body.tool_choice;
       try {
         const data = await client.chat.completions.create(body, { signal: operationSignal }).asResponse();
-        const response = await collect(data, stream, withTools, operationSignal);
+        const response = await collect(data, stream, withTools, operationSignal, options.onUsage);
         operationSignal.throwIfAborted();
         // Publish only parameters accepted by a completed exchange. A cold
         // timeout must not replace a working runtime with probe defaults.

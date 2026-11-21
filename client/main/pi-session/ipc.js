@@ -42,6 +42,7 @@ const { entryContextPrompts: _entryContextPrompts, awaitOpen: _awaitBounded,
   createConfiguration } = require('./environment-ipc');
 let _app = null;
 let _usage = null;
+let _localUsage = null;
 let _cloudHandoff = null;
 let _accountSync = null;
 let _sharedHistory = null;
@@ -171,7 +172,7 @@ function _discardRenderer(handle) {
   artifactRuntime.closeRef(handle.ref);
 }
 
-function _bindUsage(handle, identity, adapterId) {
+function _bindUsage(handle, identity, adapterId, automationContext) {
   if (!handle || !identity) return;
   _deliverySync?.bind(handle, identity);
   _accountSync?.bind(handle, identity);
@@ -181,6 +182,7 @@ function _bindUsage(handle, identity, adapterId) {
     accountScope: (() => { try { return require('../conversation/runtime-segments').scope(identity); } catch (_) { return ''; } })(),
   };
   handle.usageAgentKey = String(adapterId || handle.adapterId || 'pi');
+  if (automationContext) handle.usageSourceType = 'automation';
 }
 
 function _unwatchOwner(handle) {
@@ -237,6 +239,7 @@ function _push(BrowserWindow, handle, touched, snapshot) {
   if (structural) {
     _deliverySync?.observe(handle, touched, snapshot);
     if (_usage) _usage.observe(handle, snapshot);
+    _localUsage?.observe(handle, snapshot);
     _streamTransport.push(ref, touched, snapshot, { BrowserWindow, handle });
     return;
   }
@@ -359,6 +362,28 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     app, identityOf: sendIdentityOf || identityOf, request: taskInput.request,
   });
   _usage = usageReporter.createUsageReporter({ app, identityOf, onQuotaExceeded });
+  _localUsage = require('../agent-runtime/local-usage.cjs').createLocalUsage(app);
+  ipcMain.handle('pi-session-local-usage', (event, days) => {
+    if (!require('../access-control/preferences').isTrusted(event)) throw Error('仅工作台可以读取个人用量');
+    const auth = require('../device-auth');
+    const identity = auth.identity(app);
+    const accountScope = auth.localOwner(app);
+    if (!identity || !accountScope) throw Error('请先登录这台电脑');
+    const report = _localUsage.read({ hub: identity.hub, clientId: identity.clientId, accountScope }, days);
+    // Resolve display labels only for the current desktop view. The usage
+    // database and Hub reporter never need provider addresses or wire names.
+    if (report.byAgent.some(row => row.modelRef)) {
+      try {
+        const models = require('../local-model-store.cjs').get().myModels;
+        const { usageModelKey } = require('../agent-runtime/local-usage.cjs');
+        const labels = new Map(models.map(model => [usageModelKey(model.id), model.label || model.name]));
+        for (const row of [...report.byAgent, ...report.recent]) {
+          row.model = labels.get(row.modelRef) || row.model;
+        }
+      } catch (_) { /* The ledger stays readable when the model vault is unavailable. */ }
+    }
+    return report;
+  });
   _usage.flush().catch(() => {});
   const pluginDebug = require('../personal-plugin-debug-ipc').install({
     app, ipcMain, session, identityOf: sendIdentityOf || identityOf, skillDirs: () => skillRoots.discover(app),
@@ -698,7 +723,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
             await assertHistoryCurrent();
             if (preview.appConversationOrigin?.(event?.sender)) await applicationEntries.remember(live, event?.sender, identity);
             require('./app-mcp-grant.cjs').bind(live, event?.sender, appPluginId, app, { identityOf: sendIdentityOf || identityOf });
-            _bindUsage(live, identity, live.usageAgentKey || opts.adapterId || 'pi');
+            _bindUsage(live, identity, live.usageAgentKey || opts.adapterId || 'pi', automationContext);
             if (event) _attach(live, require('../conversation/app-surfaces.cjs').forSender(BrowserWindow, event.sender));
             else _detach(live);
             _wire(BrowserWindow, live);
@@ -1030,7 +1055,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         await assertHistoryCurrent();
         if (preview.appConversationOrigin?.(event?.sender)) await applicationEntries.remember(opened.session, event?.sender, identity);
         require('./app-mcp-grant.cjs').bind(opened.session, event?.sender, appPluginId, app, { identityOf: sendIdentityOf || identityOf });
-        _bindUsage(opened.session, identity, opts.adapterId || 'pi');
+        _bindUsage(opened.session, identity, opts.adapterId || 'pi', automationContext);
         if (event) _attach(opened.session, require('../conversation/app-surfaces.cjs').forSender(BrowserWindow, event.sender));
         else _detach(opened.session);
         _wire(BrowserWindow, opened.session);

@@ -95,9 +95,11 @@ class StreamEvidence {
     const choices = value.choices;
     if (choices === undefined || Array.isArray(choices) && choices.length === 0) {
       if (!envelope(value, true)) invalid();
+      this.usage = value.usage;
       return;
     }
     if (!envelope(value) || !Array.isArray(choices) || choices.length !== 1) invalid();
+    if (value.usage) this.usage = value.usage;
     const choice = choices[0];
     if (!object(choice) || choice.index !== undefined && choice.index !== 0) invalid();
     if (choice.logprobs != null && !object(choice.logprobs)) invalid();
@@ -159,12 +161,13 @@ async function* chunks(response, signal) {
     reader.releaseLock();
   }
 }
-async function collect(response, stream, tools = false, signal) {
+async function collect(response, stream, tools = false, signal, onUsage) {
+  let evidence, usage;
   try {
     if (!response.body) invalid();
     if (stream) {
       if (!response.headers.get('content-type')?.toLowerCase().startsWith('text/event-stream')) throw new ProbeIssue('stream_not_observed');
-      const evidence = new StreamEvidence();
+      evidence = new StreamEvidence();
       for await (const bytes of chunks(response, signal)) evidence.feed(bytes);
       return evidence.finish(!tools);
     }
@@ -174,6 +177,7 @@ async function collect(response, stream, tools = false, signal) {
     let data;
     try { data = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
     catch (error) { if (error instanceof SyntaxError || error instanceof TypeError) invalid(); throw error; }
+    usage = data?.usage;
     if (!object(data) || data.error != null || data.type === 'error' || !Array.isArray(data.choices) || data.choices.length !== 1) invalid();
     const choice = data.choices[0];
     if (!object(choice) || choice.index !== undefined && choice.index !== 0) invalid();
@@ -185,6 +189,7 @@ async function collect(response, stream, tools = false, signal) {
     if (!stream && error instanceof ProbeIssue && error.detailCode === 'invalid_stream_shape') throw new ProbeIssue(error.code);
     throw error;
   } finally {
+    onUsage?.(evidence?.usage ?? usage);
     // Cleanup must not extend the operation deadline if a transport stalls.
     if (response.body && !response.body.locked) response.body.cancel().catch(() => {});
   }

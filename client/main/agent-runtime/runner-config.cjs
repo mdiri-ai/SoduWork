@@ -58,4 +58,14 @@ function create(model, adapterId, capabilityIds) {
   return cfg;
 }
 
-module.exports = { create };
+function createForConversation(model, adapterId, capabilityIds) {
+  const config = create(model, adapterId, capabilityIds);
+  if (config.llm?.localOnly) {
+    // The child can attribute receipts without receiving a selectable vault ID.
+    const key = require('./local-usage.cjs').usageModelKey(model.modelRef || model.id);
+    if (key) config.llm.usageModelKey = key;
+  }
+  return config;
+}
+
+module.exports = { create, createForConversation };

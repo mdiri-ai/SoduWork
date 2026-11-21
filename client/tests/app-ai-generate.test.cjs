@@ -98,9 +98,14 @@ test('quota rejection and missing host authorization never dispatch inference', 
   const g = fixture({ authenticatedIdentityOf: async () => null });
   assert.equal((await g.generate(g.item, defaults)).code, 'APP_AI_UNAVAILABLE'); assert.deepEqual(g.calls, []);
 });
-test('local no-key models bypass Hub admission and omit the Authorization header', async () => {
+test('local no-key models bypass Hub admission, count provider usage once and omit the Authorization header', async t => {
+  const fs = require('node:fs');
+  const dir = fs.mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'app-local-usage-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const app = { getPath: () => dir };
   const localRef = 'local:model-' + 'a'.repeat(32);
   const f = fixture({
+    app,
     authorizeAI: async () => { throw Object.assign(Error('quota'), { code: 'TOKEN_QUOTA_EXCEEDED' }); },
     resolveModel: async () => ({ ok: true, localOnly: true,
       model: { id: localRef, wireModelId: 'qwen3', baseUrl: 'http://127.0.0.1:8686/v1', key: '', maxOutputTokens: 1024, localOnly: true } }),
@@ -112,6 +117,14 @@ test('local no-key models bypass Hub admission and omit the Authorization header
   assert.equal('Authorization' in request.headers, false);
   assert.equal(JSON.parse(request.body).model, 'qwen3', 'the private endpoint receives its actual model name');
   assert.equal(result.model, localRef, 'the app result retains only the opaque model identity');
+  assert.deepEqual(await f.generate(f.item, defaults), result);
+  const identity = { hub: 'https://fixture.invalid', clientId: 'device',
+    session: require('./helpers/platform-session-fixture.cjs').sessions().renewed };
+  const accountScope = require('../main/conversation/runtime-segments').scope(identity);
+  const { summary, bySource } = require('../main/agent-runtime/local-usage.cjs')
+    .createLocalUsage(app).read({ ...identity, accountScope }, 7);
+  assert.deepEqual([summary.input, summary.output, summary.tokens, summary.requests], [24, 16, 40, 1]);
+  assert.equal(bySource[0].key, 'app');
 });
 test('local one-shot inference retains the client login requirement', async () => {
   const f = fixture({

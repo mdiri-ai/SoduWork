@@ -93,12 +93,15 @@ class RunnerUsageReceiptTests(unittest.TestCase):
         self.assertEqual(runner_usage_receipts.public_usage(run)["total_tokens"], 3)
 
     def test_queued_model_cannot_reassign_active_or_recovered_usage(self):
-        run = {"cli": "qwen", "cfg": {"llm": {"model": "private-wire", "localOnly": True}}}
+        ref = "usage-" + "a" * 64
+        run = {"cli": "qwen", "cfg": {"llm": {"model": "private-wire", "localOnly": True, "usageModelKey": ref}}}
         runner_usage_receipts.capture(run, run["cfg"])
         run["cfg"] = {"llm": {"model": "future-managed", "quotaVersion": 2,
                                 "quotaUsageToken": "future-token"}}
         local_stream._accumulate_usage(run, {"input": 8, "output": 1})
         self.assertFalse(run["usageReceipts"][-1]["reportable"])
+        self.assertEqual(run["usageReceipts"][-1]["model"], ref)
+        self.assertNotIn(ref, json.dumps(runner_usage_receipts.public_snapshot(run["usageReceipts"][-1], run)))
         self.assertNotIn("quotaUsageToken", run["usageReceipts"][-1])
         recovered = json.loads(json.dumps({key: run.get(key) for key in local_base._PERSIST_KEYS}))
         local_stream._accumulate_usage(recovered, {"input": 2, "output": 1})

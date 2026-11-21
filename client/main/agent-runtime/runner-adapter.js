@@ -30,7 +30,7 @@ const conversationInputPreparation = require('../conversation/conversation-input
 const fileChangeJournal = require('../conversation/file-change-journal');
 const messageTime = require('../conversation/message-time');
 const agentSource = require('../conversation/agent-source.cjs');
-const _runnerConfig = require('./runner-config.cjs').create;
+const _runnerConfig = require('./runner-config.cjs').createForConversation;
 const executionModelId = model => String(model?.localOnly ? model.wireModelId || '' : model?.id || '');
 const ADAPTER_ID = 'codex-harness';
 const EXECUTION_NAMESPACE = '9af442c8-cd1d-4b91-a668-22da2b2635bf';
@@ -342,8 +342,8 @@ function _snapshot(state) {
     // The Runner's cumulative receipt includes tool-only/hidden work and cost.
     // Display fragments intentionally contain only per-message token details.
     ...(state.usageReceipts ? { usageReceipts: state.usageReceipts } : state.usage ? { usageReceipts: [{ usage: { ...state.usage },
-      at: state.updatedAt || 0, model: state.model?.id || '', agent: state.adapterId,
-      ...(state.model?.localOnly || state.localUsageObserved ? { localOnly: true, reportable: false } : {}) }] } : {}),
+      at: state.updatedAt || 0, model: state.model?.id || '', agent: state.adapterId, cumulative: true,
+      ...(state.model?.localOnly || state.localUsageObserved ? { reportable: false } : {}) }] } : {}),
     contextUsage: state.contextUsage ? { ...state.contextUsage } : null,
     tokens: state.contextUsage ? { ...state.contextUsage } : null,
     contextWindow: Number(state.contextWindow || 0) || 0,

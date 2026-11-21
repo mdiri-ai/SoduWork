@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { create } = require('../main/agent-runtime/runner-config.cjs');
+const { create, createForConversation } = require('../main/agent-runtime/runner-config.cjs');
 
 test('Runner carries declared thinking mappings to the same selected model', () => {
   const model = { baseUrl: 'https://fixture.invalid', key: 'fixture', id: 'managed-alias',
@@ -76,8 +76,12 @@ test('Runner forwards only explicit supported thinking levels and typed policy d
 });
 
 test('Runner keeps keyless local model configuration on the local execution boundary', () => {
-  const cfg = create({ localOnly: true, authMode: 'none', baseUrl: 'http://127.0.0.1:11434/v1',
-    key: '', id: 'local:opaque-reference', wireModelId: 'qwen-local-wire' }, 'qwen');
+  const model = { localOnly: true, authMode: 'none', baseUrl: 'http://127.0.0.1:11434/v1',
+    key: '', id: 'local:model-' + 'a'.repeat(32), wireModelId: 'qwen-local-wire' };
+  assert.equal(create(model, 'qwen').llm.usageModelKey, undefined);
+  const cfg = createForConversation(model, 'qwen');
+  assert.match(cfg.llm.usageModelKey, /^usage-[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(cfg), /local:model-/);
   assert.equal(cfg.llm.base, 'http://127.0.0.1:11434/v1');
   assert.equal(cfg.llm.key, '');
   assert.equal(cfg.llm.model, 'qwen-local-wire');

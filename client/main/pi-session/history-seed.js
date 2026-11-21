@@ -80,6 +80,11 @@ function _seed(acc, piSession, options) {
     }
     const inTail = sequenceIndex >= tailStart;
     if (entry && entry.type === 'custom') {
+      if (entry.customType === require('./local-image-turn.cjs').USAGE_ENTRY) {
+        const receipt = require('./local-image-turn.cjs').imageReceipt(entry.data?.model, entry.data?.usage, entry.data?.at);
+        if (receipt) accountingHistory.push(receipt);
+        return;
+      }
       if (entry.customType === SCOPE_ENTRY_TYPE) {
         _applyStoredScope(acc, entry.data || {});
         return;

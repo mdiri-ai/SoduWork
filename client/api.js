@@ -1979,10 +1979,17 @@
         localModelCount: localRows.length };
     },
     async myUsage(days) {
-      var span = Math.max(1, Math.min(365, Number(days || 30)));
-      var r = await jfetch('/usage/me?days=' + encodeURIComponent(span));
-      mark(true); return r || { days: span, summary: {}, trend: [],
-        bySource: [], byAgent: [], recent: [], quality: {} };
+      var span = Math.max(1, Math.min(365, Math.trunc(Number(days)) || 30));
+      var scope = taskStorageKey('ops'), epoch = _registrationEpoch;
+      var bridge = window.soduWorkAPI?.conversationSession || window.soduWorkAPI?.piSession;
+      var [hub, local, profile] = await Promise.allSettled([
+        jfetch('/usage/me?days=' + span, { taskScope: scope }),
+        bridge?.localUsage?.(span),
+        SoduWorkAPI.clientAuthMe(),
+      ]);
+      if (epoch !== _registrationEpoch || scope !== taskStorageKey('ops')) throw staleTaskScope();
+      if (!hub.value && !local.value && !profile.value?.quota) throw hub.reason || local.reason || Error('暂时拿不到用量');
+      return { days: span, hub: hub.value || null, local: local.value || null, quota: profile.value?.quota || null };
     },
     /* action: install | update | uninstall | check */
     /*

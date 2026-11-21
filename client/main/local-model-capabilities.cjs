@@ -165,7 +165,9 @@ async function check(input, options = {}) {
   const beforeRuntime = fields(model, snapshot, state).runtimeRevision;
   job.promise = (async () => {
     try {
+      const record = require('./agent-runtime/local-call-usage.cjs').recorder(deps.app, 'model_check');
       let report = await (options.runProbe || probe.run)({ ...selected, compatibility: previous?.compatibility }, input.checks, { ...options,
+        onUsage: usage => record?.(model.id, usage),
         signal: controller.signal, progress: value => { for (const listener of job.listeners) { try { listener({ modelRef: model.id, ...value }); } catch { /* View closed. */ } } } });
       if (active.get(model.id) !== job) throw Error('本地模型配置在检测期间已变化，请重新检测');
       const latest = deps.read(), current = latest.models.find(row => row.id === model.id), stored = read();

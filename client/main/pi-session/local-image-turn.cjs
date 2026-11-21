@@ -3,6 +3,20 @@ const fs = require('node:fs'), path = require('node:path'), crypto = require('no
 const media = require('./media-artifacts');
 const MAX_BYTES = 32 * 1024 * 1024, JSON_LIMIT = Math.ceil(MAX_BYTES / 3) * 4 + 1024 * 1024;
 const INDEX = '.soduwork-media-index.json';
+const USAGE_ENTRY = 'soduwork.local-image-usage';
+
+function imageReceipt(model, raw, at) {
+  if (!require('./local-model-runtime-privacy.cjs').OPAQUE_REFERENCE.test(model) ||
+      !require('../conversation/message-time').epoch(at)) return null;
+  const values = require('../agent-runtime/usage-values');
+  const usage = values.empty();
+  const counters = raw && typeof raw === 'object' ? raw : {};
+  values.add(usage, { ...counters, requests: 1, inputIncludesCache: true,
+    cacheRead: counters.input_tokens_details?.cached_tokens ?? counters.cacheRead });
+  usage.quality = usage.total ? 'reported' : 'unknown';
+  if (/^[A-Z]{3}$/.test(counters.currency)) usage.currency = counters.currency;
+  return { localOnly: true, reportable: false, agent: 'pi', model, at, usage };
+}
 
 async function bounded(response, limit, signal) {
   signal.throwIfAborted();
@@ -76,7 +90,7 @@ function save(cwd, bytes, id) {
     if (published && !ready) fs.rmSync(target, { force: true });
   }
 }
-async function generate({ handle, selected, text, submissionId, signal, push, emit, fetchImpl = global.fetch }) {
+async function generate({ handle, selected, text, submissionId, signal, push, emit, onLocalUsage, fetchImpl = global.fetch }) {
   const id = crypto.randomUUID(), generationId = submissionId || id;
   const event = { toolCallId: 'image-' + generationId, toolName: 'generate_image', localOnly: true,
     args: { prompt: text, generationId } };
@@ -95,6 +109,10 @@ async function generate({ handle, selected, text, submissionId, signal, push, em
       body: JSON.stringify({ model: local.name, prompt: text, n: 1 }), redirect: 'error', signal: combined,
     });
     const payload = JSON.parse((await bounded(response, JSON_LIMIT, combined)).toString('utf8'));
+    if (Array.isArray(payload?.data) && payload.data.length && onLocalUsage) {
+      const receipt = imageReceipt(local.modelRef, payload.usage, Date.now());
+      if (receipt) onLocalUsage(receipt);
+    }
     const result = payload?.data?.[0]; let bytes;
     if (typeof result?.b64_json === 'string') {
       const raw = result.b64_json;
@@ -124,4 +142,4 @@ async function generate({ handle, selected, text, submissionId, signal, push, em
     return cancelled ? { ok: true, cancelled: true } : { ok: false, reason, retrySafe: false };
   } finally { push({ type: 'agent_settled' }); emit({ kind: 'settled' }); }
 }
-module.exports = { generate, MAX_BYTES, JSON_LIMIT };
+module.exports = { generate, imageReceipt, USAGE_ENTRY, MAX_BYTES, JSON_LIMIT };

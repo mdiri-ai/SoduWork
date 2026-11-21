@@ -6,6 +6,7 @@
 const crypto = require('node:crypto');
 const { scope } = require('./conversation/runtime-segments');
 const modelConfig = require('./pi-session/model-config');
+const { boundedJSON } = require('./model-response-json.cjs');
 
 function normalize(params) {
   if (Object.keys(params).some(key => !['input', 'instructions', 'model', 'maxOutputTokens', 'timeoutMs', 'requestId'].includes(key)))
@@ -47,18 +48,6 @@ function payload(model, params) {
       body.reasoning_effort = thinking.thinkingLevelMap.off;
   }
   return body;
-}
-async function boundedJSON(response) {
-  if (Number(response.headers?.get('content-length') || 0) > 1048576) {
-    await response.body?.cancel(); throw Error('response too large');
-  }
-  const chunks = []; let total = 0;
-  for await (const chunk of response.body) {
-    total += chunk.length;
-    if (total > 1048576) throw Error('response too large');
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 async function soleModel(identity, fetchImpl, signal) {
   const local = require('./local-model-store.cjs').get();
@@ -176,6 +165,15 @@ function create({ app, authenticatedIdentityOf, authorizeAI, fetchImpl = global.
             '模型服务暂不可用（HTTP ' + response.status + '），本次未获得结果'), httpStatus: response.status };
         }
         const result = await boundedJSON(response);
+        if (model.localOnly) {
+          // A provider may have consumed tokens even when its answer is incomplete.
+          // Capture the receipt before interpreting the completion. Cached replies
+          // above never reach this point; each real dispatch has its own identity.
+          const requirement = item.appBridge?.appId === 'local-requirement-parser';
+          const record = require('./agent-runtime/local-call-usage.cjs').recorder(app, requirement ? 'requirement' : 'app',
+            { hub: identity.hub, clientId: identity.clientId, accountScope: owner });
+          record?.(model.modelRef || model.id, result.usage);
+        }
         await current();
         const completion = readCompletion(result?.choices?.[0]);
         if (completion.ok === false) return completion;

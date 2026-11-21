@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -14,11 +15,16 @@ def capture(run: dict, cfg: dict) -> None:
     run["_activeModelConfig"] = llm
     run["activeUsageOwner"] = {
         "agent": str(run.get("cli") or ""), "localOnly": local,
-        "model": "" if local else str(llm.get("model") or run.get("model") or ""),
+        "model": _model_ref(llm) if local else str(llm.get("model") or run.get("model") or ""),
         "provider": "" if local else str(llm.get("quotaProvider") or ""),
         **({"quotaUsageToken": str(llm["quotaUsageToken"])}
            if not local and llm.get("quotaVersion") == 2 and llm.get("quotaUsageToken") else {}),
     }
+
+
+def _model_ref(llm: dict) -> str:
+    value = llm.get("usageModelKey")
+    return value if isinstance(value, str) and re.fullmatch(r"usage-[a-f0-9]{64}", value) else ""
 
 
 def _local(run: dict) -> bool:
@@ -73,7 +79,7 @@ def append(run: dict, usage: dict) -> None:
     local = _local(run)
     receipt = {"usage": dict(usage), "at": int(time.time() * 1000),
                "agent": str(run.get("cli") or ""),
-               "model": "" if local else str(llm.get("model") or run.get("model") or ""),
+               "model": _model_ref(llm) if local else str(llm.get("model") or run.get("model") or ""),
                "provider": "" if local else str(llm.get("quotaProvider") or ""),
                "localOnly": local, "reportable": not local}
     if not local and llm.get("quotaVersion") == 2 and llm.get("quotaUsageToken"):
@@ -154,7 +160,7 @@ def public_snapshot(value: dict, run: dict) -> dict:
             runtime_event = (len(path) in {2, 3} and path[-2] == "items" and
                              isinstance(path[-1], int) and path[0] in {"items", "data"})
             local_event = item.get("localModelMetadata") is True or private and runtime_event
-            excluded = {"usageReceipts", "quotaUsageToken", "localModelMetadata", "_terminal", PRIVACY_MARKER}
+            excluded = {"usageReceipts", "usageModelKey", "quotaUsageToken", "localModelMetadata", "_terminal", PRIVACY_MARKER}
             if local_event:
                 excluded.update({"usage", "tokens", "cost", "ctxPct", "ctxWindow", "ctxWindowKnown"})
             result = {}

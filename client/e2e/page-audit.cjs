@@ -71,6 +71,18 @@ if (typeof electron === 'string') {
     try {
       await win.loadFile(path.join(client, 'desk.html'), {query: {panel: 'workspace'}});
       await until('fixtureReady && document.querySelector(".workspace-shell")');
+      if (process.argv.includes('--usage-only')) {
+        await navigate('usage');
+        await require('./page-audit-usage.cjs')({js, click, until, win, delay, shot});
+        report.uiErrors = await js('fixtureErrors');
+        assert.deepEqual(report.uiErrors, []);
+        report.ok = true;
+      } else {
+        await auditWorkspace();
+      }
+    } catch (error) {report.failure = String(error.stack || error); await shot('failure');}
+
+    async function auditWorkspace() {
       const views = {create:'composePanel',history:'historyBoard',skills:'capPanel',schedules:'schPanel',
         library:'libraryPanel',notices:'noticePanel',aidesk:'aiDeskPanel',briefs:'briefPanel',team:'teamPanel',
         memory:'sessionMemoryPanel',usage:'usagePanel',agents:'agPanel',models:'mdPanel',cloud:'cloudEnvironmentPanel',
@@ -204,7 +216,7 @@ if (typeof electron === 'string') {
       report.uiErrors = await js('fixtureErrors');
       report.ok = report.pages.every(p=>p.loaded) && report.actions.every(row=>row.ok) &&
         report.responsive.every(row=>!row.overflow&&!row.error) && !report.findings.some(f=>f.reproduced) && report.uiErrors.length===0;
-    } catch (error) {report.failure = String(error.stack || error); await shot('failure');}
+    }
     fs.writeFileSync(path.join(out, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ok:report.ok,output:out,pages:report.pages.map(p=>({view:p.view,loaded:p.loaded,error:p.error})),
       actions:report.actions,findings:report.findings,responsive:report.responsive,uiErrors:report.uiErrors,failure:report.failure},null,2));

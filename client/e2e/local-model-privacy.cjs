@@ -152,6 +152,30 @@ app.whenReady().then(async () => {
   bridge = require('../main/agent-runtime/pi-session-bridge').createPiSessionBridge({ app, sessionModule: runtime, runnerAdapters: [] });
   reporter = require('../main/agent-runtime/usage-reporter').createUsageReporter({ app,
     identityOf: async () => identity, fetchImpl: (url, init) => fetch(url, init) });
+  const { createLocalUsage } = require('../main/agent-runtime/local-usage.cjs');
+  const usageIdentity = { hub, clientId: claims.cid,
+    accountScope: require('../main/conversation/runtime-segments').scope(identity) };
+  function bindUsage(session) {
+    session.usageIdentity = usageIdentity;
+    session.usageAgentKey = 'pi';
+    const ledger = createLocalUsage(app);
+    const observe = snapshot => {
+      ledger.observe(session, snapshot);
+      reporter.observe(session, snapshot);
+    };
+    observe(session.snapshot());
+    session.on((event, snapshot) => { if (event?.kind !== 'block') observe(snapshot); });
+  }
+  async function assertLocalTokens(tokens, unknown = 0) {
+    const reader = createLocalUsage(app);
+    // Completion can precede the batched structural event that delivers the final receipt.
+    await until(() => reader.read(usageIdentity, 7).summary.tokens === tokens, 'durable personal usage ' + tokens);
+    const result = reader.read(usageIdentity, 7);
+    assert.equal(result.summary.tokens, tokens, 'Durable personal ledger agrees with provider counters');
+    assert.equal(result.summary.sessions, 1);
+    assert.equal(result.summary.requests, tokens / 12 + unknown);
+    assert.equal(result.quality.unknown, unknown);
+  }
   win = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, sandbox: true } });
   await win.loadURL('data:text/html,<title>Private model E2E</title><p>Isolated model test</p>');
   const options = { app, identity, cwd, skillDirs: [], noExtensions: true, modelName: modelRef,
@@ -159,10 +183,12 @@ app.whenReady().then(async () => {
   stage('Execute and persist a local turn while Hub rejects model operations');
   let opened = await bridge.open({ ...options, ref: 'privacy-first' });
   assert.equal(opened.ok, true, opened.reason); handle = opened.session;
+  bindUsage(handle);
   assert.notEqual(runtime.diagnostics(app).pid, process.pid);
   assert.equal((await turn('Reply with a short confirmation.')).ok, true);
   reporter.observe(handle, handle.snapshot()); await reporter.flush();
   assert.equal(requests.length, 1);
+  await assertLocalTokens(12);
   assertHubBoundary();
   const archive = handle.resumeLocation(), sessionId = handle.sessionId;
   assert.ok(fs.readFileSync(archive, 'utf8').includes(modelRef));
@@ -186,8 +212,11 @@ app.whenReady().then(async () => {
   opened = await bridge.open({ ...options, modelName: undefined, ref: 'privacy-restored', resumePath: archive, resumeCwd: cwd });
   assert.equal(opened.ok, true, opened.reason); handle = opened.session;
   assert.equal(handle.sessionId, sessionId); assert.equal(requests.length, 1);
+  bindUsage(handle); await assertLocalTokens(12);
   assert.equal((await turn('Reply again after restoration.')).ok, true);
   reporter.observe(handle, handle.snapshot()); await reporter.flush();
+  await assertLocalTokens(24);
+  report.cases.push('Private accounting recorded 12 provider tokens, retained 12 on archive replay, and reached 24 on the second call.');
   scan(profile); assertHubBoundary();
   report.cases.push('Legacy encrypted catalog, preferences, runtime config and actual SDK archive migrate; history resumes with the same private reference and no Hub model fallback.');
 
@@ -205,6 +234,7 @@ app.whenReady().then(async () => {
   reporter.observe(handle, handle.snapshot()); await reporter.flush();
   assert.ok(requests.some(row => row.mode === 'error'));
   assert.ok(requests.some(row => row.mode === 'no-key'));
+  await assertLocalTokens(36, 1);
   scan(profile); assertHubBoundary(); assert.deepEqual(serverErrors, []);
   report.cases.push('An upstream error echoing private metadata leaves no sentinel on disk; no-key refresh sends no Authorization header.');
 
@@ -214,6 +244,7 @@ app.whenReady().then(async () => {
   const before = requests.length;
   opened = await bridge.open({ ...options, ref: 'privacy-deleted', resumePath: archive, resumeCwd: cwd });
   assert.equal(opened.ok, true, opened.reason); handle = opened.session;
+  bindUsage(handle);
   assert.equal(handle.snapshot().modelSelection.activeModel.localOnly, true);
   const blocked = await turn('Try the removed local model.');
   assert.equal(blocked.ok, false);
@@ -234,6 +265,7 @@ app.whenReady().then(async () => {
   assert.equal(replaced.ok, true, replaced.reason);
   assert.equal((await turn('Continue after choosing the replacement explicitly.')).ok, true);
   assert.equal(requests.length, before + 1);
+  await assertLocalTokens(48, 1);
   reporter.observe(handle, handle.snapshot()); await reporter.flush();
   assertHubBoundary(); scan(profile); assert.deepEqual(serverErrors, []);
   await handle.close();

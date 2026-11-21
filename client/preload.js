@@ -45,6 +45,7 @@ const conversationSession = {
   runtimeModels: (adapterId) => ipcRenderer.invoke('pi-session-runtime-models', String(adapterId || '')),
   capabilities: (options) => timedPageInvoke('conversation-capabilities', options || {}),
   localRequirementParse: params => ipcRenderer.invoke('pi-session-local-requirement-parse', params || {}),
+  localUsage: days => ipcRenderer.invoke('pi-session-local-usage', days),
   pathForFile: (file) => {
     try { return webUtils.getPathForFile(file); } catch (error) { return ''; }
   },

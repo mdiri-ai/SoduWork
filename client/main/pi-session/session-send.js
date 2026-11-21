@@ -81,7 +81,12 @@ async send(text, turnAttachments, sendOptions) {
           await ctx.beginTurnJournal(turn);
           const result = await require('./image-turn').generate({ handle: ctx.handle, identity: ctx.identity, choice: imageChoice,
             text: rawText, submissionId: turn.submissionId, signal: ctx.imageController.signal,
-            push: ev => ctx.acc.push(ev), emit: ctx._emit });
+            push: ev => ctx.acc.push(ev), emit: ctx._emit, onLocalUsage(receipt) {
+              ctx.acc.state.accountingHistory = [...(ctx.acc.state.accountingHistory || []), receipt];
+              try {
+                ctx.piSession.sessionManager.appendCustomEntry(require('./local-image-turn.cjs').USAGE_ENTRY, receipt);
+              } catch (_) { /* The live receipt is still delivered to device accounting. */ }
+            } });
           ctx.failedLastTurn = !result.ok;
           return (deliveryResult = result);
         } finally {
