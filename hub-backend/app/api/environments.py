@@ -574,7 +574,13 @@ async def create_secret_reference(
     session: AsyncSession = Depends(get_session),
 ):
     safe = dict(body)
-    safe["orgId"] = body.get("orgId") if user.is_super else user.org_id
+    org_id_input = body.get("orgId") if user.is_super else user.org_id
+    if not isinstance(org_id_input, str) or not org_id_input.strip() or \
+            await session.get(models.OrgUnit, org_id_input) is None:
+        # Type + existence guard: a non-string orgId used to fail at DB bind time (opaque 500),
+        # and an unknown id wrote a dangling reference (#940).
+        raise HTTPException(status_code=422, detail="orgId 须为组织 ID 字符串，且组织必须存在")
+    safe["orgId"] = org_id_input
     try:
         row = await svc.save_secret_ref(session, safe)
     except ValueError as e:
