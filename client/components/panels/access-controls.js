@@ -1,6 +1,7 @@
 (function (global) {
   'use strict';
   const overlays = new WeakMap();
+  const ANSWER_TIMEOUT_MS = 60000;
   function clean(value, key) {
     if (/token|secret|password|authorization|api[_-]?key/i.test(key || '')) return '••••';
     if (Array.isArray(value)) return value.map(item => clean(item));
@@ -191,7 +192,18 @@
     state.blockDock?.(false);
     state.life.abort(); state.observer?.disconnect(); state.layer.remove(); overlays.delete(el);
   }
-  async function answer(button, api, ref) {
+  function withTimeout(promise, ms) {
+    let timer;
+    const guard = new Promise((_, reject) => {
+      timer = global.setTimeout(() => {
+        const failure = Error('approval timeout');
+        failure.code = 'APPROVAL_TIMEOUT';
+        reject(failure);
+      }, ms);
+    });
+    return Promise.race([Promise.resolve(promise), guard]).finally(() => global.clearTimeout(timer));
+  }
+  async function answer(button, api, ref, options = {}) {
     const card = button.closest('.access-request');
     if (!card || card.dataset.answerPending === 'true') return { ok: false };
     if (card.dataset.permissionRef && card.dataset.permissionRef !== ref) return { ok: false, reason: '权限请求已失效' };
@@ -200,6 +212,7 @@
     if (response.decision === 'answer') response.optionId = button.dataset.permissionOption;
     const buttons = [...card.querySelectorAll('[data-ui-answer]')];
     const error = card.querySelector('.access-error');
+    const timeout = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : ANSWER_TIMEOUT_MS;
     card.dataset.answerPending = 'true'; card.setAttribute('aria-busy', 'true');
     buttons.forEach(item => { item.disabled = true; }); if (error) error.hidden = true;
     let accepted = false;
@@ -209,11 +222,11 @@
       if (full) {
         if (typeof api.setAccessMode !== 'function') throw Error('Unsupported access change');
         const rect = button.getBoundingClientRect();
-        result = await api.setAccessMode(ref, 'full', Number(button.dataset.accessRevision), { anchor: {
+        result = await withTimeout(api.setAccessMode(ref, 'full', Number(button.dataset.accessRevision), { anchor: {
           left: rect.left, top: rect.top, width: rect.width, height: rect.height,
           screenX: Number(global.screenX) + rect.left, screenY: Number(global.screenY) + rect.top,
-        } });
-      } else result = await api.answerUi(ref, response);
+        } }), timeout);
+      } else result = await withTimeout(api.answerUi(ref, response), timeout);
       accepted = result?.ok === true && result.effective !== 'next-turn';
       if (accepted) card.hidden = true;
       else if (error && !result?.cancelled && !result?.canceled) {
@@ -223,9 +236,10 @@
         error.classList.toggle('access-feedback', result?.ok === true);
       }
       return result || { ok: false, reason: '权限确认失败，请重试' };
-    } catch (_) {
-      if (error) { error.hidden = false; error.textContent = '权限确认失败，请重试'; }
-      return { ok: false, reason: '权限确认失败，请重试' };
+    } catch (failure) {
+      const message = failure?.code === 'APPROVAL_TIMEOUT' ? '权限确认超时，请重试' : '权限确认失败，请重试';
+      if (error) { error.hidden = false; error.textContent = message; }
+      return { ok: false, reason: message };
     } finally {
       if (!accepted && card.isConnected) {
         card.dataset.answerPending = 'false'; card.setAttribute('aria-busy', 'false');

@@ -2,7 +2,7 @@
 const test = require('node:test'), assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 function fixture(decision = 'full') {
-  const window = { screenX: 10, screenY: 20 }, context = { window };
+  const window = { screenX: 10, screenY: 20, setTimeout, clearTimeout }, context = { window };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../components/panels/access-controls.js'), 'utf8'), context);
   const error = { hidden: true, classList: { toggle() {} } };
   const card = { dataset: { permissionRef: 'chat-a' }, isConnected: true, hidden: false,
@@ -42,6 +42,19 @@ test('cancelled or failed full access preserves the pending tool and re-enables 
   }
   const f = fixture(); await f.controls.answer(f.button, { setAccessMode: async () => { throw Error('offline'); } }, 'chat-a');
   assert.equal(f.card.hidden, false); assert.equal(f.button.disabled, false); assert.equal(f.error.hidden, false);
+});
+test('approval calls that never settle time out and restore all choices', async () => {
+  for (const [decision, api] of [['full', { setAccessMode: () => new Promise(() => {}) }],
+    ['once', { answerUi: () => new Promise(() => {}) }]]) {
+    const f = fixture(decision);
+    const result = await f.controls.answer(f.button, api, 'chat-a', { timeoutMs: 10 });
+    assert.equal(result.ok, false);
+    assert.equal(f.card.hidden, false);
+    assert.equal(f.button.disabled, false);
+    assert.equal(f.card.dataset.answerPending, 'false');
+    assert.equal(f.error.hidden, false);
+    assert.equal(f.error.textContent, '权限确认超时，请重试');
+  }
 });
 test('next-turn changes retain current approval, while stale chats and duplicate clicks cannot submit', async () => {
   const f = fixture(); let resolve, calls = 0;
