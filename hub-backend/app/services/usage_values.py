@@ -105,12 +105,53 @@ def _safe_raw(data: dict) -> dict:
     return out
 
 
-def normalize_usage(usage: dict | None) -> dict:
+_PRICE_FIELDS = ("input", "output", "cacheRead", "cacheWrite")
+
+
+def _price_per_million(value: Any) -> Decimal:
+    """Parse a unit price expressed in USD per million tokens."""
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return Decimal(0)
+    return amount if amount.is_finite() and amount >= 0 else Decimal(0)
+
+
+def _estimate_cost_microusd(normalized: dict, price: dict) -> int:
+    """Estimate micro-USD from token counts and unit prices (USD per 1M tokens).
+
+    With prices expressed in USD per million tokens, the micro-USD amount equals
+    ``tokens * price`` because the factors of one million cancel out.
+    """
+    rates = {name: _price_per_million(price.get(name)) for name in _PRICE_FIELDS}
+    if not any(rates.values()):
+        return 0
+    cache_read = normalized["cache_read_tokens"]
+    plain_input = normalized["input_tokens"]
+    if normalized["input_includes_cache"]:
+        # Cached input is a subset of the input tokens; charge it only once at
+        # the cache rate rather than counting it twice.
+        plain_input = max(0, plain_input - cache_read)
+    total = (
+        Decimal(plain_input) * rates["input"]
+        + Decimal(normalized["output_tokens"]) * rates["output"]
+        + Decimal(cache_read) * rates["cacheRead"]
+        + Decimal(normalized["cache_write_tokens"]) * rates["cacheWrite"]
+    )
+    return _number(total.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def normalize_usage(usage: dict | None, price: dict | None = None) -> dict:
     """Normalize Pi/OpenCode/Codex/Claude usage without assuming a fixed agent list.
 
     OpenAI's cached_input_tokens is a subset of input_tokens. Anthropic cache read
     and creation tokens are separate. input_includes_cache makes that distinction
     explicit so cached input is never counted twice.
+
+    When the provider does not report a cost and ``price`` is supplied as unit
+    prices in USD per million tokens (``input``, ``output``, ``cacheRead`` and
+    ``cacheWrite``), the cost is estimated from the token counts and marked with
+    ``estimated`` quality; omitting ``price`` preserves the previous behavior.
     """
     data = dict(usage or {})
     input_tokens = _pick(data, "input_tokens", "input", "prompt_tokens")
@@ -138,7 +179,7 @@ def normalize_usage(usage: dict | None) -> dict:
     quality = str(data.get("quality") or ("reported" if evidence else "unknown")).lower()
     if quality not in _QUALITY_RANK:
         quality = "reported" if evidence else "unknown"
-    return {
+    result = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cache_read_tokens": cache_read,
@@ -157,3 +198,10 @@ def normalize_usage(usage: dict | None) -> dict:
         "quality": quality,
         "raw_usage": _safe_raw(data),
     }
+    if not result["cost_known"] and isinstance(price, dict):
+        estimated = _estimate_cost_microusd(result, price)
+        if estimated > 0:
+            result["cost_microusd"] = estimated
+            result["cost_known"] = True
+            result["quality"] = "estimated"
+    return result

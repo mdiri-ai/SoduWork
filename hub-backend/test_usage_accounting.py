@@ -182,6 +182,48 @@ class UsageAccountingTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             ledger.normalize_usage({'input': 2 ** 70})
 
+    def test_unit_price_estimates_cost_when_provider_cost_is_unknown(self):
+        # Basic estimate: micro-USD equals tokens * price (USD per million).
+        basic = ledger.normalize_usage({'input': 1000, 'output': 200},
+                                       price={'input': 0.5, 'output': 1.5})
+        self.assertEqual(basic['cost_microusd'], 800)
+        self.assertTrue(basic['cost_known'])
+        self.assertEqual(basic['quality'], 'estimated')
+
+        # Without a price, the cost stays unknown and nothing is mislabeled.
+        no_price = ledger.normalize_usage({'input': 1000})
+        self.assertFalse(no_price['cost_known'])
+        self.assertNotEqual(no_price['quality'], 'estimated')
+
+        # A provider-reported cost takes precedence and is never overwritten.
+        reported = ledger.normalize_usage({'input': 1000, 'cost': 0.000002},
+                                          price={'input': 0.5})
+        self.assertEqual(reported['cost_microusd'], 2)
+        self.assertEqual(reported['quality'], 'reported')
+
+        # Cached input is a subset of input tokens, so it is charged only once.
+        cached = ledger.normalize_usage(
+            {'input': 1000, 'cached_input_tokens': 400, 'output': 100},
+            price={'input': 1.0, 'cacheRead': 0.1, 'output': 2.0})
+        self.assertEqual(cached['cost_microusd'], 840)
+
+        # When cache is reported separately, the full input and cache are both priced.
+        separate = ledger.normalize_usage(
+            {'input': 600, 'cache_read_input_tokens': 400, 'output': 100,
+             'inputIncludesCache': False},
+            price={'input': 1.0, 'cacheRead': 0.1, 'output': 2.0})
+        self.assertEqual(separate['cost_microusd'], 840)
+
+        # Cache write tokens are priced independently.
+        written = ledger.normalize_usage(
+            {'input': 100, 'cache_creation_input_tokens': 50, 'output': 10},
+            price={'input': 1.0, 'cacheWrite': 0.8, 'output': 2.0})
+        self.assertEqual(written['cost_microusd'], 160)
+
+        # Empty or invalid prices do not manufacture a known cost.
+        for empty in ({}, {'input': 'bad'}, {'output': -1}):
+            self.assertFalse(ledger.normalize_usage({'input': 1000}, price=empty)['cost_known'])
+
     def test_native_accumulator_preserves_cost_and_total_only_receipts(self):
         from app.services.local_stream import _accumulate_usage
         run = {'usage': {}}
