@@ -7,7 +7,7 @@ alembic>=1.14,<2
 aiosqlite>=0.20
 asyncpg>=0.30
 # Optional at runtime: only imported when CLUSTER_REDIS_URL enables multi-instance mode.
-redis>=5.2,<6
+redis>=8.1.0,<9
 pydantic>=2.10,<3
 pydantic-settings>=2.6
 python-dotenv>=1.0
