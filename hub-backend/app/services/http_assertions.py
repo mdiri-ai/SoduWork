@@ -52,18 +52,25 @@ def once(spec: dict) -> dict:
     if not any(k.lower() == "user-agent" for k in headers):
         headers["User-Agent"] = "soduwork-runtime/1"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    truncated = False
     try:
         request = urllib.request.Request(
             url, data=data, headers=headers, method=method)
         with opener.open(request, timeout=timeout) as response:
             status = int(response.status)
-            body = response.read(_BODY_LIMIT).decode("utf-8", "replace")
+            raw = response.read(_BODY_LIMIT + 1)
+            truncated = len(raw) > _BODY_LIMIT
+            body = raw[:_BODY_LIMIT].decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         status = int(exc.code)
         try:
-            body = exc.read(_BODY_LIMIT).decode("utf-8", "replace")
-        except Exception:  # noqa: BLE001
-            body = ""
+            with exc:
+                raw = exc.read(_BODY_LIMIT + 1)
+            truncated = len(raw) > _BODY_LIMIT
+            body = raw[:_BODY_LIMIT].decode("utf-8", "replace")
+        except Exception as read_error:  # noqa: BLE001
+            return {"name": name, "ok": False,
+                    "detail": "读取响应失败（%s）" % type(read_error).__name__}
     except Exception as exc:  # noqa: BLE001
         return {"name": name, "ok": False,
                 "detail": "打不通（%s）" % type(exc).__name__}
@@ -76,6 +83,10 @@ def once(spec: dict) -> dict:
     if not_contains and not_contains in body:
         return {"name": name, "ok": False,
                 "detail": "响应里出现了不该有的「%s」" % not_contains[:40]}
+    if not_contains and truncated:
+        return {"name": name, "ok": False,
+                "detail": "响应超过 %d 字节，无法验证完整正文里没有「%s」" % (
+                    _BODY_LIMIT, not_contains[:40])}
     facts = []
     if contains:
         facts.append("命中「%s」" % contains[:20])

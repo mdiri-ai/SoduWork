@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """Real HTTP-service regression tests for Runner post-deployment business assertions."""
+import io
 import json
 import os
 import shutil
 import tempfile
 import threading
+import urllib.error
+from unittest.mock import Mock, patch
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 ROOT = tempfile.mkdtemp(prefix="soduwork-runner-http-")
@@ -46,6 +49,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, '{"state":"ready","version":"v2"}')
         elif self.path == "/version":
             self.send(200, '{"state":"ready","version":"v2"}')
+        elif self.path in {"/large", "/large-error"}:
+            self.send(500 if self.path == "/large-error" else 200, "ready" + "x" * 20000 + "forbidden")
+        elif self.path == "/exact-limit":
+            self.send(200, "x" * 20000)
         elif self.path == "/error":
             self.send(500, '{"error":"known-safe-error"}')
         else:
@@ -102,6 +109,42 @@ try:
         "expectStatus": 200, "notContains": "v2",
     }, ROOT, dict(os.environ), run_id)
     chk("notContains 失败不会假绿", not passed and "不该有" in detail, detail)
+
+    for path, status in (("/large", 200), ("/large-error", 500)):
+        passed, detail = runner_deploy._check({
+            "type": "http", "name": "完整正文否定断言", "url": base + path,
+            "expectStatus": status, "notContains": "forbidden",
+        }, ROOT, dict(os.environ), run_id)
+        chk("截断的 %d 响应不能证明 forbidden 不存在" % status,
+            not passed and "完整" in detail, detail)
+
+    passed, detail = runner_deploy._check({
+        "type": "http", "name": "边界完整正文", "url": base + "/exact-limit",
+        "notContains": "forbidden",
+    }, ROOT, dict(os.environ), run_id)
+    chk("恰好达到正文上限的完整响应仍可断言", passed, detail)
+
+    for extra in ({}, {"contains": "ready"}):
+        passed, detail = runner_deploy._check({
+            "type": "http", "name": "大型响应可观察事实", "url": base + "/large",
+            **extra,
+        }, ROOT, dict(os.environ), run_id)
+        chk("大响应的状态或已读命中断言继续可用", passed, detail)
+
+    class BrokenBody(io.BytesIO):
+        def read(self, *_args):
+            raise OSError("incomplete fixture response")
+
+    broken_body = BrokenBody(b"unavailable")
+    broken_reply = urllib.error.HTTPError(base + "/error", 500, "Fixture", {}, broken_body)
+    with patch.object(runner_deploy.http_assertions.urllib.request, "build_opener",
+                      return_value=Mock(open=Mock(side_effect=broken_reply))):
+        passed, detail = runner_deploy._check({
+            "type": "http", "name": "正文读取失败", "url": base + "/error",
+            "expectStatus": 500, "notContains": "forbidden",
+        }, ROOT, dict(os.environ), run_id)
+    chk("错误正文读取失败不证明词语不存在，并关闭响应",
+        not passed and "读取响应失败" in detail and broken_body.closed, detail)
 
     log = runner_deploy.status(run_id).get("log") or ""
     chk("日志只记检查事实，不泄露认证头和请求体",
