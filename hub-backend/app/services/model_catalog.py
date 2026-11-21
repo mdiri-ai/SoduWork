@@ -550,14 +550,38 @@ def probe_sync(base: str, key: str, model: str, kind: str = "openai-compat") -> 
     import urllib.request
     from . import model_errors
 
-    def failure(error):
-        status = error.code
-        body = error.read(16000).decode("utf-8", "replace")
+    def _failure(status, body):
         billing = model_errors.billing_diagnostic(body)
         detail = (model_errors.billing_message(billing) + f"（HTTP {status}）"
                   if billing else model_errors.public_failure(f"HTTP {status} {body}"))
-        return {"ok": False, "detail": detail,
-                **(billing or {})}
+        return {"ok": False, "detail": detail, **(billing or {})}
+
+    def failure(error):
+        return _failure(error.code, error.read(16000).decode("utf-8", "replace"))
+
+    def _body_error(status, body):
+        """Detect a gateway error embedded in a 2xx body and reuse the shared diagnostics."""
+        if not body or not body.strip():
+            return None
+        try:
+            payload = _json.loads(body)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or "error" not in payload:
+            return None
+        return _failure(status, body)
+
+    def _chat_ok(body):
+        """A chat response counts only when it carries real content, not an error shell."""
+        if kind == "anthropic":
+            return True
+        if not body or not body.strip():
+            return False
+        try:
+            payload = _json.loads(body)
+        except (ValueError, TypeError):
+            return False
+        return isinstance(payload, dict) and bool(payload.get("choices"))
 
     def _open(path: str, body: dict | None):
         url = base.rstrip("/") + path
@@ -580,8 +604,11 @@ def probe_sync(base: str, key: str, model: str, kind: str = "openai-compat") -> 
     if not (base and key):
         return {"ok": False, "detail": "地址或密钥还没配全"}
     try:
-        st, _ = _open("/v1/models" if kind == "anthropic" else "/models", None)
-        if st == 200:
+        st, body = _open("/v1/models" if kind == "anthropic" else "/models", None)
+        if 200 <= st < 300:
+            error = _body_error(st, body)
+            if error is not None:
+                return error
             return {"ok": True, "probe": "models",
                     "detail": "模型列表可访问；尚未验证聊天生成、余额或当前 Agent 的协议兼容性"}
     except urllib.error.HTTPError as e:
@@ -594,10 +621,18 @@ def probe_sync(base: str, key: str, model: str, kind: str = "openai-compat") -> 
         return {"ok": False, "detail": "这家的模型列表接口不给用，又没有可试的模型——先加一个模型再测"}
     try:
         path = "/v1/messages" if kind == "anthropic" else "/chat/completions"
-        st, _ = _open(path, {"model": model, "max_tokens": 1,
-                            "messages": [{"role": "user", "content": "hi"}]})
-        return {"ok": st == 200, "probe": "chat", "detail": "最小聊天请求成功；当前 Agent 的协议兼容性仍需单独确认" if st == 200
-                                          else f"HTTP {st}"}
+        st, body = _open(path, {"model": model, "max_tokens": 1,
+                                "messages": [{"role": "user", "content": "hi"}]})
+        if 200 <= st < 300:
+            error = _body_error(st, body)
+            if error is not None:
+                return error
+            if _chat_ok(body):
+                return {"ok": True, "probe": "chat",
+                        "detail": "最小聊天请求成功；当前 Agent 的协议兼容性仍需单独确认"}
+            return {"ok": False, "probe": "chat",
+                    "detail": "模型服务返回了成功状态，但没有可用的聊天内容；请检查模型配置"}
+        return {"ok": False, "probe": "chat", "detail": f"HTTP {st}"}
     except urllib.error.HTTPError as e:
         return failure(e)
     except Exception as e:  # noqa: BLE001
