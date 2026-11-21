@@ -365,9 +365,27 @@ async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Pag
     if scope is not None:
         q = q.where(models.User.org_id.in_(scope or {"__none__"}))
     users, total = await select_rows(session, q, page)
-    from . import client_access
+    from . import client_access, quota_plans
+    # Merge the dedicated allowance assignment so quota-page edits are visible in the
+    # user list; the legacy override stays the fallback and the source is labeled.
+    keys = [quota_plans.CATALOG_KEY]
+    for u in users:
+        keys.extend([quota_plans.GRANT_PREFIX + u.id, client_access.USER_QUOTA_PREFIX + u.id])
+    settings = dict((await session.execute(select(models.AppSetting.key, models.AppSetting.value).where(
+        models.AppSetting.key.in_(keys)))).all())
+    plans = quota_plans.catalog_from(settings.get(quota_plans.CATALOG_KEY))
     quotas = await client_access.user_quotas(session, [u.id for u in users])
-    items = [user_to_api(u, token_quota=quotas.get(u.id, {"mode": "inherit", "limit": 0})) for u in users]
+    items = []
+    for u in users:
+        grant = quota_plans.parse(settings.get(quota_plans.GRANT_PREFIX + u.id))
+        policy = quota_plans.effective(grant, plans)
+        if policy:
+            limit = policy.get("totalLimit")
+            quota = {"mode": "limited" if limit is not None else "inherit", "limit": limit or 0,
+                     "source": "assignment"}
+        else:
+            quota = {**quotas.get(u.id, {"mode": "inherit", "limit": 0}), "source": "legacy"}
+        items.append(user_to_api(u, token_quota=quota))
     return list_result(items, total)
 
 
@@ -536,7 +554,9 @@ async def create_domain(session: AsyncSession, name: str, sort: int = 0) -> dict
 
 
 async def update_domain(session: AsyncSession, did: str, name: str | None, sort: int | None) -> dict | None:
-    d = await session.get(models.Domain, did)
+    # Serialize concurrent PATCHes through the domain lock so every update lands
+    # instead of silently overwriting each other while all return 200.
+    d = (await _lock_domains(session, [did]) or [None])[0]
     if d is None:
         return None
     if name is not None:
