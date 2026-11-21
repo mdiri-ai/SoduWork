@@ -461,7 +461,10 @@ async def create_target(
     user: User = Depends(require_perm("environment.manage")),
     session: AsyncSession = Depends(get_session),
 ):
-    await _repo(session, user, str(body.get("repoId") or ""))
+    repo_id = str(body.get("repoId") or "").strip()
+    if not repo_id:
+        raise HTTPException(status_code=400, detail="请提供代码仓库")
+    await _repo(session, user, repo_id)
     try:
         row = await svc.save_target(session, body)
     except ValueError as e:
