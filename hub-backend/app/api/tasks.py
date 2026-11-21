@@ -1041,6 +1041,10 @@ async def put_milestones(
     from ..models import Milestone
     from ..services import task_events as ev
     t = await _my_task(session, client, tid)
+    # The plan is part of the requirement definition: rewriting it after acceptance left the review
+    # record describing a scope that no longer existed. ai-plan already refuses the same task.
+    if t.status in ("done", "cancel"):
+        raise HTTPException(status_code=409, detail="需求已关闭，先重新打开再改里程碑")
     items = body.get("items")
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items 要是一个列表")
