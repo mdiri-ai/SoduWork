@@ -1,9 +1,12 @@
 @echo off
 setlocal
+chcp 65001 >nul 2>nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 cd /d "%~dp0"
-where py >nul 2>nul
+where py <nul >nul 2>nul
 if errorlevel 1 goto python
-py -3.12 --version >nul 2>nul
+py -3.12 --version <nul >nul 2>nul
 if errorlevel 1 goto py_latest
 py -3.12 start.py %*
 goto finished
@@ -11,7 +14,7 @@ goto finished
 py -3 start.py %*
 goto finished
 :python
-where python >nul 2>nul
+where python <nul >nul 2>nul
 if errorlevel 1 goto missing
 python start.py %*
 goto finished
