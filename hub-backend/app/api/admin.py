@@ -1886,6 +1886,10 @@ async def put_llm_config(
     session: AsyncSession = Depends(get_session),
 ):
     """Update LLM settings; omitted or empty apiKey preserves the existing credential."""
+    if not user.is_super:
+        # The endpoint and the key are instance-wide platform credentials; a department-scoped
+        # integration manager must not be able to redirect every tenant's AI traffic.
+        raise HTTPException(status_code=403, detail="只有超级管理员可以修改全局 LLM 配置")
     import json as _json
 
     from ..models import AppSetting
