@@ -192,7 +192,13 @@ def password_for_start(state: Path, config: dict, stdin: bool) -> str:
     return password
 
 
-def assert_available(host: str, port: int) -> None:
+def probe_port(host: str, port: int):
+    """Probe port availability exactly the way serve() will bind it.
+
+    Binds a short-lived probe socket and closes it inside the with block, so no
+    listener is left behind and no file is touched — safe to call from --check.
+    Returns the OSError on failure, or None when the port is free.
+    """
     address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with socket.socket(address_family) as probe:
         if os.name == "nt":
@@ -204,11 +210,19 @@ def assert_available(host: str, port: int) -> None:
         try:
             probe.bind((host, port))
         except OSError as exc:
-            if exc.errno == errno.EADDRINUSE or getattr(exc, 'winerror', None) == 10048:
-                raise StartupError(f"Port {port} is already in use. Existing services were left running. "
-                                   "Choose another port with --port.") from exc
-            raise StartupError(f"Cannot bind to {host}:{port}: {exc}. "
-                               "Check --host and your network configuration.") from exc
+            return exc
+    return None
+
+
+def assert_available(host: str, port: int) -> None:
+    exc = probe_port(host, port)
+    if exc is None:
+        return
+    if exc.errno == errno.EADDRINUSE or getattr(exc, 'winerror', None) == 10048:
+        raise StartupError(f"Port {port} is already in use. Existing services were left running. "
+                           "Choose another port with --port.") from exc
+    raise StartupError(f"Cannot bind to {host}:{port}: {exc}. "
+                       "Check --host and your network configuration.") from exc
 
 
 def runtime_environment(state: Path, config: dict, password: str, host: str, port: int) -> dict:
@@ -492,6 +506,20 @@ def main(argv=None) -> int:
             check_windows_source_paths(args.data_dir.expanduser(), source_copy_targets(), probe=False)
             if profile is not None:
                 print(f'Desktop profile: {profile}')
+            # Ports are not part of dependency_report, yet a busy port is the most
+            # common reason a "passing" check still fails at startup. Probe with the
+            # same helper serve() uses, so a passing check really means startable.
+            port_exc = probe_port(args.host, args.port)
+            if port_exc is None:
+                print(f"Port {args.port} is free.")
+            elif port_exc.errno == errno.EADDRINUSE or getattr(port_exc, 'winerror', None) == 10048:
+                print(f"Port {args.port} is already in use; use --port to pick another one. "
+                      "A previous instance may not have shut down cleanly.", file=sys.stderr)
+                return 1
+            else:
+                print(f"Cannot bind to {args.host}:{args.port}: {port_exc}. "
+                      "Check --host and your network configuration.", file=sys.stderr)
+                return 1
             return 0
         check_dependencies()
         state = args.data_dir.expanduser().resolve()
