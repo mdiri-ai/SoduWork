@@ -197,7 +197,7 @@ export default function Repositories() {
         </span>
       </div>)}
     </div> : (sources.length > 0 || catalog.length > 0 || !manage) ? <EmptyPanel icon="box" title={catalog.length ? tx("没有匹配的仓库") : tx("目录里还没有仓库")}
-      text={catalog.length ? tx("换个关键词试试。") : manage ? tx("请查看上方各代码源的同步状态。") : tx("请联系管理员同步仓库目录。")} /> : null}
+      text={catalog.length ? tx("换个关键词试试。") : manage ? tx("这里是任务挂载可用的仓库清单：先配好拉取账号，再点「立即同步」，仓库会出现在这里。") : tx("请联系管理员同步仓库目录。")} /> : null}
 
     {manage && issueSettings && <RepositoryIssueSync key={issueSettings.id} row={issueSettings}
       onClose={() => setIssueSettings(null)}
@@ -243,8 +243,20 @@ function SourceCard({ source: s, syncing, anySyncing, stage, syncError, onSync, 
   const manage = can('integration.manage')
   const busy = saving || !!probe?.busy
   const bad = s.repositorySyncOk === false
-  const lastStatus = bad ? tx("同步失败") : !s.repositorySyncAt ? tx("待同步")
-    : s.repositorySyncCount === 0 ? tx("未发现仓库") : tx("同步成功")
+  /* One state label per card: the legacy header stacked "0 仓库 / 待同步 / 从未同步"
+     without saying whether a pull account was even configured, so "no account" and
+     "account set, never synced" looked identical. Order matters: account first,
+     then the latest sync outcome. */
+  const repoState = !s.pullAccountSet
+    ? { key: 'no-account', label: tx("未配置账号"), hint: tx("先配固定拉取账号，再点立即同步") }
+    : bad ? { key: 'failed', label: tx("同步失败"), hint: tx("查看上方失败原因，修复后重新同步") }
+    : syncing ? { key: 'syncing', label: tx("同步中"), hint: '' }
+    : !s.repositorySyncAt ? { key: 'unsynced', label: tx("已配置未同步"), hint: tx("点立即同步，拉取仓库目录") }
+    : s.repositorySyncCount === 0 ? { key: 'empty', label: tx("同步成功但 0 仓库"), hint: tx("拉取账号可访问的仓库为空，检查账号权限或源站范围") }
+    : { key: 'ok', label: tx("同步成功"), hint: '' }
+  // The card recommends exactly one action: configure the account before it exists,
+  // sync once it is set but the catalog has not landed yet.
+  const primarySync = s.pullAccountSet && !syncing && (bad || !s.repositorySyncAt)
   const scopeId = useId()
   const scope = tx("同步此代码源中拉取账号可访问的仓库，可能需要几分钟。已有项目映射保持不变。")
   const base = (s.config || {}).base_url || ''
@@ -307,18 +319,19 @@ function SourceCard({ source: s, syncing, anySyncing, stage, syncError, onSync, 
       </div>
       <div className="rc-source-nums">
         <div><b>{s.repositorySyncCount || 0}</b><span>{tx("仓库")}</span></div>
-        <div><b className={bad ? 'bad' : 'ok'}><i />{lastStatus}</b>
+        <div><b className={repoState.key === 'failed' ? 'bad' : (repoState.key === 'ok' || repoState.key === 'empty') ? 'ok' : ''}
+          title={repoState.hint || undefined}><i />{repoState.label}</b>
           <span>{fmtTime(s.repositorySyncAt)}</span></div>
       </div>
       {manage && <div className="rc-source-act">
-        <button className={'rc-acct' + (s.pullAccountSet ? ' set' : '') + (open ? ' open' : '')}
+        <button className={'rc-acct' + (s.pullAccountSet ? ' set' : '') + (open ? ' open' : '') + (s.pullAccountSet ? '' : ' primary')}
           aria-expanded={open}
           onClick={() => setOpen(!open)}
           title={s.pullAccountSet ? tx("拉取账号已配置，点开可改") : tx("还没配拉取账号，点开配置")}>
           <Icon name="key" />{s.pullAccountSet ? (s.pullAccountUser || tx("已配置")) : tx("配拉取账号")}
           <Icon name="chevron" />
         </button>
-        <button className="btn btn-ghost btn-sm" disabled={anySyncing} onClick={onSync} title={scope} aria-describedby={scopeId}>
+        <button className={'btn btn-ghost btn-sm' + (primarySync ? ' primary' : '')} disabled={anySyncing} onClick={onSync} title={scope} aria-describedby={scopeId}>
           <Icon name="refresh" />{syncing ? tx("同步中…") : tx("立即同步")}</button>
       </div>}
     </div>
