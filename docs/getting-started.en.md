@@ -149,7 +149,7 @@ Hidden input is normal: no characters or asterisks appear. Press Enter when done
 
 An uninitialized instance needs an administrator password. By default, Python must recognize standard input as an interactive terminal (TTY). A visible Git Bash window does not guarantee that native Windows Python recognizes it as a TTY; pipes, redirection, or some integrated terminals can also trigger this check. This is different from hidden password input.
 
-First try the Windows entry point from the source directory in an interactive native PowerShell or CMD window, without a pipe or input redirection. For automation or intentional non-interactive input, explicitly add `--password-stdin` and supply the initial password through protected standard input. This flag does not generate a password or reset an existing one. Do not put passwords in command arguments, scripts, or logs. Keep the existing data directory; deleting the database is unnecessary.
+First try the Windows entry point from the source directory in an interactive native PowerShell or CMD window, without a pipe or input redirection. For automation or intentional non-interactive input, explicitly add `--password-stdin` and supply the initial password through protected standard input. This flag does not generate a password or reset an existing one. Do not put passwords in command arguments, scripts, or logs. Keep the existing data directory; deleting the database is unnecessary. For initial setup where dependency downloads take several minutes, automation scripts should preferably run `--prepare-only` first, then start with `--password-stdin` to prevent piped input from timing out during downloads.
 
 ### Downloads are slow or setup fails
 
