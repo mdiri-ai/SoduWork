@@ -27,13 +27,21 @@ function _all() {
 }
 
 let _timer = null;
+function _write() {
+  _timer = null;
+  try { fs.writeFileSync(_file(), JSON.stringify(_all())); } catch (e) {}
+}
 function _flush() {
   /* Throttle repeated move and resize writes. */
   clearTimeout(_timer);
-  _timer = setTimeout(() => {
-    try { fs.writeFileSync(_file(), JSON.stringify(_all())); } catch (e) {}
-  }, 500);
+  _timer = setTimeout(_write, 500);
 }
+// Electron does not wait for the debounce when the final window closes.
+app.once?.('will-quit', () => {
+  if (_timer === null) return;
+  clearTimeout(_timer);
+  _write();
+});
 
 /*
  * Require sufficient intersection with a current display work area so restored windows
