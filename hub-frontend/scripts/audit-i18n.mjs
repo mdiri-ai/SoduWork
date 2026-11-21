@@ -11,11 +11,78 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const han = /[\u3400-\u9fff]/
 const ui = [], unmarked = []
 const isCall = (p, name) => p?.isCallExpression() && p.node.callee.name === name
+// A destructured binding such as `for (const [key, label] of [...])` or
+// `[...].map(([key, label]) => …)` hands cataloged copy to `tx(label)`. These two
+// branches recognize the binding from both the literal side and the call side so
+// such copy is reviewed as a message instead of being flagged as unmarked. The
+// literal still has to appear in the catalog, so nothing bypasses translation.
+const LOOP_BINDINGS = ['ForOfStatement', 'ForInStatement']
 function isTranslatedLiteral(p) {
+  // A literal sitting in the destructured array reaches tx through the element
+  // binding, so review it as a message when that element is passed on.
+  if (p.parentPath?.isArrayExpression() && isDestructuredIntoTranslation(p)) return true
   // Only value branches reach tx. Conditions and nested data-building calls
   // remain subject to their normal literal review rules.
   while (p.parentPath?.isConditionalExpression() && ['consequent', 'alternate'].includes(p.key)) p = p.parentPath
-  return isCall(p.parentPath, 'tx') && p.key === 0
+  if (!isCall(p.parentPath, 'tx') || p.key !== 0) return false
+  const argument = p.parentPath.get('arguments')[0]
+  if (!argument?.isIdentifier()) return true
+  // `tx(message)` where `message` is destructured from the consumed array.
+  const binding = p.parentPath.scope.getBinding(argument.node.name)
+  if (!binding) return false
+  const consumer = owningConsumer(binding.path)
+  return Boolean(consumer && destructuredDeclarator(consumer))
+}
+// Walk up from the binding to the node that owns the destructuring source, so
+// both the `for`-of declaration and the `.map()` callback parameter resolve.
+function owningConsumer(bindingPath) {
+  let current = bindingPath
+  while (current) {
+    if (LOOP_BINDINGS.includes(current.node.type)) return current
+    if (current.isMemberExpression()) return current
+    current = current.parentPath
+  }
+  return null
+}
+// Every element of a destructured loop row must itself reach tx for the copy to
+// count as translated; a partially consumed row keeps its literals under review.
+// Rows may be nested one level deeper than the iterated array, so unwrap it first.
+function isDestructuredIntoTranslation(p) {
+  let row = p.parentPath
+  if (row?.parentPath?.isArrayExpression()) row = row.parentPath
+  if (!row?.isArrayExpression()) return false
+  const consumer = row.parentPath
+  if (!consumer) return false
+  const declarator = destructuredDeclarator(consumer)
+  if (!declarator) return false
+  if (declarator.sourceNode !== row.node) return false
+  const index = Number(p.key)
+  const elementPattern = declarator.id.get('elements')[index]
+  if (!elementPattern?.isIdentifier()) return false
+  const binding = elementPattern.scope.getBinding(elementPattern.node.name)
+  if (!binding) return false
+  return binding.referencePaths.every(reference => isCall(reference.parentPath, 'tx') && reference.key === 0)
+}
+// Resolves the array a destructuring reads from, covering both
+// `for (const [a, b] of [...])` and `[...].map(([a, b]) => …)`. The consumed row
+// is reported alongside the pattern so callers can confirm the pairing.
+function destructuredDeclarator(consumer) {
+  if (consumer.isMemberExpression()) {
+    // `row.map(([a, b]) => …)`: the callee object is the consumed array and the
+    // callback parameter carries the destructuring pattern.
+    const call = consumer.parentPath
+    const callback = call?.isCallExpression() ? call.get('arguments')[0] : null
+    const parameter = callback?.get('params')[0]
+    if (parameter?.isArrayPattern()) return { id: parameter, sourceNode: consumer.get('object').node }
+    return null
+  }
+  if (LOOP_BINDINGS.includes(consumer.node.type)) {
+    const left = consumer.get('left')
+    const declarator = left?.isVariableDeclaration() ? left.get('declarations')[0] : null
+    return declarator?.get('id')?.isArrayPattern()
+      ? { id: declarator.get('id'), sourceNode: consumer.get('right').node } : null
+  }
+  return null
 }
 const files = [path.join(root, 'src'), path.join(root, 'src/screens')].flatMap(dir =>
   fs.readdirSync(dir).filter(name => /\.(jsx|js)$/.test(name) && name !== 'i18n.js').map(name => path.join(dir, name)))
@@ -37,6 +104,9 @@ for (const file of files) {
       const name = p.findParent(q => q.isVariableDeclarator())?.node.id.name
       const property = p.findParent(q => q.isObjectProperty())?.node.key.name
       if (['STARTER', 'defaults', 'blank'].includes(name)) return
+      // The clause-number formatter keeps Chinese numeral tables in `digits`/`units`.
+      // They are algorithm data rather than display copy, so they stay untranslated.
+      if (file.endsWith('legal-docx-layout.js') && ['digits', 'units'].includes(name)) return
       if (['title', 'name'].includes(property) && ['新的一步', '新分类'].includes(value)) return
       record(unmarked, p.node, value, 'literal-review')
     },
