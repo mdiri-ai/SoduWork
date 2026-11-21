@@ -326,7 +326,8 @@ async def list_catalog(session: AsyncSession, *, scope: set[str] | None,
     if needle:
         rows = [row for row in rows if needle in row.full_name.lower()
                 or needle in row.display_name.lower()]
-    rows = rows[:1000]
+    if not needle:
+        rows = rows[:1000]   # Cap only the unfiltered browse view; a search must return every match, not silently miss rows beyond 1000.
     from . import repository_issue_sync
     states = await repository_issue_sync.summaries(session, [row.id for row in rows])
     return [{**_catalog_api(row), "issueSync": states[row.id]} for row in rows]
