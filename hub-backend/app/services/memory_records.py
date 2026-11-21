@@ -489,6 +489,8 @@ async def _org_update(session: AsyncSession, user: models.User, row: MemoryRecor
 
 async def org_create(session: AsyncSession, user: models.User, body: dict) -> dict:
     target = await _admin_org(session, user, body.get("orgId"))
+    if str(body.get("key") or "").strip() not in ("", ORG_MEMORY_KEY):
+        raise HTTPException(400, "组织记忆是单例，请直接编辑现有记录")
     if body.get("confirmed") is not True:
         raise HTTPException(422, "confirm the reviewed summary before saving")
     raw_fields = body.get("fields") or ({"summary": body.get("summary")} if body.get("summary") else {})
@@ -499,7 +501,7 @@ async def org_create(session: AsyncSession, user: models.User, body: dict) -> di
         # Bind compatibility upserts to both identity and revision. A record
         # recreated after deletion can start at the same revision as the old.
         if body.get("id") != row.id:
-            raise HTTPException(409, "organization memory changed; reload before editing")
+            raise HTTPException(409, "组织记忆已存在，请直接编辑")
         return {**await _org_update(session, user, row, body), "updated": True}
     if body.get("revision") is not None or body.get("id") is not None:
         raise HTTPException(409, "organization memory changed; reload before editing")
