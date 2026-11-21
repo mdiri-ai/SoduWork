@@ -223,5 +223,10 @@ export default {
   "方案正文\n汇报材料": "Proposal document\nPresentation",
   "目标和边界清楚\n关键判断有依据": "Clear objectives and boundaries\nEvidence supporting key decisions",
   "系统会在任务创建时冻结这份交付标准": "These delivery standards are frozen when the issue is created",
-  "停用后不再参与新任务匹配，历史任务不受影响": "Disabled scenarios no longer match new issues; historical issues are unaffected"
+  "停用后不再参与新任务匹配，历史任务不受影响": "Disabled scenarios no longer match new issues; historical issues are unaffected",
+  "终端 ID": "Terminal ID",
+  "导出 CSV": "Export CSV",
+  "正在导出": "Exporting",
+  "导出没有完成": "Export failed",
+  "已导出 {0} 个终端": "Exported {0} clients"
 }

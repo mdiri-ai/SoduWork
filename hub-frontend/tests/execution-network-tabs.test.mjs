@@ -70,3 +70,69 @@ test('runner installation OS dropdown selects the matching generated command', a
   page.act(() => osSelect().props.onChange({ target: { value: 'windows' } }))
   assert.ok(command().includes('windows-fixture-command'))
 })
+
+test('employee device table headers sort every column with aria-sort feedback', async (t) => {
+  const fixtures = [
+    { id: 'a', name: 'zeta', ownerName: '王五', online: false, authState: 'active', platform: 'win32', version: '1.2.0', lastSeen: 3000 },
+    { id: 'b', name: 'alpha', ownerName: '', online: true, authState: 'pending', platform: 'darwin', version: '0.9.0', lastSeen: 1000 },
+    { id: 'c', name: 'mike', ownerName: '李四', online: true, authState: 'revoked', platform: 'linux', version: '2.0.0', lastSeen: 2000 },
+  ]
+  const requests = []
+  const clientsPage = async (req) => {
+    requests.push(req)
+    return { items: fixtures, total: fixtures.length, counts: { all: 3, online: 2, offline: 1, pending: 1, mobile: 0 } }
+  }
+  const page = await createComponentHarness(new URL('../src/screens/Clients.jsx', import.meta.url), {
+    exportName: 'DeviceFleet', privateExports: ['DeviceFleet'],
+    dependencies: {
+      '../client-appearance.js': appearance,
+      '../api.js': { api: { clientsPage }, can: () => true },
+      '../FilterControls.jsx': { FilterInput: 'FilterInput', FilterSelect: 'FilterSelect' },
+      '../ListPager.jsx': 'ListPager',
+      '../ui.jsx': { Icon: 'Icon', Modal: 'Modal', toast() {}, Confirm: 'Confirm', SelectMenu: 'SelectMenu' },
+      './RunnerBoard.jsx': 'RunnerBoard',
+      './ClientAccessPolicy.jsx': 'ClientAccessPolicy',
+      './MailSettings.jsx': 'MailSettings',
+      './client-updates.css': {}, './execution-network.css': {},
+    },
+  })
+  t.after(() => page.unmount())
+  await page.flush()
+  const heads = () => page.nodes(node => node.type === 'button' && String(node.props.className || '').includes('en-th-sort'))
+  const sortAttr = () => page.nodes(node => node.type === 'th').map(node => node.props['aria-sort'])
+  const idOrder = () => page.nodes(node => node.type === 'small' && node.props.className === 'mono').map(node => node.props.title)
+  assert.equal(heads().length, 6, 'every data column is sortable')
+  assert.deepEqual(sortAttr(), Array(7).fill(undefined), 'no column is sorted before the first click')
+  assert.deepEqual(idOrder(), ['a', 'b', 'c'], 'the loaded page keeps the backend order initially')
+  page.act(() => heads()[0].props.onClick())
+  assert.equal(sortAttr()[0], 'ascending', 'the name column announces ascending after the first click')
+  assert.deepEqual(idOrder(), ['b', 'c', 'a'], 'names sort alphabetically ascending')
+  page.act(() => heads()[0].props.onClick())
+  assert.equal(sortAttr()[0], 'descending', 'a second click flips the announcement to descending')
+  assert.deepEqual(idOrder(), ['a', 'c', 'b'], 'names sort alphabetically descending')
+  page.act(() => heads()[5].props.onClick())
+  assert.equal(sortAttr()[5], 'descending', 'the heartbeat column starts with the most recent first')
+  assert.deepEqual(idOrder(), ['a', 'c', 'b'], 'heartbeats sort newest first by default')
+})
+
+test('clients csv export escapes quotes, commas and newlines', async (t) => {
+  const page = await createComponentHarness(new URL('../src/screens/Clients.jsx', import.meta.url), {
+    exportName: 'clientsCsv', privateExports: ['clientsCsv'],
+    dependencies: {
+      '../client-appearance.js': appearance,
+      '../api.js': { api: {}, can: () => true },
+      '../FilterControls.jsx': { FilterInput: 'FilterInput', FilterSelect: 'FilterSelect' },
+      '../ListPager.jsx': 'ListPager',
+      '../ui.jsx': { Icon: 'Icon', Modal: 'Modal', toast() {}, Confirm: 'Confirm', SelectMenu: 'SelectMenu' },
+      './RunnerBoard.jsx': 'RunnerBoard',
+      './ClientAccessPolicy.jsx': 'ClientAccessPolicy',
+      './MailSettings.jsx': 'MailSettings',
+      './client-updates.css': {}, './execution-network.css': {},
+    },
+  })
+  const out = page.render({
+    labels: ['终端', '备注'],
+    rows: [['zeta, 1', 'said "hi"'], ['line\nbreak', '']],
+  })
+  assert.equal(out, '终端,备注\r\n"zeta, 1","said ""hi"""\r\n"line\nbreak",')
+})

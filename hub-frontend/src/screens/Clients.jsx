@@ -50,6 +50,20 @@ function ago(ms) {
 
 const PAGE_SIZE = 25
 
+// CSV is a hostile format: a cell containing a quote, comma or newline must be
+// quoted with doubled inner quotes, or the whole export shifts columns. Values
+// arrive already localized and mapped, so this stays a pure formatter.
+function csvCell(value) {
+  const s = String(value ?? '')
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+}
+
+function clientsCsv({ labels, rows }) {
+  const lines = [(labels || []).map(csvCell).join(',')]
+  for (const row of rows || []) lines.push(row.map(csvCell).join(','))
+  return lines.join('\r\n')
+}
+
 function Pager({ page, total, onChange }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   return <ListPager page={page} pages={pages} total={total} onChange={onChange} />
@@ -68,6 +82,8 @@ function DeviceFleet() {
   const [draft, setDraft] = useState('')
   const [composing, setComposing] = useState(false)
   const [q, setQ] = useState('')
+  const [sort, setSort] = useState({ key: '', dir: 'asc' })
+  const [exporting, setExporting] = useState(false)
   const requestSeq = useRef(0)
 
   useEffect(() => {
@@ -100,6 +116,63 @@ function DeviceFleet() {
   }, [load])
 
   const items = (data && data.items) || []
+  /* Header sorting covers every data column; unknown auth states already
+     normalize to pending, which keeps that order stable and meaningful. */
+  const SORTERS = {
+    name: (c) => String(c.name || '').toLowerCase(),
+    owner: (c) => String(c.ownerName || '').toLowerCase(),
+    online: (c) => (c.online ? 0 : 1),
+    auth: (c) => authState(c.authState).key,
+    platform: (c) => platformLabel(c.platform).toLowerCase() + ' ' + String(c.version || ''),
+    lastSeen: (c) => Number(c.lastSeen || 0),
+  }
+  const sorter = SORTERS[sort.key]
+  const viewItems = sorter ? [...items].sort((a, b) => {
+    const va = sorter(a)
+    const vb = sorter(b)
+    const cmp = typeof va === 'number' && typeof vb === 'number' ? va - vb : String(va).localeCompare(String(vb), uiLocale)
+    return sort.dir === 'asc' ? cmp : -cmp
+  }) : items
+  const toggleSort = (key) => setSort((s) => s.key === key
+    ? { key, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+    : { key, dir: key === 'lastSeen' ? 'desc' : 'asc' })
+  /* Export walks every page of the current filter, not just the loaded page:
+     the table is paginated to 25 rows, so a single fetch would silently drop
+     the rest. 1000 pages is a defensive stop against a broken total. */
+  const exportCsv = async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const rows = []
+      let next = 1
+      while (next <= 1000) {
+        const batch = await api.clientsPage({ page: next, pageSize: PAGE_SIZE, state, form, q })
+        const batchItems = (batch && batch.items) || []
+        rows.push(...batchItems)
+        if (!batchItems.length || rows.length >= ((batch && batch.total) || 0)) break
+        next += 1
+      }
+      const table = clientsCsv({
+        labels: [tx("终端"), tx("终端 ID"), tx("归属成员"), tx("连接状态"), tx("设备身份"), tx("系统 / 版本"), tx("最后心跳")],
+        rows: rows.map((c) => [c.name || '', c.id || '', c.ownerName || '', c.online ? tx("在线") : tx("离线"),
+          authState(c.authState).label, platformLabel(c.platform) + ' ' + (c.version ? 'v' + c.version : '—'),
+          c.lastSeen ? new Date(c.lastSeen).toISOString() : '']),
+      })
+      const blob = new Blob(['\ufeff' + table], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'soduwork-clients-' + new Date().toISOString().slice(0, 10) + '.csv'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      toast(tx("已导出 {0} 个终端", [rows.length]))
+    } catch (e) {
+      toast(e.message || tx("导出没有完成"))
+    }
+    setExporting(false)
+  }
   const counts = (data && data.counts) || { all: 0, online: 0, offline: 0, pending: 0, mobile: 0 }
   const filters = [['all', tx("全部终端")], ['online', tx("在线")],
     ['offline', tx("离线")], ['pending', tx("待激活")]]
@@ -130,6 +203,9 @@ function DeviceFleet() {
         aria-label={tx("终端形态")} value={form} resetValue="all" onChange={(e) => { setForm(e.target.value); setPage(1) }}>
         {[['all', tx("全部形态")], ['desktop', tx("桌面端")], ['mobile', tx("移动端")]].map(([key, label]) => <option key={key} value={key}>{label}</option>)}
       </FilterSelect></label>
+      <button type="button" className="btn btn-ghost xs en-export-btn" onClick={exportCsv} disabled={exporting}>
+        {exporting ? tx("正在导出") : tx("导出 CSV")}
+      </button>
       </div>
     </div>
     {error && !data && <div className="en-state bad"><Icon name="alert" /><div><b>{tx("终端数据没有加载出来")}</b><span>{error}</span></div>
@@ -138,8 +214,17 @@ function DeviceFleet() {
     {data && !items.length && <div className="en-empty"><Icon name="monitor" /><b>{tx("没有符合条件的终端")}</b>
       <span>{counts.all ? tx("换一个筛选条件或清空搜索词。") : tx("启动 SoduWork 客户端后，终端会自动登记到这里。")}</span></div>}
     {!!items.length && <div ref={listRef} className="en-table-wrap admin-viewport-list" tabIndex={0} role="region" aria-label={tx("员工终端")}><table className="en-table">
-      <thead><tr><th>{tx("终端")}</th><th>{tx("归属成员")}</th><th>{tx("连接状态")}</th><th>{tx("设备身份")}</th><th>{tx("系统 / 版本")}</th><th>{tx("最后心跳")}</th><th className="admin-action-heading">{tx("操作")}</th></tr></thead>
-      <tbody>{items.map((c) => {
+      <thead><tr>
+        {[['name', tx("终端")], ['owner', tx("归属成员")], ['online', tx("连接状态")], ['auth', tx("设备身份")], ['platform', tx("系统 / 版本")], ['lastSeen', tx("最后心跳")]].map(([key, label]) => (
+          <th key={key} aria-sort={sort.key === key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : undefined}>
+            <button type="button" className={'en-th-sort' + (sort.key === key ? ' is-active' : '')} onClick={() => toggleSort(key)}>
+              {label}<span className="en-th-arrow" aria-hidden="true">{sort.key === key ? (sort.dir === 'asc' ? '↑' : '↓') : '↕'}</span>
+            </button>
+          </th>
+        ))}
+        <th className="admin-action-heading">{tx("操作")}</th>
+      </tr></thead>
+      <tbody>{viewItems.map((c) => {
         const auth = authState(c.authState)
         const name = c.ownerName || tx("未分配")
         return <tr key={c.id} className={c.online ? 'is-online' : ''} onDoubleClick={() => setDetail(c)}>
