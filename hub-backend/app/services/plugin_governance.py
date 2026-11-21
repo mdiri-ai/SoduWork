@@ -213,6 +213,16 @@ async def overview(session: AsyncSession, org_ids: set[str] | None = None,
             at=_ms(run.finished_at or run.updated_at or run.created_at),
         ))
 
+    # One plugin can have several quarantined versions; the review queue counts plugins that need
+    # a human decision, so it must never exceed the plugin total shown next to it.
+    seen_review, unique_review = set(), []
+    for item in queues["review"]:
+        if item.get("pluginId") in seen_review:
+            continue
+        seen_review.add(item.get("pluginId"))
+        unique_review.append(item)
+    queues["review"] = unique_review
+
     for key in queues:
         queues[key].sort(
             key=lambda item: (item.get("severity") == "high", item.get("at") or 0),
