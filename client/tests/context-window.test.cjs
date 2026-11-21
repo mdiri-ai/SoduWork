@@ -32,3 +32,11 @@ test('context resolver always returns a numeric safe estimate for unknown bases'
   assert.equal(resolved.contextWindowSource, 'safe-default');
   assert.equal(normalize('not-a-number'), 0);
 });
+
+test('provider estimates remain available for aliases without overriding known model limits', () => {
+  assert.equal(resolveContextWindow({ id: 'internal-deployment', provider: 'deepseek' }).contextWindow, 64000);
+  assert.equal(resolveContextWindow({ model: { id: 'team-chat', provider: 'claude' } }).contextWindow, 200000);
+  assert.equal(resolveContextWindow({ id: 'qwen-max', provider: 'claude' }).contextWindow, 131072);
+  assert.equal(resolveContextWindow({ id: 'alias', provider: 'deepseek', contextWindow: 32000 }).contextWindow, 32000);
+  assert.equal(resolveContextWindow({ id: 'alias', provider: 'mydeepseekproxy' }).contextWindowSource, 'safe-default');
+});

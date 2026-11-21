@@ -76,9 +76,11 @@ function infer(input) {
     const parsed = normalize(suffix[1] + suffix[2]);
     if (parsed) return parsed;
   }
-  const haystack = [name, provider].filter(Boolean).join(' ');
-  const found = KNOWN_WINDOWS.find((item) => item.test.test(haystack));
-  return found ? found.value : 0;
+  for (const candidate of [name, provider]) {
+    const found = KNOWN_WINDOWS.find((item) => item.test.test(candidate));
+    if (found) return found.value;
+  }
+  return 0;
 }
 
 function resolveContextWindow(input) {
