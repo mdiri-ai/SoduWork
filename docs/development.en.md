@@ -66,6 +66,36 @@ python3 quality_gate.py --profile release --scope backend
 
 The full offline gate takes time. Start with the registered checks relevant to your change. `live` checks connect to real services or models and require your own isolated environment; they are outside default offline validation.
 
+### Observe Runner event retention
+
+When reading the event transport, start with this local Outbox exercise. It calls the real module using only the standard library, a temporary directory and synthetic events; no Hub or model configuration is needed. Save it as `hub-backend/outbox_demo.py` and run `python3 outbox_demo.py` from that directory with Python 3.12+ (`py -3 outbox_demo.py` on Windows). Delete this local example file afterwards; do not commit it.
+
+```python
+from tempfile import TemporaryDirectory
+from app.services.runner_event_outbox import Outbox
+
+with TemporaryDirectory() as directory:
+    box = Outbox(directory, "demo-hub|demo-runner")
+    snapshot = {"ref": "demo-ref", "taskId": "demo-task", "round": 1,
+                "seq": 1, "state": "running",
+                "items": [{"seq": 1, "kind": "text", "text": "demo event"}]}
+    box.append(snapshot, ("demo-ref", 1, "running"))
+    packet = box.pending()[0]
+    reopened = Outbox(directory, "demo-hub|demo-runner")
+    assert reopened.pending() == [packet]
+    print("Reopen: packet retained")
+    assert not reopened.acknowledge({**packet, "digest": "wrong"})
+    assert reopened.pending() == [packet]
+    print("Mismatched ACK: packet retained")
+    assert reopened.acknowledge(packet)
+    assert reopened.pending() == []
+    print("Exact ACK: packet removed")
+```
+
+Expect the three messages above. Read the write transaction and exact-match deletion in [`Outbox.append()` and `acknowledge()`](../hub-backend/app/services/runner_event_outbox.py) alongside the output. In [`runner_main.py`](../hub-backend/runner_main.py), `_capture_sessions()` and `_deliver_sessions()` collect and send events; the Hub commits its database transaction before sending the acknowledgement in [`_ingest_delivery()`](../hub-backend/app/api/runner_ws.py).
+
+This exercise checks only local module behavior: reopening storage, rejecting a mismatched acknowledgement, and deleting on an exact acknowledgement. It does not validate live WebSocket delivery, Agent execution, model answers or power-loss recovery. See [`test_runner_event_delivery.py`](../hub-backend/test_runner_event_delivery.py) for broader fault and capacity cases, to be run in the backend test environment.
+
 ## Desktop client
 
 The desktop uses Electron with native HTML/CSS/JavaScript; the React management UI is a separate application. Main-process code lives in `main.js` and `main/`, the restricted IPC bridge in `preload.js`, and UI code primarily in `desk.html`, `core/`, and `components/`.
