@@ -93,15 +93,18 @@ function create(app, owner, guard, configuredWorkRoot = '') {
       // profile/sync tools may add one to an otherwise valid UTF-8 index. A
       // BOM is an encoding marker, not part of the JSON document.
       content = (await awaited(io.readFile(indexPath, 'utf8'))).replace(/^\uFEFF/, '');
-    } catch (e) { indexCache.remove(indexPath); if (e.code === 'ENOENT') return { schema: 1, items: [], folders: [], garbage: [] }; throw e; }
+    } catch (e) { indexCache.remove(indexPath); if (e.code === 'ENOENT') return { schema: 1, items: [], folders: [], garbage: [], purgeGarbage: [] }; throw e; }
     let value;
     try {
       value = JSON.parse(content);
       if (value.schema !== 1 || !Array.isArray(value.items) || !Array.isArray(value.folders) || !Array.isArray(value.garbage)) throw Error();
+      if (!Object.prototype.hasOwnProperty.call(value, 'purgeGarbage')) value.purgeGarbage = [];
+      if (!Array.isArray(value.purgeGarbage)) throw Error();
       if (new Set(value.items.map(x => x.id)).size !== value.items.length || new Set(value.folders.map(x => x.id)).size !== value.folders.length) throw Error();
       for (const row of value.items) { if (!ITEM.test(row.id) || !OBJECT.test(row._object)) throw Error(); objectPath(row._object); }
       for (const row of value.folders) if (!FOLDER.test(row.id)) throw Error();
       for (const key of value.garbage) objectPath(key);
+      for (const key of value.purgeGarbage) { if (typeof key !== 'string') throw Error(); objectPath(key); }
     } catch { throw error('LOCAL_LIBRARY_INDEX_CORRUPT', '本机资料索引损坏；原文件已保留，请勿覆盖索引'); }
     const currentStat = await checkedFile(indexPath);
     if (indexCache.signature(indexStat) === indexCache.signature(currentStat)) {
@@ -170,18 +173,49 @@ function create(app, owner, guard, configuredWorkRoot = '') {
     });
   }
   async function garbageCollect(index) {
-    // Garbage is recorded in the same index commit as the metadata change.
-    // Failed removal remains retryable, and never deletes a referenced object.
-    const referenced = new Set(index.items.map(x => x._object));
-    for (const key of index.garbage) {
-      guard(); if (referenced.has(key)) continue;
-      const target = objectPath(key);
-      try {
-        await checkedFile(target); guard(); await awaited(io.unlink(target));
-        await awaited(io.rmdir(path.dirname(target)));
-      } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    // Automatic cleanup must preserve display copies that may have external
+    // edits. Only an explicitly purged item authorizes whole-directory removal.
+    const active = new Set(index.items.map(x => x._object));
+    const referenced = new Set(index.items.map(x => path.dirname(objectPath(x._object))));
+    const garbage = new Set(index.garbage);
+    const authorized = [...new Set(index.purgeGarbage)].filter(key => garbage.has(key) &&
+      !referenced.has(path.dirname(objectPath(key))));
+    // Revoke shared-directory permissions durably before any cleanup. Otherwise
+    // a later rename of the remaining item could delete its edited display copy.
+    if (authorized.length !== index.purgeGarbage.length) {
+      index.purgeGarbage = authorized;
+      await save(index);
     }
-    if (index.garbage.length) { index.garbage = []; await save(index); }
+    const purgeDirectories = new Set(authorized.map(key => path.dirname(objectPath(key))));
+    const completed = new Set();
+    try {
+      for (const key of garbage) {
+        guard();
+        const target = objectPath(key), directory = path.dirname(target);
+        if (referenced.has(directory) || completed.has(directory)) continue;
+        let files;
+        try {
+          await directories(directory);
+          files = (await awaited(io.readdir(directory))).map(name => path.join(directory, name));
+        } catch (e) { if (e.code === 'ENOENT') { completed.add(directory); continue; } throw e; }
+        if (!purgeDirectories.has(directory) && files.some(file => file !== target)) continue;
+        // Check all entries before deleting anything; never follow links or
+        // recursively remove unexpected directories, even during recovery.
+        for (const file of files) await checkedFile(file);
+        for (const file of files) {
+          await checkedFile(file); guard(); await awaited(io.unlink(file));
+        }
+        await awaited(io.rmdir(directory));
+        completed.add(directory);
+      }
+    } finally {
+      const remaining = index.garbage.filter(key => !active.has(key) && !completed.has(path.dirname(objectPath(key))));
+      const pendingPurge = index.purgeGarbage.filter(key => !completed.has(path.dirname(objectPath(key))));
+      if (remaining.length !== index.garbage.length || pendingPurge.length !== index.purgeGarbage.length) {
+        index.garbage = remaining; index.purgeGarbage = pendingPurge;
+        await save(index);
+      }
+    }
   }
   async function run(fn, { readOnly = false } = {}) {
     const key = root, previous = queues.get(key) || Promise.resolve();

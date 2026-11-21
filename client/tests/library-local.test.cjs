@@ -482,6 +482,157 @@ test('trash retains bytes, restores to root after folder deletion, and purges on
   assert.equal((await f.call('list', { scope: 'trash' })).items.length, 0);
 });
 
+for (const action of ['purgeItem', 'emptyTrash']) {
+  test(action + ' removes display-name copies created by reveal', async t => {
+    const f = fixture(t);
+    const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+    await f.call('reveal', { id: row.id });
+    const alias = f.revealed[0], directory = path.dirname(alias);
+    assert.equal(path.basename(alias), 'report.md.txt');
+    assert.deepEqual(fs.readdirSync(directory).sort(), ['report.md.txt', 'report.txt']);
+    await f.call('deleteItem', { id: row.id });
+    await f.call(action, { id: row.id });
+    assert.equal(fs.existsSync(directory), false);
+    assert.equal((await f.call('list', { scope: 'trash' })).trashCount, 0);
+  });
+}
+
+test('authorized purge retries display copies after the original object was already removed', async t => {
+  const f = fixture(t);
+  const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+  await f.call('reveal', { id: row.id });
+  const directory = path.dirname(f.revealed[0]), indexPath = path.join(f.account(), 'index.json');
+  const index = JSON.parse(fs.readFileSync(indexPath));
+  fs.unlinkSync(path.join(f.account(), index.items[0]._object));
+  index.garbage.push(index.items[0]._object);
+  index.purgeGarbage = [index.items[0]._object];
+  index.items = [];
+  fs.writeFileSync(indexPath, JSON.stringify(index));
+  await f.call('emptyTrash');
+  assert.equal(fs.existsSync(directory), false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(indexPath)).garbage, []);
+});
+
+test('garbage collection preserves every file in a still-referenced object directory', async t => {
+  const f = fixture(t);
+  const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+  await f.call('reveal', { id: row.id });
+  const alias = f.revealed[0], directory = path.dirname(alias), indexPath = path.join(f.account(), 'index.json');
+  const index = JSON.parse(fs.readFileSync(indexPath)), original = index.items[0]._object;
+  index.items[0]._object = original.slice(0, original.lastIndexOf('/') + 1) + path.basename(alias);
+  index.garbage.push(original);
+  index.purgeGarbage = [original];
+  fs.writeFileSync(indexPath, JSON.stringify(index));
+  await f.call('emptyTrash');
+  assert.deepEqual(fs.readdirSync(directory).sort(), ['report.md.txt', 'report.txt']);
+  assert.equal((await f.call('readContent', { id: row.id })).content, '原始内容');
+  assert.deepEqual(JSON.parse(fs.readFileSync(indexPath)).purgeGarbage, []);
+  await f.call('updateItem', { id: row.id, title: 'renamed' });
+  assert.deepEqual(fs.readdirSync(directory).sort(), ['report.md.txt', 'report.txt']);
+});
+
+for (const change of [{ title: 'renamed' }, { content: 'updated in library' }]) {
+  test('automatic cleanup preserves an externally edited display copy after ' + Object.keys(change)[0], async t => {
+    const f = fixture(t);
+    const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+    await f.call('reveal', { id: row.id });
+    const alias = f.revealed[0], indexPath = path.join(f.account(), 'index.json');
+    const original = JSON.parse(fs.readFileSync(indexPath)).items[0]._object;
+    fs.writeFileSync(alias, 'external changes');
+    await f.call('updateItem', { id: row.id, ...change });
+    assert.equal(fs.readFileSync(alias, 'utf8'), 'external changes');
+    assert.ok(JSON.parse(fs.readFileSync(indexPath)).garbage.includes(original));
+    const discarded = (await create(f, { title: 'discard' })).item;
+    await f.call('deleteItem', { id: discarded.id });
+    f.install();
+    await f.call('emptyTrash');
+    assert.equal(fs.readFileSync(alias, 'utf8'), 'external changes');
+    assert.ok(JSON.parse(fs.readFileSync(indexPath)).garbage.includes(original));
+  });
+}
+
+test('ordinary garbage with a missing original does not authorize deletion of its display copy', async t => {
+  const f = fixture(t);
+  const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+  await f.call('reveal', { id: row.id });
+  const alias = f.revealed[0], indexPath = path.join(f.account(), 'index.json');
+  const index = JSON.parse(fs.readFileSync(indexPath)), original = index.items[0]._object;
+  fs.writeFileSync(alias, 'external changes');
+  fs.unlinkSync(path.join(f.account(), original));
+  index.garbage.push(original); index.items = [];
+  delete index.purgeGarbage;
+  fs.writeFileSync(indexPath, JSON.stringify(index));
+  await f.call('emptyTrash');
+  assert.equal(fs.readFileSync(alias, 'utf8'), 'external changes');
+  assert.ok(JSON.parse(fs.readFileSync(indexPath)).garbage.includes(original));
+});
+
+test('interrupted explicit purge retains its authorization for retry after restart', async t => {
+  const f = fixture(t);
+  const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+  await f.call('reveal', { id: row.id });
+  const alias = f.revealed[0], indexPath = path.join(f.account(), 'index.json');
+  const key = JSON.parse(fs.readFileSync(indexPath)).items[0]._object;
+  fs.writeFileSync(alias, 'external changes');
+  await f.call('deleteItem', { id: row.id });
+  const unlink = fsp.unlink;
+  fsp.unlink = async target => {
+    if (target === alias) throw Object.assign(Error('file busy'), { code: 'EBUSY' });
+    return unlink(target);
+  };
+  try { await assert.rejects(f.call('purgeItem', { id: row.id }), { code: 'EBUSY' }); }
+  finally { fsp.unlink = unlink; }
+  const pending = JSON.parse(fs.readFileSync(indexPath));
+  assert.deepEqual(pending.items, []);
+  assert.ok(pending.garbage.includes(key));
+  assert.ok(pending.purgeGarbage.includes(key));
+  f.install(); await f.call('emptyTrash');
+  assert.equal(fs.existsSync(path.dirname(alias)), false);
+  const cleaned = JSON.parse(fs.readFileSync(indexPath));
+  assert.deepEqual(cleaned.garbage, []);
+  assert.deepEqual(cleaned.purgeGarbage, []);
+});
+
+test('legacy indexes without purge authorization remain readable', async t => {
+  const f = fixture(t), row = (await create(f)).item;
+  const indexPath = path.join(f.account(), 'index.json'), index = JSON.parse(fs.readFileSync(indexPath));
+  delete index.purgeGarbage;
+  fs.writeFileSync(indexPath, JSON.stringify(index));
+  f.install();
+  assert.equal((await f.call('readContent', { id: row.id })).content, '原始内容');
+});
+
+test('invalid purge authorization metadata fails closed without deleting files', async t => {
+  const f = fixture(t), row = (await create(f)).item;
+  await f.call('reveal', { id: row.id });
+  const originalPath = f.revealed[0], indexPath = path.join(f.account(), 'index.json');
+  const index = JSON.parse(fs.readFileSync(indexPath));
+  for (const purgeGarbage of [null, {}, 'objects/invalid', [null], ['../outside'], [123]]) {
+    fs.writeFileSync(indexPath, JSON.stringify({ ...index, purgeGarbage }));
+    await assert.rejects(f.call('emptyTrash'), { code: 'LOCAL_LIBRARY_INDEX_CORRUPT' });
+    assert.equal(fs.readFileSync(originalPath, 'utf8'), '原始内容');
+  }
+});
+
+for (const entry of ['directory', 'symlink']) {
+  test('garbage collection rejects an unexpected ' + entry + ' before removing any files', async t => {
+    if (entry === 'symlink' && process.platform === 'win32') return t.skip('file symlinks require Windows privileges');
+    const f = fixture(t);
+    const row = (await create(f, { title: 'report.md', filename: 'report.txt' })).item;
+    await f.call('reveal', { id: row.id });
+    const alias = f.revealed[0], directory = path.dirname(alias), unexpected = path.join(directory, 'unexpected');
+    const outside = path.join(f.root, 'outside.txt');
+    fs.writeFileSync(outside, 'keep outside');
+    if (entry === 'directory') fs.mkdirSync(unexpected);
+    else fs.symlinkSync(outside, unexpected);
+    await f.call('deleteItem', { id: row.id });
+    await assert.rejects(f.call('purgeItem', { id: row.id }), { code: 'LOCAL_LIBRARY_UNSAFE_PATH' });
+    assert.equal(fs.readFileSync(alias, 'utf8'), '原始内容');
+    assert.equal(fs.readFileSync(path.join(directory, 'report.txt'), 'utf8'), '原始内容');
+    assert.equal(fs.readFileSync(outside, 'utf8'), 'keep outside');
+  });
+}
+
 test('binary import preserves source and exact empty/non-text bytes; reveal/open/export use local files', async t => {
   const f = fixture(t), source = path.join(f.root, 'source.bin'), bytes = Buffer.from([0, 255, 1, 128]);
   fs.writeFileSync(source, bytes);

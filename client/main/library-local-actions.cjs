@@ -242,6 +242,7 @@ async function execute(store, index, action, payload) {
     const rows = action === 'emptyTrash' ? index.items.filter(x => x.deletedAt) : [item(index, payload.id, true)];
     if (rows.some(x => !x.deletedAt)) throw error('LOCAL_LIBRARY_CONFLICT', '只能彻底删除回收站中的资料');
     index.garbage.push(...rows.map(x => x._object)); const ids = new Set(rows.map(x => x.id));
+    index.purgeGarbage = [...new Set([...index.purgeGarbage, ...rows.map(x => x._object)])];
     index.items = index.items.filter(x => !ids.has(x.id)); await store.save(index); await store.garbageCollect(index);
     return { ok: true, purged: action === 'emptyTrash' ? rows.length : true };
   }
