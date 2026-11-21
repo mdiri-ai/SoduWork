@@ -97,7 +97,11 @@ async def create_project(body: dict = Body(default_factory=dict),
     if not name:
         raise HTTPException(status_code=400, detail="请填工程名")
     owner = await _project_owner(session, user, str(body.get("ownerUserId") or ""))
-    p = Project(name=name, desc=body.get("desc") or "", org_id=owner.org_id or user.org_id,
+    org_id = owner.org_id or user.org_id
+    if await session.scalar(select(func.count(Project.id)).where(
+            Project.name == name, Project.org_id == org_id)):
+        raise HTTPException(status_code=409, detail="同名项目已经存在")
+    p = Project(name=name, desc=body.get("desc") or "", org_id=org_id,
                 owner_user_id=owner.id, created_by=user.id,
                 group=(body.get("group") or "").strip(), repo_url=(body.get("repoUrl") or "").strip())
     session.add(p); await session.commit(); await session.refresh(p)
