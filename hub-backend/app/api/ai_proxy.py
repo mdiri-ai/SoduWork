@@ -144,11 +144,44 @@ def _err(status: int, msg: str, upstream: str = "") -> JSONResponse:
     return JSONResponse(status_code=status, content=body)
 
 
+def _inject_finish_reason(event: bytes) -> bytes:
+    """Some OpenAI-compatible gateways (e.g. Spark) never set finish_reason.
+
+    A stream without a terminal finish_reason looks truncated to strict
+    OpenAI clients. When an event carries usage without a finish_reason,
+    stamp the standard terminal marker on it.
+    """
+    try:
+        text = event.decode('utf-8')
+    except UnicodeDecodeError:
+        return event
+    changed = False
+    for line in text.split('\n'):
+        if not line.startswith('data:') or line.startswith('data: [DONE]'):
+            continue
+        try:
+            payload = json.loads(line[5:].strip())
+        except Exception:  # noqa: BLE001
+            continue
+        choices = payload.get('choices')
+        if payload.get('usage') is None or not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if isinstance(choice, dict) and choice.get('finish_reason') is None:
+                choice['finish_reason'] = 'stop'
+                changed = True
+        if changed:
+            new_line = 'data: ' + json.dumps(payload, ensure_ascii=False)
+            text = text.replace(line, new_line, 1)
+    return text.encode('utf-8') if changed else event
+
+
 async def _stream_upstream_response(resp, outcome=None):
     """Forward bytes unchanged; never pretend a truncated stream completed."""
     iterator = resp.chunks().__aiter__()
     pending = None
     boundary, tail = True, b""
+    partial = b""
     try:
         while True:
             pending = asyncio.create_task(anext(iterator))
@@ -163,9 +196,15 @@ async def _stream_upstream_response(resp, outcome=None):
             pending = None
             if chunk:
                 tail = (tail + chunk)[-4:]
-                # Never insert a comment into a partially transmitted SSE event.
-                boundary = tail.endswith(b"\n\n") or tail.endswith(b"\r\n\r\n")
-            yield chunk
+                partial += chunk
+                # Only forward complete SSE events so per-event fixes stay intact.
+                end = partial.rfind(b"\n\n")
+                if end >= 0:
+                    complete, partial = partial[:end + 2], partial[end + 2:]
+                    boundary = complete.endswith(b"\n\n") or complete.endswith(b"\r\n\r\n")
+                    yield _inject_finish_reason(complete)
+        if partial:
+            yield _inject_finish_reason(partial)
     except model_errors.UpstreamError as exc:
         if outcome is not None:
             outcome["streamError"] = exc.status
