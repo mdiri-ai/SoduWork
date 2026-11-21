@@ -296,6 +296,12 @@ macOS 桌面进程保留当前用户的系统主目录，以便访问默认钥�
 
 本地服务已停止。重新运行同一个启动文件即可，数据仍在。
 
+### Agent 工作区与相对路径
+
+Agent 运行在自己的实例工作区内。Agent 输出、工件和命令里的相对路径都在该工作区内解析，例如 Windows 的 `%LOCALAPPDATA%\SoduWork\source-service\workspaces\temp\<会话ID>`，macOS/Linux 的 `~/.soduwork/source-service/workspaces/temp/<会话ID>`。会话中写入的路径不是启动器目录，也不是源码检出目录。
+
+用 Runner 卡片上的工作目录和**打开位置**按钮查看会话文件的实际位置。要写到工作区之外（例如源码目录），请使用绝对路径。
+
 ## 按需使用的命令
 
 在源码根目录执行。表格使用 macOS/Linux 的启动脚本；Windows PowerShell 使用 `.\start.cmd`，命令提示符使用 `start.cmd`，参数相同。
