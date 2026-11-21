@@ -21,7 +21,7 @@ import httpx  # noqa: E402
 from sqlalchemy import func, select  # noqa: E402
 from route_test_support import api_routes  # noqa: E402
 
-from app import models  # noqa: E402
+from app import automation_models as am, models  # noqa: E402
 from app.auth import sign_token  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.deps import current_user  # noqa: E402
@@ -158,7 +158,47 @@ def transactional_audit_contract() -> None:
           and row.detail == {"changed": True})
 
 
-def audit_contract() -> None:
+async def approval_audits(client, actor, headers):
+    """Exercise delegated approval transactions and read their audits from a fresh session."""
+    original = "user-security-ordinary"
+    cases = [
+        ("decision", "approve", {"decision": "approve"}),
+        ("decision", "reject", {"decision": "reject"}),
+        ("withdraw", "withdraw", {}),
+        ("transfer", "transfer", {"fromUserId": original, "toUserId": actor}),
+    ]
+    verified = set()
+    for route, action, body in cases:
+        rid = "approval-" + action
+        tid = "task-" + action
+        vid = "version-" + action
+        async with SessionLocal() as session:
+            session.add_all([
+                models.Task(id=tid, title=tid, created_by=actor, owner_user_id=actor),
+                am.ArtifactVersion(id=vid, task_id=tid, kind="requirement", checksum="smoke",
+                    manifest={"title": tid, "description": tid, "acceptanceCriteria": [tid]}),
+                am.ApprovalRequest(id=rid, task_id=tid, artifact_version_id=vid, action="baseline",
+                    policy_snapshot={"approvers": [{"type": "permission", "key": "release.approve"}]}),
+                am.ApprovalAssignment(request_id=rid, user_id=original if route == "transfer" else actor),
+            ])
+            await session.commit()
+        path = "/api/v1/admin/operations/approvals/{request_id}/" + route
+        response = await client.post(path.format(request_id=rid), headers=headers, json={**body, "note": action})
+        async with SessionLocal() as session:
+            rows = (await session.scalars(select(models.AuditLog).where(
+                models.AuditLog.target_type == "approval_request", models.AuditLog.target_id == rid))).all()
+            audited = (response.status_code == 200 and len(rows) == 1
+                       and rows[0].actor_id == actor and rows[0].action == "operations.approval_" + action
+                       and rows[0].detail == {"taskId": tid, "versionId": vid, "requestId": rid,
+                           "action": "baseline", "note": action,
+                           **(body if route == "transfer" else {})})
+        check(f"approval {action} commits one attributed audit for the selected request", audited, response.text)
+        if audited:
+            verified.add(("POST", path))
+    return verified
+
+
+def audit_contract(verified) -> None:
     missing = []
     seen_exemptions = set()
     mutation_count = 0
@@ -219,6 +259,8 @@ def audit_contract() -> None:
             continue
         for method in methods:
             key = (method, route.path)
+            if key in verified:
+                continue
             if key in AUDIT_EXEMPT:
                 seen_exemptions.add(key)
             else:
@@ -235,7 +277,6 @@ def audit_contract() -> None:
 async def main() -> None:
     permission_contract()
     transactional_audit_contract()
-    audit_contract()
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
 
@@ -298,6 +339,7 @@ async def main() -> None:
     async with httpx.AsyncClient(
         transport=transport, base_url="http://soduwork.test"
     ) as client:
+        audit_contract(await approval_audits(client, super_user.id, super_headers))
         denied = await client.post(
             "/api/v1/admin/orgs", headers=ordinary_headers,
             json={"name": "越权新部门", "parentId": "org-security-a"})

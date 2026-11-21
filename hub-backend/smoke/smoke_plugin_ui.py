@@ -101,7 +101,7 @@ ok("plugin-secret-section" in screen and "secretRefs" in screen
    and "api.secretReferences()" in screen and "runtimeSecrets" in read(BACK / "services" / "ai_local.py"),
    "plugin bindings must map logical secrets to runner-only references")
 ok("node.diagnosis" in screen
-   and "api.retryRunGate(run.id, node.key, { resumeRework })" in run_dialogs
+   and re.search(r"api\.retryRunGate\(run\.id, node\.key, \{\s*sourceNodeId: node\.id, resumeRework\b", run_dialogs)
    and "diagnosis.retryable" in run_dialogs
    and "node-failure" in style + dialogs_style,
    "run drawer must explain failures and retry only the selected latest gate")

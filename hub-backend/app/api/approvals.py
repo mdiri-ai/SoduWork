@@ -403,6 +403,11 @@ async def decide(request_id: str, body: dict = Body(default_factory=dict),
                  client: Client = Depends(current_client),
                  session: AsyncSession = Depends(get_session)):
     user = await _actor(session, client)
+    return await decide_as_user(session, user, request_id, body, client.id)
+
+
+async def decide_as_user(session: AsyncSession, user: User, request_id: str,
+                         body: dict, client_id: str = ""):
     request = await session.get(am.ApprovalRequest, request_id)
     if request is None:
         raise HTTPException(status_code=404, detail="审批项不存在")
@@ -421,7 +426,7 @@ async def decide(request_id: str, body: dict = Body(default_factory=dict),
     out = await release_control.decide(
         session, task, user, action=request.action, decision=decision, note=rework_note,
         artifact_version_id=request.artifact_version_id,
-        environment_id=request.environment_id, commit=not deploy_vote,
+        environment_id=request.environment_id, commit=not deploy_vote, request_id=request.id,
     )
     if not out.get("ok"):
         raise _decision_error(out)
@@ -482,7 +487,7 @@ async def decide(request_id: str, body: dict = Body(default_factory=dict),
             await receipts.notify_on_close(session, task, task.owner_client_id)
 
     owner = await session.get(Client, task.owner_client_id) if task.owner_client_id else None
-    if owner and task_access.is_owner(task, owner) and owner.id != client.id:
+    if owner and task_access.is_owner(task, owner) and owner.id != client_id:
         verb = "批准" if decision == "approve" else "退回"
         if rework and rework.get("mode") == "backlog":
             suffix = "，已退回待开始，回需求池等人工重新安排"

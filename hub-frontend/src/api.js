@@ -179,6 +179,10 @@ export const api = {
   me: () => call('GET', '/admin/me'),
   authProviders: () => call('GET', '/auth/providers'),
   operationsOverview: () => call('GET', '/admin/operations/overview'),
+  operationsApprovals: (limit, offset) => call('GET', '/admin/operations/approvals?' + new URLSearchParams({ limit, offset })),
+  approvalTransferOptions: (id, fromUserId) => call('GET', '/admin/operations/approvals/' + encodeURIComponent(id)
+    + '/transfer-options?' + new URLSearchParams({ fromUserId })),
+  updateOperationsApproval: (id, action, body) => call('POST', '/admin/operations/approvals/' + encodeURIComponent(id) + '/' + action, body),
   operationsInsights: () => call('GET', '/admin/operations/insights'),
   identityProviders: () => call('GET', '/admin/identity-providers'),
   createIdentityProvider: (b) => call('POST', '/admin/identity-providers', b),
@@ -235,6 +239,7 @@ export const api = {
 
   // Task overview and execution network.
   tasks: (query = '') => call('GET', '/admin/tasks' + query),
+  taskDetail: (id) => call('GET', '/admin/tasks/' + encodeURIComponent(id)),
   clients: () => call('GET', '/admin/clients'),
   clientsPage: (p = {}) => call('GET', '/admin/clients?' + new URLSearchParams({
     paged: 'true', page: p.page || 1, pageSize: p.pageSize || 25,
@@ -399,7 +404,8 @@ export const api = {
   // Workflow retries retain server approval and permission checks.
   retryRunGate: (runId, nodeKey = '', options = {}) => call(
     'POST', '/admin/plugin-runs/' + encodeURIComponent(runId) + '/retry-gate',
-    { nodeKey, resumeRework: !!options.resumeRework }),
+    { nodeKey, resumeRework: !!options.resumeRework, sourceNodeId: options.sourceNodeId,
+      ...(options.execution && { execution: options.execution }) }),
   /* Separate provider credentials from models; secrets are write-only. */
   modelCatalog: () => call('GET', '/admin/model-catalog'),
   testModelProviderConnection: (body) => call('POST', '/admin/model-providers/test-connection', body),

@@ -240,6 +240,7 @@ RELEASE_SMOKES = tuple(sorted((
     "smoke/smoke_office_plugins.py",
     "smoke/smoke_officecli_detection.py",
     "smoke/smoke_operations.py",
+    "test_operations_approvals.py",
     "smoke/smoke_operations_insights.py",
     "smoke/smoke_personal_automation.py",
     "smoke/smoke_plugin_admin_guard.py",

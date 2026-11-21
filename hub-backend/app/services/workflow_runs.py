@@ -78,7 +78,7 @@ async def run_api(session: AsyncSession, run: am.WorkflowRun) -> dict:
                 for key, item in definitions.items()]
     nodes = list((await session.execute(select(am.NodeRun).where(
         am.NodeRun.run_id == run.id
-    ).order_by(am.NodeRun.created_at))).scalars().all())
+    ).order_by(am.NodeRun.created_at, am.NodeRun.attempt, am.NodeRun.id))).scalars().all())
     latest_ids = {}
     for node in nodes:
         latest_ids[node.node_key] = node.id
@@ -247,7 +247,7 @@ async def _recover_quality_dependencies(
 async def _retry_failed_gate(session: AsyncSession, run: am.WorkflowRun, actor: str,
                              allowed: set[str], node_key: str = "",
                              execution: dict | None = None,
-                             resume_rework: bool = False) -> am.NodeRun:
+                             resume_rework: bool = False, source_node_id: str = "") -> am.NodeRun:
     """Retry a technical gate without modifying previous evidence. Optional agentKind/model
     overrides apply only to that AI node and persist for its later retries, leaving other nodes
     unchanged.
@@ -281,6 +281,8 @@ async def _retry_failed_gate(session: AsyncSession, run: am.WorkflowRun, actor: 
     if not failed:
         raise ValueError("指定的失败关卡不存在，或不允许从这里重试")
     source = max(failed, key=lambda row: (row.attempt, row.created_at))
+    if source_node_id and source.id != source_node_id:
+        raise ValueError("本关已有新的执行记录，请刷新后查看最新结果")
     version = await session.get(am.PluginVersion, run.plugin_version_id)
     definition = next((node for node in dict(version.workflow or {}).get("nodes") or []
                        if node.get("key") == source.node_key
@@ -410,6 +412,9 @@ async def _retry_failed_gate(session: AsyncSession, run: am.WorkflowRun, actor: 
             raise ValueError("只有 AI 执行的关卡可以换底座重跑")
         context = dict(run.context or {})
         overrides = dict(context.get("executionOverrides") or {})
+        if manual_route.keys() == {"model"}:
+            # Changing only the model retains an earlier manual Runner/Agent selection.
+            manual_route = {**_execution_layer(overrides.get(source.node_key)), **manual_route}
         overrides[source.node_key] = manual_route
         context["executionOverrides"] = overrides
         run.context = context
@@ -479,10 +484,10 @@ RETRYABLE_GATE_TYPES = workflow_diagnostics.RETRYABLE_TYPES
 async def retry_failed_gate(
         session: AsyncSession, run: am.WorkflowRun, actor: str = "system",
         node_key: str = "", execution: dict | None = None,
-        resume_rework: bool = False) -> am.NodeRun:
+        resume_rework: bool = False, source_node_id: str = "") -> am.NodeRun:
     """Retry the failed technical gate in place; never replay audited ancestors."""
     return await _retry_failed_gate(session, run, actor, RETRYABLE_GATE_TYPES,
-                                    node_key, execution, resume_rework)
+                                    node_key, execution, resume_rework, source_node_id)
 
 
 async def redispatch_running_gate(

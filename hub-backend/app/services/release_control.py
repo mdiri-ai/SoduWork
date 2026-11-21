@@ -536,7 +536,7 @@ async def can_decide(session: AsyncSession, task: models.Task, request: am.Appro
 
 async def decide(session: AsyncSession, task: models.Task, actor, *, action: str,
                  decision: str, note: str = "", artifact_version_id: str = "",
-                 environment_id: str = "", commit: bool = True) -> dict:
+                 environment_id: str = "", commit: bool = True, request_id: str = "") -> dict:
     """Decide on the current version. Rejection takes effect immediately; approval requires the
     configured countersignature count. The approval inbox defers the deploy vote's commit
     so the final vote and its deployment runs are written in one transaction.
@@ -568,12 +568,19 @@ async def decide(session: AsyncSession, task: models.Task, actor, *, action: str
             detail = str((problems[0] if problems else {}).get("detail") or
                          "当前主成果尚未通过结构校验")
             return {"ok": False, "reason": "invalid_artifact", "detail": detail}
-    req = (await session.execute(select(am.ApprovalRequest).where(
+    query = select(am.ApprovalRequest).where(
         am.ApprovalRequest.artifact_version_id == artifact.id,
         am.ApprovalRequest.action == action,
         am.ApprovalRequest.environment_id == (environment_id or "")
-    ).order_by(am.ApprovalRequest.created_at.desc()).limit(1)
+    ).order_by(am.ApprovalRequest.created_at.desc())
+    if request_id:
+        # SQLite's creation timestamps have one-second resolution. Prefer the
+        # selected request among ties, then independently reject resolved gates.
+        query = query.order_by((am.ApprovalRequest.id == request_id).desc())
+    req = (await session.execute(query.limit(1)
         .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    if request_id and (req is None or req.id != request_id):
+        return {"ok": False, "reason": "stale"}
     if req is None:
         req = await ensure_request(session, task, artifact, action, environment_id)
     if req.status != "pending":

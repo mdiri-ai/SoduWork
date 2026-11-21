@@ -12,6 +12,12 @@ The model catalog starts with a compact service/model and live-load summary. Exp
 
 Service cards adapt from one to four columns according to the available content width. View opens model details in a dialog without resizing or rearranging the service grid. Add, discover and configure actions remain visible; enable/disable and deletion are in the More popover, with the existing deletion confirmation retained.
 
+## Handling approvals and failed runs
+
+In Operations, open the pending human review count to see the requests in your scope. The queue shows how long each request has waited and, when your role allows, its requirement, version and remaining reviewers. A request is marked overdue at its deadline or after 24 hours if it has no deadline. A reviewer with approval permission can vote or transfer an eligible assignment. Request and requirement creators with approval permission can withdraw pending requests. Super administrators can manage withdrawals and transfers. Delivery acceptance stays with the requirement creator.
+
+Open a recent failure to inspect its requirement or the failed node's logs. After correcting the cause, operators with run permission can retry an eligible node. For AI nodes that support model selection, the operator can select another available model for that retry. The original attempt stays in the run history.
+
 ## Reviewing Skill access
 
 In the capability catalog, bundled Skills show a summary in the interface language. Expand a summary to read the author's original description. Use the switch to stage a policy change. **Save access policy** lists the Skills to add and remove. It estimates the impact from active devices' Skill selections and their owners' departments. A device matching several changes counts once. Confirm to apply the policy on the next execution, or cancel to return to the draft.

@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am
 from ..db import get_session
-from ..deps import require_any_perm, require_perm
+from ..deps import has_perm, require_any_perm, require_perm
 from ..models import Task, User
 from ..services import (audit, plugin_audience, plugin_evaluations,
                         plugin_governance, plugin_marketplace, plugin_mcp_gateway,
@@ -753,8 +753,37 @@ async def run_detail(
     run = await session.get(am.WorkflowRun, run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="插件运行不存在")
-    await task_or_404(session, user, run.task_id)
-    return await workflow_engine.run_api(session, run)
+    task = await task_or_404(session, user, run.task_id)
+    detail = await workflow_engine.run_api(session, run)
+    if has_perm(user, "plugin.run"):
+        await _add_retry_models(session, run, task, detail)
+    return detail
+
+
+async def _add_retry_models(session, run, task, detail):
+    from ..services import agent_execution_options, model_catalog, task_assignment
+    nodes = [node for node in detail["nodes"] if node["type"] in ("ai", "ai_review")
+             and node["diagnosis"].get("actionKey") == "retry-gate"]
+    if not nodes:
+        return
+    version = await session.get(am.PluginVersion, run.plugin_version_id)
+    if not version:
+        return
+    definitions = {node["key"]: node for node in (version.workflow or {}).get("nodes", [])}
+    binding = await session.get(am.PluginBinding, run.binding_id) if run.binding_id else None
+    project = await task_assignment.project_route(session, task.project_id)
+    choices = None
+    for node in nodes:
+        key = node["key"]
+        if key not in definitions:
+            continue
+        config = task_assignment.apply_project_agent_default(binding.config if binding else {}, project, key)
+        route = workflow_engine.execution_route(run.context, config, definitions[key].get("config"), key)
+        if route["agentKind"] in agent_execution_options.GATEWAY_MODEL_KINDS:
+            if choices is None:
+                catalog = await model_catalog.choices(session)
+                choices = [name for name in [catalog["default"], *catalog["list"]] if name]
+            node["retryModels"] = [name for name in choices if name != route["model"]]
 
 
 @run_router.post("/plugin-runs/{run_id}/cancel")
@@ -820,6 +849,7 @@ async def admin_retry_gate(
             session, run, actor=user.display_name or user.username,
             node_key=str(body.get("nodeKey") or ""),
             execution=dict(body.get("execution") or {}) or None,
+            source_node_id=str(body.get("sourceNodeId") or ""),
             resume_rework=bool(body.get("resumeRework")))
     except ValueError as e:
         raise _conflict(e) from e
