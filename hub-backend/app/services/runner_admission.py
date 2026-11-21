@@ -31,6 +31,21 @@ MAX_CONCURRENCY = 20
 _GIB = 1024 ** 3
 
 
+def _env_number(name: str, default: float) -> float:
+    """Thresholds are operational policy, so let a busy workstation tune them."""
+    try:
+        return float(str(os.environ.get(name) or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+CRITICAL_CPU_PERCENT = _env_number("SODUWORK_ADMISSION_CRITICAL_CPU", 95.0)
+CRITICAL_MEMORY_PERCENT = _env_number("SODUWORK_ADMISSION_CRITICAL_MEMORY", 92.0)
+CRITICAL_AVAILABLE_BYTES = int(
+    _env_number("SODUWORK_ADMISSION_CRITICAL_AVAILABLE_MB", 768.0) * 1024 * 1024)
+
+
+
 def standard_state(value) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"queued"}:
@@ -80,6 +95,7 @@ class ResourceSnapshot:
     limit: int = 1
     pressure: str = "normal"
     can_start: bool = True
+    reason: str = ""
     sampled_at: float = field(default_factory=time.time)
 
     def public(self) -> dict:
@@ -90,6 +106,7 @@ class ResourceSnapshot:
             "cpuCount": max(1, int(self.cpu_count)),
             "adaptiveLimit": max(MIN_CONCURRENCY, min(MAX_CONCURRENCY, int(self.limit))),
             "resourcePressure": self.pressure,
+            "resourcePressureReason": self.reason,
             "resourceStartAllowed": bool(self.can_start),
             "resourceSampledAt": int(self.sampled_at),
         }
@@ -207,16 +224,20 @@ class AdaptiveResourceBudget:
             memory_slots = (max(1, min(MAX_CONCURRENCY, available // int(1.25 * _GIB)))
                             if available else MAX_CONCURRENCY)
             limit = max(1, min(self.ceiling, cpu_slots, memory_slots))
-            pressure, can_start = "normal", True
-            if cpu >= 95.0 or memory >= 92.0 or (available and available < int(0.75 * _GIB)):
+            pressure, can_start, reason = "normal", True, ""
+            if (cpu >= CRITICAL_CPU_PERCENT or memory >= CRITICAL_MEMORY_PERCENT or
+                    (available and available < CRITICAL_AVAILABLE_BYTES)):
                 pressure, can_start, limit = "critical", False, 1
+                reason = ("cpu" if cpu >= CRITICAL_CPU_PERCENT else
+                          "memory-percent" if memory >= CRITICAL_MEMORY_PERCENT else
+                          "memory-available")
             elif cpu >= 82.0 or memory >= 84.0 or (available and available < int(1.5 * _GIB)):
-                pressure, limit = "busy", max(1, limit // 2)
+                pressure, limit, reason = "busy", max(1, limit // 2), "heavy"
             elif cpu >= 70.0 or memory >= 76.0:
-                pressure, limit = "busy", max(1, (limit * 3) // 4)
+                pressure, limit, reason = "busy", max(1, (limit * 3) // 4), "elevated"
             self._snapshot = ResourceSnapshot(
                 cpu_percent=cpu, memory_percent=memory, memory_available=available,
-                cpu_count=cpu_count, limit=limit, pressure=pressure,
+                cpu_count=cpu_count, limit=limit, pressure=pressure, reason=reason,
                 can_start=can_start, sampled_at=time.time())
             self._sampled_mono = now
             return self._snapshot

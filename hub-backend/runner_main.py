@@ -889,6 +889,29 @@ class Runner:
                 str(result.get("error") or "Agent launch failed"), result)
         self._admission_wake.set()
 
+    def _explain_admission_stall(self, resource, active: int) -> None:
+        """Keep a queued-but-unclaimable backlog explainable in the local log.
+
+        ``claim_next`` returns ``None`` for four different reasons (resource
+        critical, execution limit reached, outbox blocked, session serialized).
+        Without this line the Runner log shows a received instruction and then
+        nothing, which is indistinguishable from a hung process.
+        """
+        queued = int(self._admission.metrics().get("queueDepth") or 0)
+        if not queued:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_admission_stall_logged_at", 0.0) < 15.0:
+            return
+        self._admission_stall_logged_at = now
+        log.warning(
+            "RUNNER_ADMISSION_BLOCKED queueDepth=%s active=%s limit=%s canStart=%s "
+            "cpu=%.1f%% memory=%.1f%% memoryAvailableMB=%s pressure=%s outboxBlocked=%s",
+            queued, active, resource.limit, bool(resource.can_start),
+            resource.cpu_percent, resource.memory_percent,
+            int(max(0, resource.memory_available) // (1024 * 1024)),
+            resource.pressure, bool(getattr(self, "_outbox_blocked", False)))
+
     async def _admission_loop(self) -> None:
         from app.services import ai_local
         await asyncio.to_thread(ai_local.reclaim)
@@ -916,6 +939,7 @@ class Runner:
                     resource.can_start, blocked_refs=running_refs,
                     hub_blocked=getattr(self, "_outbox_blocked", False), local_refs=local_refs)
                 if item is None:
+                    self._explain_admission_stall(resource, active)
                     break
                 task = asyncio.create_task(self._run_admitted(item))
                 self._admission_workers.add(task)
