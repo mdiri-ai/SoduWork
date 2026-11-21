@@ -387,8 +387,16 @@ function ProjectDetail({ pid, clients, owners, projects, onBack, onChanged }) {
   </div>
 }
 
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ''))
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : ''
+  } catch { return '' }
+}
+
 function ProjectRow({ project, onOpen }) {
   const uiLocale = useLocale();
+  const repoHref = safeHttpUrl(project.repoUrl);
   const pct = project.total ? Math.round(project.done / project.total * 100) : 0; const state = !project.total ? tx("尚未开始") : pct === 100 ? tx("已完成") : project.done ? tx("推进中") : tx("待启动")
   return <article className="pg-project-row">
     <span className={'pg-project-avatar state-' + (pct === 100 ? 'done' : project.done ? 'active' : 'idle')}><Icon name="box" /></span>
@@ -398,7 +406,7 @@ function ProjectRow({ project, onOpen }) {
     <span className={'pg-project-state ' + (pct === 100 ? 'done' : '')}><i />{state}</span>
     <div className="pg-project-actions admin-row-actions">
       <button type="button" className="admin-text-action" onClick={onOpen}>{tx("查看详情")}</button>
-      {project.repoUrl && <a className="admin-text-action" href={project.repoUrl} target="_blank" rel="noreferrer" title={tx("在新标签页打开主代码仓库")}>{tx("打开仓库")}</a>}
+      {repoHref && <a className="admin-text-action" href={repoHref} target="_blank" rel="noreferrer" title={tx("在新标签页打开主代码仓库")}>{tx("打开仓库")}</a>}
     </div>
   </article>
 }
