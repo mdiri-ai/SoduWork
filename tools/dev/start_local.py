@@ -394,7 +394,12 @@ def launch_desktop(state: Path, client: Path, env: dict, base: str, output) -> s
     """The source session owns a separate profile and never rewrites an installed client."""
     profile = desktop_profile(state)
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-    (profile / 'hub-endpoint.json').write_text(json.dumps({'hub': base}), encoding='utf-8')
+    # A fresh profile starts on the local Hub. An existing saved selection
+    # (committed at login) belongs to the user and survives restarts instead
+    # of being reset to the base on every desktop launch.
+    endpoint = profile / 'hub-endpoint.json'
+    if not endpoint.exists():
+        endpoint.write_text(json.dumps({'hub': base}), encoding='utf-8')
     config = profile / 'chat-config.json'
     if not config.exists():
         work = state / 'workspaces'

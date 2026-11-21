@@ -1299,6 +1299,27 @@ class LocalStartupTests(unittest.TestCase):
                                  'http://127.0.0.1:18990', io.BytesIO())
         self.assertEqual(config.read_text(), '{"workDir":"chosen-workspace","other":"preserved"}')
 
+    def test_desktop_launch_preserves_a_user_selected_server(self):
+        # The saved Hub selection is committed at login; a restart must keep it
+        # instead of resetting the endpoint to the started local service.
+        profile = self.state / 'desktop-profile'
+        profile.mkdir(parents=True)
+        endpoint = profile / 'hub-endpoint.json'
+        endpoint.write_text('{"hub":"http://198.51.100.7:18989"}', encoding='utf-8')
+        with patch.object(start.subprocess, 'Popen'):
+            start.launch_desktop(self.state, self.state / 'application/client', {},
+                                 'http://127.0.0.1:18990', io.BytesIO())
+        self.assertEqual(endpoint.read_text(encoding='utf-8'),
+                         '{"hub":"http://198.51.100.7:18989"}')
+
+    def test_desktop_launch_pins_a_fresh_profile_to_the_started_service(self):
+        with patch.object(start.subprocess, 'Popen'):
+            start.launch_desktop(self.state, self.state / 'application/client', {},
+                                 'http://127.0.0.1:18990', io.BytesIO())
+        import json
+        self.assertEqual(json.loads((self.state / 'desktop-profile/hub-endpoint.json').read_text()),
+                         {'hub': 'http://127.0.0.1:18990'})
+
     def test_failed_desktop_download_is_not_cached_as_ready(self):
         client = self.state / 'application/client'
         client.mkdir(parents=True)
