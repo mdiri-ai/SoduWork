@@ -6,6 +6,7 @@ const toolDetail = require('./tool-detail');
 const { selectTools } = require('./snapshot-window');
 const agentSource = require('../conversation/agent-source.cjs');
 const turnMetrics = require('./turn-metrics');
+const usageValues = require('../agent-runtime/usage-values');
 /* Project blocks in contentIndex order and place tools after their owning messages. */
 function _snapshotCache(state) {
   if (!state._snapshotCache) {
@@ -35,6 +36,141 @@ function accountingReceipts(state, cache) {
       ...(m.usageLocalOnly === true ? { localOnly: true } : {}),
       ...(m.quotaUsageToken ? { quotaUsageToken: m.quotaUsageToken } : {}) })));
   return cache.receipts;
+}
+
+/*
+ * A finished task quotes one token number in two places: the turn footer and the Hub
+ * ledger. Both must read the same receipts through the same rules, so receipts the
+ * reporter would refuse to bill (device-only models, non-reportable calls) are dropped
+ * here as well instead of quietly inflating the number a user is asked to trust.
+ */
+function billableReceipt(receipt) {
+  if (!receipt) return false;
+  if (receipt.localOnly === true || receipt.reportable === false) return false;
+  return !(typeof receipt.model === 'string' && receipt.model.trim().startsWith('local:'));
+}
+
+function billableMessage(message) {
+  return Boolean(message) && message.role === 'assistant' && message.done === true &&
+    Boolean(message.usage) && message.usageLocalOnly !== true &&
+    !String(message.usageModel || '').trim().startsWith('local:');
+}
+
+/* Every counter below goes through usage-values so a turn total and the session total
+   cannot drift apart on cache or reasoning handling. */
+function receiptTokens(receipts) {
+  const total = usageValues.empty();
+  for (const receipt of receipts) {
+    if (billableReceipt(receipt)) usageValues.add(total, receipt.usage);
+  }
+  return total;
+}
+
+function usageSummary(state, cache) {
+  const receipts = accountingReceipts(state, cache);
+  if (cache.summaryFrom === receipts) return cache.summary;
+  const total = receiptTokens(receipts);
+  let agent = '', model = '', provider = '', latestAt = 0;
+  for (const receipt of receipts) {
+    if (!billableReceipt(receipt)) continue;
+    if (Number(receipt.at) > latestAt) latestAt = Number(receipt.at);
+    if (receipt.agent) agent = String(receipt.agent);
+    if (receipt.model) model = String(receipt.model);
+    if (receipt.provider) provider = String(receipt.provider);
+  }
+  cache.summaryFrom = receipts;
+  cache.summary = Object.freeze({
+    tokens: total.total, input: total.input, output: total.output,
+    requests: total.requests, turns: total.turns, latestAt,
+    agent, model, provider,
+    costMicrousd: total.costMicrousd, costKnown: total.costKnown,
+  });
+  return cache.summary;
+}
+
+/*
+ * A replayed conversation keeps every archived receipt in accountingHistory and starts the
+ * live window after the last restored message, so message indices alone cannot cover older
+ * turns. The archived receipts still carry their own timestamps, so keep a running total
+ * ordered by time and let a turn read the value it had when it ended.
+ */
+function archivedTimeline(receipts) {
+  const ordered = receipts.filter(billableReceipt)
+    .map(receipt => ({ at: Number(receipt.at) || 0, usage: receipt.usage }))
+    .sort((left, right) => left.at - right.at);
+  const timeline = [];
+  let running = 0;
+  for (const row of ordered) {
+    const one = usageValues.empty();
+    usageValues.add(one, row.usage);
+    running += one.total;
+    timeline.push({ at: row.at, total: running });
+  }
+  return timeline;
+}
+
+function archivedTotalAt(timeline, at) {
+  if (!timeline.length) return 0;
+  if (!at) return timeline[timeline.length - 1].total;
+  let low = 0, high = timeline.length - 1, found = 0;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    if (timeline[mid].at <= at) { found = timeline[mid].total; low = mid + 1; }
+    else high = mid - 1;
+  }
+  return found;
+}
+
+function addTurnCumulatives(rows, cumulative, messages) {
+  return rows.map(row => {
+    const index = Number(row.toMessage || -1);
+    const live = cumulative.byIndex.get(index);
+    if (live != null) return { ...row, cumulativeTokens: live };
+    const endedAt = Number(messages?.[index]?.completedAt) || 0;
+    return { ...row, cumulativeTokens: archivedTotalAt(cumulative.timeline, endedAt) };
+  });
+}
+
+function injectTurnCumulatives(bounded, rows, state, cache, visibleAfter) {
+  const cumulative = turnCumulative(state, cache);
+  const withTotals = addTurnCumulatives(rows, cumulative, state.messages);
+  if (bounded) return withTotals;
+  return withTotals.map(row => ({ ...row,
+    fromMessage: visibleAfter[row.fromMessage], toMessage: visibleAfter[row.toMessage] }));
+}
+
+/*
+ * A footer must report what the task had consumed when that turn ended, not the number it
+ * will reach later, or every finished turn would quote today's total. This walks the same
+ * receipts the ledger bills and records the running total at each raw message index, so a
+ * turn can read its own value from its last assistant message.
+ */
+function turnCumulative(state, cache) {
+  const history = Array.isArray(state.accountingHistory) ? state.accountingHistory : [];
+  const from = Number(state.accountingMessageFrom) || 0;
+  if (cache.cumulativeHistory === state.accountingHistory &&
+      cache.cumulativeFrom === from && cache.cumulativeMessages === state.messages &&
+      cache.cumulativeCount === state.messages.length &&
+      cache.cumulativeRevision === state.usageRevision) return cache.cumulative;
+  const timeline = archivedTimeline(history);
+  const byIndex = new Map();
+  let running = timeline.length ? timeline[timeline.length - 1].total : 0;
+  for (let index = from; index < state.messages.length; index += 1) {
+    const message = state.messages[index];
+    if (billableMessage(message)) {
+      const one = usageValues.empty();
+      usageValues.add(one, message.usage);
+      running += one.total;
+    }
+    byIndex.set(index, running);
+  }
+  cache.cumulativeHistory = state.accountingHistory;
+  cache.cumulativeFrom = from;
+  cache.cumulativeMessages = state.messages;
+  cache.cumulativeCount = state.messages.length;
+  cache.cumulativeRevision = state.usageRevision;
+  cache.cumulative = { byIndex, timeline };
+  return cache.cumulative;
 }
 
 function _snapshotAuditKey(state) {
@@ -193,8 +329,7 @@ function snapshot(state, options, { SCOPES, deriveStatus, statusText }) {
     messages,
     // Bounded owners use history.messageIndices. Full snapshots have no raw
     // index map and are also persisted as visible runtime-handoff prefixes.
-    turnMetrics: bounded ? metrics.finish() : metrics.finish().map(row => ({ ...row,
-      fromMessage: visibleAfter[row.fromMessage], toMessage: visibleAfter[row.toMessage] })),
+    turnMetrics: injectTurnCumulatives(bounded, metrics.finish(), state, cache, visibleAfter),
     tools,
     toolPreparations: preparation.list(state).map(row => ({ ...row, after: Math.max(0,
       (bounded ? visibleAfter.get(row.after) : visibleAfter[row.after]) ?? messages.length - 1) })),
@@ -203,6 +338,7 @@ function snapshot(state, options, { SCOPES, deriveStatus, statusText }) {
       at: item.at, scope: item.scope,
     })),
     usage: state.usage,
+    usageSummary: usageSummary(state, cache),
     contextUsage: state.contextUsage,
     pendingUi: state.pendingUi,
     completion: {
