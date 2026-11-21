@@ -10,7 +10,16 @@ from ..models import User
 from ..services import (approval_policies as policy_svc, audit, deployments,
                         environment_service as svc, project_setup, rbac,
                         release_control, runner_hub)
+from ..services.environment_contracts import _KEY as ENV_KEY_RE
 from .input_validation import parse_integer
+
+
+def _assert_environment_key(value) -> None:
+    """Reject a malformed identifier as a request error (422), not a state conflict (409)."""
+    key = str(value or "").strip().lower()
+    if key and not ENV_KEY_RE.fullmatch(key):
+        raise HTTPException(status_code=422,
+                            detail="环境标识只允许小写字母、数字和短横线，且以字母开头")
 
 router = APIRouter(prefix="/api/v1/admin", tags=["environments"])
 
@@ -341,6 +350,7 @@ async def create_environment(
     user: User = Depends(require_perm("environment.manage")),
     session: AsyncSession = Depends(get_session),
 ):
+    _assert_environment_key(body.get("key"))
     try:
         safe = dict(body)
         safe["orgId"] = body.get("orgId") if user.is_super else user.org_id
@@ -375,6 +385,7 @@ async def update_environment(
         raise HTTPException(status_code=403, detail="系统环境只能由超级管理员修改")
     if scope is not None and row.org_id is not None and row.org_id not in scope:
         raise HTTPException(status_code=403, detail="这个环境不在你的组织范围内")
+    _assert_environment_key(body.get("key"))
     try:
         safe = dict(body)
         if "sort" in safe:
