@@ -289,6 +289,15 @@ async def delete_org(
     users = await session.scalar(select(func.count()).select_from(models.User).where(models.User.org_id == oid))
     if users:
         return {"ok": False, "reason": "has_users"}
+    # Referential-integrity guard: positions/scenarios/projects soft-reference the org via
+    # org_id (no ForeignKey); deleting the org would leave dangling references that get
+    # permanently hidden by org-scoped filters (#933).
+    for reason_key, model in (("has_positions", models.Position),
+                              ("has_scenarios", models.WorkScenario),
+                              ("has_projects", models.Project)):
+        refs = await session.scalar(select(func.count()).select_from(model).where(model.org_id == oid))
+        if refs:
+            return {"ok": False, "reason": reason_key}
     deleted = {"id": o.id, "name": o.name}
     await session.delete(o)
     await session.commit()
