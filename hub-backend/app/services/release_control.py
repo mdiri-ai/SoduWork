@@ -735,6 +735,14 @@ async def revoke_approval(session: AsyncSession, task: models.Task, actor,
                           "merge": "reviewed"}.get(req.action)
         if rollback_state:
             artifact.state = rollback_state
+    if req.action == "review":
+        # Mirror resume_after_rejection: a withdrawn acceptance must not leave the task marked
+        # done with a stale reviewed_at, which blocks re-review and contradicts delivery truth.
+        from . import task_status
+        await task_status.mark(session, task, "doing", why="验收批准已撤回，待重新验收")
+        task.reviewed_at = None
+        task.reviewed_by = None
+        task.reviewed_by_name = ""
     # Revoking review also cancels any automatically created merge request still pending.
     if req.action == "review" and artifact is not None:
         merge_req = (await session.execute(select(am.ApprovalRequest).where(
