@@ -417,6 +417,7 @@ function ProviderForm({ initial, onClose, onSaved }) {
     if (!pid) { toast(tx("给这个服务起一个英文标识（如 my-gateway）")); return }
     if (!name.trim()) { toast(tx("填一个给人看的名字")); return }
     if (baseUrl && !/^https?:\/\//.test(baseUrl.trim())) { toast(tx("接口地址要以 http(s):// 开头")); return }
+    if (baseUrl && kind === 'openai-compat' && !/\/v1(\/|$)/.test(baseUrl.trim())) { toast(tx("OpenAI 兼容协议的接口地址应含 /v1（如 https://gateway.example.com/v1）")); return }
     setBusy(true)
     try {
       await api.saveModelProvider(pid, {
