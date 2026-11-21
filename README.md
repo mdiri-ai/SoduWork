@@ -146,6 +146,15 @@ This starts the Hub, the admin console and PostgreSQL on one server. Put an HTTP
 
 </details>
 
+<details>
+<summary><b>Deploy the Hub on Railway</b></summary>
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/soduwork)
+
+The template builds the Hub from `ops/self-host/Dockerfile` in production mode, next to a Railway PostgreSQL database, with HTTPS on a Railway domain and data on a persistent volume. The admin password and the other secrets are generated at deploy time: sign in as `admin` with `ADMIN_PASS` from the SoduWork service's variables, then point the desktop clients at the Railway address.
+
+</details>
+
 Ports, data folders and troubleshooting are in [Run from source](https://dev.soduwork.ai/docs/get-started/run-from-source) and the [FAQ](https://dev.soduwork.ai/docs/get-started/faq).
 
 ## Why SoduWork

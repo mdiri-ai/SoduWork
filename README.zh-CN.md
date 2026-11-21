@@ -146,6 +146,15 @@ python3 ops/self-host/deploy.py credentials   # 查看初始管理员密码
 
 </details>
 
+<details>
+<summary><b>在 Railway 部署 Hub</b></summary>
+
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/soduwork)
+
+模板以生产模式从 `ops/self-host/Dockerfile` 构建 Hub，并附带 Railway PostgreSQL 数据库，自动提供 Railway 域名上的 HTTPS，数据保存在持久化卷中。管理员密码和其他密钥在部署时自动生成：用 `admin` 和 SoduWork 服务变量中的 `ADMIN_PASS` 登录，然后把桌面客户端的 Hub 地址设为该 Railway 地址。
+
+</details>
+
 端口、数据目录和常见问题排查，见[从源码启动](https://dev.soduwork.ai/zh-CN/docs/get-started/run-from-source)和[常见问题](https://dev.soduwork.ai/zh-CN/docs/get-started/faq)。
 
 ## SoduWork 能解决什么？
