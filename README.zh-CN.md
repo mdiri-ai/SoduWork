@@ -129,7 +129,7 @@ cd SoduWork
 | Linux | `SoduWork-<version>-linux.deb` / `.rpm` / `.tar.gz` |
 
 从 [Releases](https://github.com/mdiri-ai/SoduWork/releases) 下载。首次启动时在 **连接** 里填入你的 Hub 地址并登录。macOS 提示"无法验证开发者"时，到 **系统设置 → 隐私与安全性** 点 **仍要打开**。
-
+Windows 双击安装包若弹出 SmartScreen 蓝色警告「Windows 已保护你的电脑」，先点「更多信息」再点「仍要运行」；安装向导默认路径在 C 盘 AppData，可在「浏览」中自行修改。
 </details>
 
 <details>
