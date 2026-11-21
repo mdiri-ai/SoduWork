@@ -235,7 +235,9 @@ async def delete_org(
     except rbac.OrgMutationError as exc:
         raise _org_mutation_error(exc) from exc
     if not r["ok"]:
-        msg = {"has_children": "该部门下还有子部门", "has_users": "该部门下还有用户", "not_found": "部门不存在"}
+        msg = {"has_children": "该部门下还有子部门", "has_users": "该部门下还有用户",
+               "has_positions": "该部门下还有岗位", "has_scenarios": "该部门下还有工作场景",
+               "has_projects": "该部门下还有项目", "not_found": "部门不存在"}
         reason = r["reason"]
         raise HTTPException(status_code=404 if reason == "not_found" else 400, detail=msg.get(reason, "无法删除"),
                             headers={"X-Error-Code": f"org.delete.{reason}"})
