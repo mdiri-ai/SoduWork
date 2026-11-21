@@ -108,6 +108,7 @@ export default function ClientReleases() {
   const [attempts, setAttempts] = useState([])
   const [counts, setCounts] = useState({})
   const [attemptsLoading, setAttemptsLoading] = useState(true)
+  const attemptsRequest = useRef(0)
   const [releaseFilter, setReleaseFilter] = useState('')
   const [stateFilter, setStateFilter] = useState('all')
   const manage = can('client.update')
@@ -130,13 +131,16 @@ export default function ClientReleases() {
   }, [])
 
   const loadAttempts = useCallback(async () => {
+    const request = ++attemptsRequest.current
     setAttemptsLoading(true)
     try {
       const data = await api.clientUpdateAttempts({ releaseId: releaseFilter, state: stateFilter })
+      if (request !== attemptsRequest.current) return
       setAttempts(Array.isArray(data && data.attempts) ? data.attempts : [])
       setCounts((data && data.counts) || {})
     } catch (e) {
       // Update-activity failure must not block the release list.
+      if (request !== attemptsRequest.current) return
       setAttempts([])
       setCounts({})
     }
@@ -144,7 +148,11 @@ export default function ClientReleases() {
   }, [releaseFilter, stateFilter])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => { loadAttempts() }, [loadAttempts])
+  useEffect(() => {
+    loadAttempts()
+    // Discard pending responses after a filter change or unmount.
+    return () => { attemptsRequest.current++ }
+  }, [loadAttempts])
   // Poll active update progress every ten seconds.
   useEffect(() => {
     const timer = setInterval(loadAttempts, 10000)
