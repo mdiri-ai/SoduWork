@@ -117,8 +117,17 @@ def initialize(state: Path, username: str) -> dict:
 
 
 @contextmanager
-def exclusive(state: Path):
+def exclusive(state: Path, *, desktop: bool = False):
     """OS-held lock is released on Ctrl+C, errors, or a killed launcher."""
+    message = "This SoduWork data directory is already running. "
+    if desktop:
+        command = r".\start.cmd --desktop" if os.name == "nt" else "sh start.sh --desktop"
+        message += (f"桌面端须在启动时选择。在原启动终端按 Ctrl+C，等待服务停止，然后用 {command} 重启。"
+                    "沿用原来的数据目录、监听地址和端口。\n"
+                    "Desktop mode is selected at startup. Press Ctrl+C in the original launcher terminal, "
+                    f"wait for shutdown, then run {command} with the same --data-dir, --host and --port settings.")
+    else:
+        message += "Use its existing window."
     handle = (state / "service.lock").open("a+b")
     locked = False
     try:
@@ -132,13 +141,13 @@ def exclusive(state: Path):
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError as exc:
-                raise StartupError("This SoduWork data directory is already running. Use its existing window.") from exc
+                raise StartupError(message) from exc
         else:
             import fcntl
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError as exc:
-                raise StartupError("This SoduWork data directory is already running. Use its existing window.") from exc
+                raise StartupError(message) from exc
         locked = True
         yield
     finally:
@@ -471,7 +480,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--desktop", action="store_true", help="Also install and open the desktop client with an isolated profile")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="Check prerequisites without installing or changing files")
+    mode.add_argument("--check", action="store_true", help="Check prerequisites and HTTP port availability without installing or changing files")
     mode.add_argument("--prepare-only", action="store_true", help="Install dependencies and build the UI, without starting a service or asking for a password")
     parser.add_argument("--password-stdin", action="store_true", help="Read the first administrator password from stdin, never arguments or a file")
     args = parser.parse_args(argv)
@@ -490,6 +499,8 @@ def main(argv=None) -> int:
             profile = desktop_profile(args.data_dir.expanduser().resolve()) if args.desktop else None
             dependency_report(desktop=args.desktop)
             check_windows_source_paths(args.data_dir.expanduser(), source_copy_targets(), probe=False)
+            assert_available(args.host, args.port)
+            print(f"Port {args.port} is available on {args.host}.")
             if profile is not None:
                 print(f'Desktop profile: {profile}')
             return 0
@@ -499,7 +510,7 @@ def main(argv=None) -> int:
         if state.is_relative_to(ROOT) or state in ROOT.parents or state == Path.home():
             raise StartupError("Use a dedicated data directory outside the source checkout, not your home or repository root.")
         config = initialize(state, args.admin_user.strip())
-        with exclusive(state):
+        with exclusive(state, desktop=args.desktop):
             print(f"数据目录 / Data directory: {state}\n详细日志 / Detailed log: {state / 'startup.log'}\n"
                   "首次启动需要联网下载依赖，可能需要数分钟。已完成的步骤会复用，请勿重复启动。\n"
                   "First setup downloads dependencies and can take several minutes. Completed steps are reused.", flush=True)

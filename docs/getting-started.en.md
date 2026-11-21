@@ -92,7 +92,7 @@ Some older records identify an account but lack verifiable information about the
 
 - Use the same launcher next time and sign in with the same account. Data and model settings are retained.
 - Press **Ctrl+C** in the startup terminal and wait for shutdown. Closing the desktop window may only minimize it to the tray; choose Quit from the tray to exit the application.
-- Do not launch a second copy. If an instance is already running, use its existing terminal and page.
+- If you started the browser console and later need the desktop client, finish any running tasks, press **Ctrl+C** in the original launcher terminal and wait for shutdown. Then run `.\start.cmd --desktop` in Windows PowerShell or `sh start.sh --desktop` on macOS/Linux. Reuse any custom `--data-dir`, `--host` and `--port` values from the original command.
 - Before updating source, stop the service and back up the entire data directory and any separate desktop profile. Then update the source and run the same launcher. Do not edit the managed application copy inside the data directory.
 
 ## Troubleshooting
@@ -113,7 +113,7 @@ To check prerequisites without installing anything:
 .\start.cmd --check --desktop
 ```
 
-`--check` is read-only: it reports prerequisites and path risks without creating test files. Passing it does not guarantee that every installation step will succeed. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+`--check` reports prerequisites, path risks and whether the requested `--host` and `--port` can be bound. It releases the port immediately and creates no probe files. The launcher checks the port again at startup. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
 
 Path diagnostics use Chinese and English. Redirected output keeps its current encoding; characters it cannot represent are escaped so they do not interrupt startup, while the English guidance remains readable.
 

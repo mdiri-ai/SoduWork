@@ -112,7 +112,7 @@ class LocalStartupTests(unittest.TestCase):
         with patch.object(sys, 'platform', 'linux'), \
                 patch.dict(os.environ, {'DISPLAY': '', 'WAYLAND_DISPLAY': ''}), \
                 patch.object(os, 'geteuid', return_value=0, create=True), \
-                patch.object(start, 'dependency_report') as report, \
+                patch.object(start, 'assert_available'), patch.object(start, 'dependency_report') as report, \
                 patch.object(start, 'initialize') as initialize:
             self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
         report.assert_called_once_with(desktop=False)
@@ -811,7 +811,7 @@ class LocalStartupTests(unittest.TestCase):
         state = home / 'Library/Application Support/SoduWork/custom-service'
         with patch.object(Path, 'home', return_value=home), patch.object(sys, 'platform', 'darwin'), \
                 patch.object(start, 'dependency_report'), patch.object(start, 'check_desktop_session'), \
-                patch.object(start, 'initialize') as initialize, \
+                patch.object(start, 'assert_available'), patch.object(start, 'initialize') as initialize, \
                 patch.object(start, 'prepare') as prepare, patch.object(start, 'serve') as serve, \
                 redirect_stdout(io.StringIO()) as output:
             canonical = start.desktop_profile(state)
@@ -1023,6 +1023,40 @@ class LocalStartupTests(unittest.TestCase):
         self.assertNotIn('Disk full', str(failure.exception))
         self.assertNotIn('network/proxy', str(failure.exception))
 
+    def test_check_rejects_busy_port_and_releases_successful_probe(self):
+        host = '127.0.0.1'
+        with patch.object(start, 'dependency_report'), patch.object(start, 'check_source_checkout'), \
+                patch.object(start, 'initialize') as initialize, patch.object(start, 'serve') as serve:
+            with socket.socket() as listener:
+                listener.bind((host, 0))
+                listener.listen()
+                port = listener.getsockname()[1]
+                args = ['--check', '--host', host, '--port', str(port), '--data-dir', str(self.state)]
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(start.main(args), 1)
+                self.assertIn(f'Port {port} is already in use', errors.getvalue())
+                self.assertIn('--port', errors.getvalue())
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(start.main(args), 0)
+            self.assertIn(str(port), output.getvalue())
+            with socket.socket() as next_service:
+                next_service.bind((host, port))
+            initialize.assert_not_called()
+            serve.assert_not_called()
+            self.assertFalse(self.state.exists())
+
+    def test_check_reports_requested_host_bind_error(self):
+        with patch.object(start, 'dependency_report'), patch.object(start, 'check_source_checkout'), \
+                patch.object(start.socket, 'socket') as factory, redirect_stderr(io.StringIO()) as errors:
+            probe = factory.return_value.__enter__.return_value
+            probe.bind.side_effect = socket.gaierror(socket.EAI_NONAME, 'unknown host')
+            self.assertEqual(start.main(['--check', '--host', 'invalid.example', '--port', '18993',
+                                         '--data-dir', str(self.state)]), 1)
+        probe.bind.assert_called_once_with(('invalid.example', 18993))
+        self.assertIn('Cannot bind to invalid.example:18993', errors.getvalue())
+        self.assertNotIn('already in use', errors.getvalue())
+        self.assertFalse(self.state.exists())
+
     def test_busy_port_is_left_running(self):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
@@ -1129,9 +1163,10 @@ class LocalStartupTests(unittest.TestCase):
         start.assert_available("127.0.0.1", port)
 
     def test_check_is_read_only_even_for_a_new_data_directory(self):
-        with patch.dict(os.environ, {'DISPLAY': ':fixture'}), \
+        with patch.dict(os.environ, {'DISPLAY': ':fixture'}), patch.object(start, 'assert_available') as probe, \
                 patch.object(start, 'dependency_report') as report, patch.object(start, 'initialize') as initialize:
             self.assertEqual(start.main(['--check', '--desktop', '--data-dir', str(self.state)]), 0)
+        probe.assert_called_once_with('127.0.0.1', start.DEFAULT_PORT)
         report.assert_called_once_with(desktop=True)
         initialize.assert_not_called()
         self.assertFalse(self.state.exists())
@@ -1679,6 +1714,27 @@ class LocalStartupTests(unittest.TestCase):
             start.initialize(self.state, "admin")
         self.assertEqual(path.read_text(), "{")
 
+    def test_desktop_lock_conflict_explains_restart_in_original_terminal(self):
+        start.initialize(self.state, 'owner')
+        args = ['--data-dir', str(self.state)]
+        with start.exclusive(self.state), patch.object(start, 'check_source_checkout'), \
+                patch.object(start, 'check_dependencies'), patch.object(start, 'check_desktop_session'), \
+                patch.object(start, 'serve') as serve, patch.object(start, 'prepare') as prepare:
+            for options in (['--desktop'], ['--prepare-only', '--desktop'], []):
+                with self.subTest(options=options), redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(start.main(args + options), 1)
+                    message = errors.getvalue()
+                    self.assertIn('already running', message)
+                    if '--desktop' in options:
+                        for hint in ('Ctrl+C', '--desktop', '--data-dir', '--port'):
+                            self.assertIn(hint, message)
+                    else:
+                        self.assertIn('Use its existing window', message)
+            serve.assert_not_called()
+            prepare.assert_not_called()
+        with start.exclusive(self.state):
+            self.assertTrue((self.state / 'service.lock').is_file())
+
     def test_released_lock_can_be_reacquired(self):
         start.initialize(self.state, "admin")
         with self.assertRaisesRegex(RuntimeError, "fixture"):
@@ -1969,7 +2025,7 @@ class WindowsPathPreflightTests(unittest.TestCase):
                 patch.object(start, 'source_copy_targets', return_value=[self.relative_target(265)]), \
                 patch.object(path_check, 'windows_long_paths_enabled', return_value=False), \
                 patch.object(Path, 'mkdir') as mkdir, patch.object(Path, 'open') as opened, \
-                patch.object(start, 'initialize') as initialize, redirect_stdout(output):
+                patch.object(start, 'assert_available'), patch.object(start, 'initialize') as initialize, redirect_stdout(output):
             self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
         self.assertIn('265', output.getvalue())
         self.assertIn('read-only', output.getvalue())
@@ -2006,6 +2062,7 @@ class WindowsPathPreflightTests(unittest.TestCase):
                     with patch.object(sys, 'platform', 'win32'), \
                             patch.object(start, 'check_source_checkout'), \
                             patch.object(start, 'dependency_report'), \
+                            patch.object(start, 'assert_available'), \
                             patch.object(start, 'source_copy_targets', return_value=[self.relative_target(265)]), \
                             patch.object(path_check, 'windows_long_paths_enabled', return_value=False), \
                             patch.object(start, 'initialize') as initialize, \
@@ -2058,7 +2115,7 @@ class WindowsPathPreflightTests(unittest.TestCase):
                     io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict') as errors:
                 with patch.object(sys, 'platform', platform), \
                         patch.object(start, 'check_source_checkout'), patch.object(start, 'dependency_report'), \
-                        redirect_stdout(output), redirect_stderr(errors):
+                        patch.object(start, 'assert_available'), redirect_stdout(output), redirect_stderr(errors):
                     self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
                 for stream in (output, errors):
                     self.assertEqual(stream.encoding, 'cp1252')
