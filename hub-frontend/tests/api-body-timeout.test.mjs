@@ -34,3 +34,19 @@ test('HTTP errors and authentication expiry retain existing handling', async () 
   const failed = fixture(async () => ({ status: 409, ok: false, text: async () => '{"detail":"conflict"}', headers: new Headers() }))
   await assert.rejects(failed.call('POST', '/fixture', {}), error => error.status === 409 && error.message === 'conflict')
 })
+
+test('successful malformed JSON fails instead of acknowledging a save', async () => {
+  for (const text of ['<html>proxy login page</html>', '{"saved":']) {
+    const transport = fixture(async () => ({ status: 200, ok: true, text: async () => text }));
+    const rejected = error => error.code === 'INVALID_JSON_RESPONSE' && error.status === 200;
+    await assert.rejects(transport.call('PUT', '/fixture', { title: 'save' }), rejected);
+    await assert.rejects(transport.uploadForm('/fixture', new FormData()), rejected);
+    await assert.rejects(transport.api.health(), rejected);
+  }
+  const success = fixture(async () => ({ status: 200, ok: true, text: async () => '{"saved":true}' }));
+  assert.equal((await success.call('PUT', '/fixture', {})).saved, true);
+  const empty = fixture(async () => ({ status: 204, ok: true, text: async () => '' }));
+  assert.equal(await empty.call('DELETE', '/fixture'), null);
+  const errorPage = fixture(async () => ({ status: 502, ok: false, headers: new Headers(), text: async () => '<html>upstream error</html>' }));
+  await assert.rejects(errorPage.call('GET', '/fixture'), error => error.status === 502);
+});

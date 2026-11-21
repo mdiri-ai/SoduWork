@@ -22,6 +22,7 @@ async function fetchSafe(path, options = {}, timeout = REQUEST_TIMEOUT, consume 
     return { res, data }
   } catch (error) {
     if (options.signal?.aborted) throw error
+    if (error?.code === 'INVALID_JSON_RESPONSE') throw error
     if (error && error.name === 'AbortError') throw new Error(tx("请求超时，请稍后重试"))
     throw new Error(tx("无法连接 SoduWork 服务，请检查后台地址或网络"))
   } finally {
@@ -33,6 +34,12 @@ async function responseData(res) {
   const text = await res.text()
   if (!text) return null
   try { return JSON.parse(text) } catch (_error) {
+    if (res.ok) {
+      const error = new Error(tx("服务响应格式无法识别"))
+      error.code = 'INVALID_JSON_RESPONSE'
+      error.status = res.status
+      throw error
+    }
     return { detail: text.trim().slice(0, 300) || `HTTP ${res.status}` }
   }
 }
