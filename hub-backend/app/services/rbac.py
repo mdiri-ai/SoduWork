@@ -506,9 +506,25 @@ async def list_domains(session: AsyncSession) -> list[dict]:
     return [domain_to_api(d) for d in res.scalars().all()]
 
 
+DOMAIN_NAME_MAX = 64
+
+
+def _domain_label(value: str | None) -> str:
+    label = str(value or "").strip()
+    if not label:
+        raise ValueError("请填写领域名称")
+    if len(label) > DOMAIN_NAME_MAX:
+        raise ValueError(f"领域名称不能超过 {DOMAIN_NAME_MAX} 个字符")
+    return label
+
+
 async def create_domain(session: AsyncSession, name: str, sort: int = 0) -> dict:
     from uuid import uuid4
-    d = models.Domain(id="dom_" + uuid4().hex[:10], name=name or "未命名领域", sort=sort)
+    label = _domain_label(name)
+    if await session.scalar(select(func.count(models.Domain.id)).where(
+            func.lower(models.Domain.name) == label.lower())):
+        raise ValueError("领域名已存在")
+    d = models.Domain(id="dom_" + uuid4().hex[:10], name=label, sort=sort)
     session.add(d)
     await session.commit()
     await session.refresh(d)
@@ -520,7 +536,11 @@ async def update_domain(session: AsyncSession, did: str, name: str | None, sort:
     if d is None:
         return None
     if name is not None:
-        d.name = name
+        label = _domain_label(name)
+        if await session.scalar(select(func.count(models.Domain.id)).where(
+                func.lower(models.Domain.name) == label.lower(), models.Domain.id != did)):
+            raise ValueError("领域名已存在")
+        d.name = label
     if sort is not None:
         d.sort = sort
     await session.commit()

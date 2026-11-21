@@ -451,7 +451,10 @@ async def create_domain(
     session: AsyncSession = Depends(get_session),
 ):
     sort = parse_integer(body.get("sort"), field="sort", default=0)
-    r = await rbac.create_domain(session, (body.get("name") or "").strip(), sort)
+    try:
+        r = await rbac.create_domain(session, (body.get("name") or "").strip(), sort)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
     await audit.log(session, user, "domain.create", "domain", r["id"], r["name"], {})
     return r
 
@@ -468,7 +471,10 @@ async def update_domain(
     sort = body.get("sort")
     if sort is not None:
         sort = parse_integer(sort, field="sort")
-    r = await rbac.update_domain(session, did, body.get("name"), sort)
+    try:
+        r = await rbac.update_domain(session, did, body.get("name"), sort)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     if r is None:
         raise HTTPException(status_code=404, detail="领域不存在")
     await audit.log(session, user, "domain.update", "domain", did, r["name"], {})
