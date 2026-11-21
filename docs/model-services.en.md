@@ -18,6 +18,8 @@ Update both the Hub and desktop client and apply the database migration for this
 
 **Save and test connection** first reads the provider’s model list. A successful list request verifies only that endpoint: it does not prove that chat generation is authorized, that a billing balance is available, or that the selected Agent supports the protocol. If discovery is unavailable, the test can send a minimal chat request, which may incur usage. The result states which probe succeeded.
 
+Model discovery depends on the service exposing a model-list endpoint. Some gateways do not provide one (the request returns 404/405); in that case discovery reports "this service does not offer a model-list endpoint, add the model identifier manually". This is a normal outcome, not a misconfiguration: enter the model ID manually in the model catalog and save to continue.
+
 The current managed chat gateway uses OpenAI-compatible endpoints. An Anthropic provider can remain configured for an Agent that supports it, but a successful Anthropic connection test does not make it compatible with this gateway. The model editor and managed model picker show this boundary before execution. Changing only the protocol selector does not convert a provider endpoint; use the corresponding address and key supplied by the provider.
 
 ## Model capability checks
