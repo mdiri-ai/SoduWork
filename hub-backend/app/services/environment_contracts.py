@@ -65,7 +65,11 @@ def promotion_policy(value) -> dict:
     """
     raw = dict(value or {}) if isinstance(value, dict) else {}
     requires = []
-    for item in raw.get("requires") or []:
+    wanted = raw.get("requires") or []
+    if not isinstance(wanted, list):
+        # An int/bool is not iterable (500) and a string would be stored character by character.
+        raise ValueError("promotionPolicy.requires 必须是环境标识数组")
+    for item in wanted:
         key = _text(item, 64).lower()
         if not _KEY.fullmatch(key):
             raise ValueError(f"前置环境标识不合法：{key or '空'}")
