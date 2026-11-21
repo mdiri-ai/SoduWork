@@ -135,9 +135,13 @@ jobs:
             sudo apt-get install -y xvfb xauth libgtk-3-0 libnss3 libasound2 ripgrep
             rg --version
           fi
-      - name: Verify attachment storage names under native Windows rules
+      - name: Verify attachment storage upgrade and filesystem boundaries (Windows)
         if: runner.os == 'Windows'
         run: .venv/Scripts/python.exe -m unittest -v test_attachment_storage_names
+        working-directory: hub-backend
+      - name: Verify attachment storage upgrade and filesystem boundaries (Linux)
+        if: runner.os == 'Linux'
+        run: .venv/bin/python -m unittest -v test_attachment_storage_names
         working-directory: hub-backend
       - run: npm ci
         working-directory: client

@@ -55,6 +55,14 @@ Keep these recovery files private and retain them until their contents have been
 Run `python3 -m unittest test_runner_event_scope test_runner_event_delivery` to verify
 routing, restart recovery, interrupted archive writes, and Hub delivery preservation.
 
+## Local attachment storage upgrades
+
+New local attachment objects use `uploads/objects-v2/<SHA-256 of the exact logical key>`; display names remain in the database. This bounds filesystem component lengths and isolates separator collisions and case-only keys. MinIO object keys are unchanged. Reads support the historical flat, readable-hash and compact-hash layouts from #336, including after copying the uploads directory.
+
+Stop all old Hub processes before upgrading and back up both the database and uploads directory together. During startup, under the bootstrap lock, Hub inventories every local-backed `Attachment` row (including message snapshots), checks all historical aliases, and moves uniquely owned objects to v2 before serving requests. Shared aliases, multiple historical files for one key, or conflicting legacy/v2 files abort startup with a diagnostic and preserve the conflicting originals; resolve ownership using backups rather than assigning one surviving file to multiple records. An interrupted move can be rerun. Manual maintenance can call `storage.migrate_local_objects(keys)` with the **complete** local-key inventory and all readers/writers stopped; passing an incomplete list cannot establish exclusive ownership.
+
+New writes publish atomically. Deleting a v2 object leaves a small `.deleted` marker, so compatibility lookup cannot revive a retained historical alias; another key's legacy file is not removed. Retain markers when copying or restoring the uploads directory. Run `python3 -m unittest -v test_attachment_storage_names` for real filesystem upgrade, relocation, collision, deletion and filename-boundary regressions. The suite is registered in the backend release gate and in Windows/Linux CI; its deep-path test requires Windows.
+
 ## Managed Pi execution
 
 Agent discovery searches bounded npm-prefix, Homebrew and nvm locations, including installations absent from a desktop process's inherited PATH. A selected executable's version, Node engine and DeepSeek adapter metadata must belong to that installation; unrelated private packages cannot supply those values. Windows Codex discovery continues after an excluded WindowsApps candidate. Explicit Agent overrides, managed runtime ownership and native dependency checks remain enforced. The DeepSeek desktop application alone does not provide the ACP adapter required by the Runner.

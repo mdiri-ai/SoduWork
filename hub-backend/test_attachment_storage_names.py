@@ -1,8 +1,9 @@
-"""Local attachment storage must accept any filename the upload routes allow."""
+"""Real-filesystem attachment storage regressions; registered in the release gate."""
 import os
 import shutil
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,162 +17,244 @@ class LocalAttachmentNameTests(unittest.TestCase):
         self.enterContext(patch.object(storage, "_LOCAL_DIR", self.folder.name))
         self.enterContext(patch.object(storage, "backend_name", return_value="local"))
 
-    def _round_trip(self, key):
-        data = ("payload for " + key).encode("utf-8")
-        self.assertEqual(storage.put(key, data, "application/octet-stream"), "local")
-        self.assertEqual(storage.get(key, "local"), data)
-        handle = storage.open_stream(key, "local")
-        self.assertEqual(b"".join(storage.iter_stream(handle)), data)
-        path = Path(storage._local_path(key))
-        self.assertEqual(path.parent, Path(self.folder.name))
-        self.assertEqual(path.read_bytes(), data)
+    def assert_payload(self, key, payload):
+        self.assertEqual(storage.get(key, "local"), payload)
+        stream = storage.open_stream(key, "local")
+        self.assertEqual(b"".join(storage.iter_stream(stream)), payload)
+        self.assertTrue(stream.closed)
+
+    def legacy_file(self, key, payload, form="flat"):
+        safe = key.replace("/", "__").replace("\\", "__")
+        name = safe if form == "flat" else storage._hashed_names(key, safe)[form == "compact"]
+        path = storage._extended(os.path.join(storage._LOCAL_DIR, name))
+        os.makedirs(storage._extended(storage._LOCAL_DIR, directory=True), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(payload)
+        return path
+
+    def test_old_data_reads_streams_and_deletes_without_losing_neighbor(self):
+        key, neighbor = "att/task/id/report.txt", "att/task/other/other.txt"
+        path = self.legacy_file(key, b"written by old release")
+        self.legacy_file(neighbor, b"untouched")
+        self.assert_payload(key, b"written by old release")
         storage.delete(key, "local")
-        self.assertFalse(path.exists())
-        return path
+        self.assertFalse(os.path.exists(path))
+        self.assert_payload(neighbor, b"untouched")
+        with self.assertRaises(FileNotFoundError):
+            storage.get(key, "local")
 
-    def test_short_names_keep_their_existing_location(self):
-        key = "att/task-1/attachment-1/brief.pdf"
-        path = self._round_trip(key)
-        self.assertEqual(path.name, "att__task-1__attachment-1__brief.pdf")
-
-    def test_long_multibyte_name_is_stored(self):
-        # Upload routes keep up to 200 characters; 200 CJK characters are
-        # 600 UTF-8 bytes, beyond the 255-byte filename limit on Linux.
-        name = "华东区域客户满意度调研报告" * 15 + ".pdf"
-        key = "att/3259e758-4ecf-41b3-b385-0f86b67c3867/37d15ab5-dccf-4e25-8d62-bea1b0e21063/" + name[-200:]
-        path = self._round_trip(key)
-        self.assertTrue(path.name.endswith(".pdf"))
-        self.assertLessEqual(len(os.fsencode(path.name)), 255)
-
-    def test_distinct_long_names_do_not_collide(self):
-        prefix = "att/task-1/attachment-1/" + "长" * 190
-        self.assertNotEqual(storage._local_path(prefix + "a.txt"), storage._local_path(prefix + "b.txt"))
-
-    @unittest.skipUnless(os.name == "nt", "Windows filename rules")
-    def test_windows_reserved_characters_are_stored_in_the_main_stream(self):
-        key = "att/task-1/attachment-1/会议纪要: 11月17日.docx"
-        path = self._round_trip(key)
-        # Without hashing, NTFS treats ":" as an alternate data stream and
-        # leaves an empty "att__…__会议纪要" file in the uploads directory.
-        self.assertNotIn(":", path.name)
-        self.assertEqual(sorted(os.listdir(self.folder.name)), [])
-
-    def test_existing_object_under_the_legacy_name_is_still_found(self):
-        key = "att/task-1/attachment-1/" + "x" * 150 + ".txt"
-        legacy = Path(self.folder.name) / key.replace("/", "__")
-        with patch.object(storage, "_native_name_ok", return_value=False):
-            legacy.write_bytes(b"written before this change")
-            self.assertEqual(Path(storage._local_path(key)), legacy)
-            self.assertEqual(storage.get(key, "local"), b"written before this change")
-
-    @unittest.skipUnless(os.name == "nt", "Windows path limits")
-    def test_complete_path_counts_utf16_units_in_the_directory(self):
-        directory = os.path.join(self.folder.name, "项目📅" * 12)
-        prefix = "att/task-1/attachment-1/"
-        base = os.path.join(directory, prefix.replace("/", "__"))
-        key = prefix + "表" * (250 - len(base) - len(".txt")) + ".txt"
-        legacy = os.path.join(directory, key.replace("/", "__"))
-        self.assertEqual(len(legacy), 250)
-        self.assertGreater(len(legacy.encode("utf-16-le")) // 2, 259)
-        with patch.object(storage, "_LOCAL_DIR", directory):
-            storage.put(key, b"report", "text/plain")
-            self.assertNotEqual(storage._local_path(key), legacy)
-            self.assertEqual(storage.get(key, "local"), b"report")
-
-    @unittest.skipUnless(os.name == "nt", "Windows path limits")
-    def test_restored_legacy_and_readable_files_past_max_path(self):
-        keys = ["att/task-1/attachment-1/会议记录.txt",
-                "att/project-1234567890/attachment-1234567890/" + "报告📅" * 60 + ".txt"]
-        source = os.path.join(self.folder.name, "source")
-        with patch.object(storage, "_LOCAL_DIR", source):
-            for key in keys:
-                storage.put(key, b"original", "text/plain")
-            self.assertEqual(os.path.basename(storage._local_path(keys[0])), keys[0].replace("/", "__"))
-            self.assertIn("__h-", os.path.basename(storage._local_path(keys[1])))
-
-        deep = os.path.join(self.folder.name, "d" * (238 - len(self.folder.name)))
-        os.rename(source, deep)
-        real_exists = os.path.exists
-
-        def exists_without_system_long_paths(path):
-            if not path.startswith("\\\\?\\") and len(path.encode("utf-16-le")) // 2 > 259:
-                return False
-            return real_exists(path)
-
-        with patch.object(storage, "_LOCAL_DIR", deep), patch.object(
-                os.path, "exists", side_effect=exists_without_system_long_paths):
-            for key in keys:
-                with self.subTest(key=key):
-                    self.assertEqual(storage.get(key, "local"), b"original")
-                    self.assertEqual(b"".join(storage.iter_stream(storage.open_stream(key, "local"))), b"original")
+    def test_each_old_format_survives_directory_copy(self):
+        for form in ("flat", "readable", "compact"):
+            with self.subTest(form=form):
+                source = os.path.join(self.folder.name, "source-" + form)
+                target = os.path.join(self.folder.name, "restored-" + form)
+                key = "att/task/id/report.txt"
+                with patch.object(storage, "_LOCAL_DIR", source):
+                    self.legacy_file(key, b"old bytes", form)
+                shutil.copytree(source, target)
+                with patch.object(storage, "_LOCAL_DIR", target):
+                    self.assert_payload(key, b"old bytes")
                     storage.delete(key, "local")
-        self.assertEqual(os.listdir(deep), [])
+                    with self.assertRaises(FileNotFoundError):
+                        storage.open_stream(key, "local")
+                with patch.object(storage, "_LOCAL_DIR", source):
+                    self.assert_payload(key, b"old bytes")
 
+    def test_collision_keys_have_independent_bytes_streams_and_deletion(self):
+        for first, second in (("att/t/a__b/name.txt", "att/t/a/b/name.txt"),
+                              ("att/t/id/Report.txt", "att/t/id/report.txt"),
+                              ("att/t/id/100%file", "att/t/id/100%25file"),
+                              ("att/t/id/a\\b", "att/t/id/a/b")):
+            with self.subTest(keys=(first, second)):
+                storage.put(first, b"first", "text/plain")
+                storage.put_stream(second, BytesIO(b"second"), 6, "text/plain")
+                self.assert_payload(first, b"first")
+                self.assert_payload(second, b"second")
+                self.assertNotEqual(storage._local_path(first).casefold(),
+                                    storage._local_path(second).casefold())
+                storage.delete(first, "local")
+                with self.assertRaises(FileNotFoundError):
+                    storage.get(first, "local")
+                self.assert_payload(second, b"second")
+                storage.delete(second, "local")
 
+    def test_real_filesystem_name_boundaries(self):
+        for name in ("报告" * 98 + ".pdf", "x" * 196 + ".txt", "🦄" * 196 + ".txt",
+                     "会议纪要: 11月17日.docx", "CON", "report. ", ".."):
+            with self.subTest(name=name):
+                key = "att/task/id/" + name
+                payload = ("payload:" + name).encode()
+                storage.put(key, payload, "application/octet-stream")
+                self.assert_payload(key, payload)
+                path = storage._local_path(key)
+                self.assertEqual(os.stat(path).st_size, len(payload))
+                with open(path, "rb") as handle:
+                    self.assertEqual(handle.read(), payload)  # The ordinary main stream, including NTFS.
+                self.assertRegex(os.path.basename(path), r"^[a-f0-9]{64}$")
+                storage.delete(key, "local")
+                self.assertFalse(os.path.exists(path))
 
-def _windows_rules(name, path):
-    """Emulate the Windows name and MAX_PATH checks on every platform."""
-    return (len(name.encode("utf-16-le")) // 2 <= 255
-            and len(os.path.abspath(path).encode("utf-16-le")) // 2 <= 259 and ":" not in name)
-
-
-class UploadDirectoryLocationTests(unittest.TestCase):
-    """Hashed objects must stay reachable wherever the uploads directory lives."""
-
-    def setUp(self):
-        self.root = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.root, True)
-        self.enterContext(patch.object(storage, "backend_name", return_value="local"))
-        self.enterContext(patch.object(storage, "_native_name_ok", side_effect=_windows_rules))
-
-    def _directory(self, length):
-        path = os.path.join(self.root, "d" * max(1, length - len(self.root) - 1))
-        os.makedirs(path)
-        return path
-
-    def test_objects_survive_moving_the_uploads_directory(self):
-        key = "att/3259e758-4ecf-41b3-b385-0f86b67c3867/37d15ab5-dccf-4e25-8d62-bea1b0e21063/" + "x" * 120 + ".txt"
-        deep = self._directory(150)
-        with patch.object(storage, "_LOCAL_DIR", deep):
-            storage.put(key, b"stored under the hashed name", "text/plain")
-            hashed = os.path.basename(storage._local_path(key))
-        self.assertIn("h-", hashed)
-        # Restore a copy at a short path, where the original mapping would now fit.
-        short = os.path.join(self.root, "u")
-        shutil.copytree(deep, short)
-        with patch.object(storage, "_LOCAL_DIR", short):
-            self.assertTrue(_windows_rules(key.replace("/", "__"), os.path.join(short, key.replace("/", "__"))))
-            self.assertEqual(storage.get(key, "local"), b"stored under the hashed name")
-            self.assertEqual(b"".join(storage.iter_stream(storage.open_stream(key, "local"))),
-                             b"stored under the hashed name")
+    def test_v2_directory_relocation(self):
+        key = "att/task/id/报告:final.pdf"
+        storage.put(key, b"v2 bytes", "application/pdf")
+        target = os.path.join(self.folder.name, "copy")
+        shutil.copytree(os.path.join(self.folder.name, "objects-v2"),
+                        os.path.join(target, "objects-v2"))
+        with patch.object(storage, "_LOCAL_DIR", target):
+            self.assert_payload(key, b"v2 bytes")
             storage.delete(key, "local")
-        self.assertEqual(os.listdir(short), [])
+            with self.assertRaises(FileNotFoundError):
+                storage.get(key, "local")
+        self.assert_payload(key, b"v2 bytes")
 
-    def test_legacy_objects_survive_moving_to_a_deeper_directory(self):
-        key = "att/task-1/attachment-1/brief.pdf"
-        short = self._directory(20)
-        with patch.object(storage, "_LOCAL_DIR", short):
-            storage.put(key, b"original mapping", "application/pdf")
-        deep = os.path.join(self._directory(200), "uploads")
-        shutil.copytree(short, deep)
-        with patch.object(storage, "_LOCAL_DIR", deep):
-            self.assertEqual(storage.get(key, "local"), b"original mapping")
-            storage.delete(key, "local")
-        self.assertEqual(os.listdir(deep), [])
+    def test_legacy_overwrite_then_delete_does_not_resurrect_old_bytes(self):
+        key = "att/task/id/report.txt"
+        old = self.legacy_file(key, b"old")
+        storage.put(key, b"new", "text/plain")
+        self.assert_payload(key, b"new")
+        storage.delete(key, "local")
+        self.assertEqual(Path(old).read_bytes(), b"old")
+        with self.assertRaises(FileNotFoundError):
+            storage.get(key, "local")
+        self.assertEqual(storage.migrate_local_objects([key]), 0)
+        with self.assertRaises(FileNotFoundError):
+            storage.open_stream(key, "local")
+        storage.put(key, b"recreated", "text/plain")
+        self.assert_payload(key, b"recreated")
 
-    def test_fallback_fits_the_complete_path_in_a_deep_directory(self):
-        key = ("att/3259e758-4ecf-41b3-b385-0f86b67c3867/37d15ab5-dccf-4e25-8d62-bea1b0e21063/"
-               + "华东区域客户满意度调研报告" * 5 + ".pdf")
-        deep = self._directory(160)
+    def test_deleting_new_object_does_not_unlink_another_keys_legacy_file(self):
+        legacy_key, new_key = "att/t/a__b/name.txt", "att/t/a/b/name.txt"
+        old = self.legacy_file(legacy_key, b"legacy owner's bytes")
+        storage.put(new_key, b"new key's bytes", "text/plain")
+        storage.delete(new_key, "local")
+        storage.delete(new_key, "local")  # Idempotent deletion must not probe the alias.
+        self.assertEqual(Path(old).read_bytes(), b"legacy owner's bytes")
+        self.assert_payload(legacy_key, b"legacy owner's bytes")
+        with self.assertRaises(FileNotFoundError):
+            storage.get(new_key, "local")
+
+    def test_failed_stream_write_preserves_previous_object(self):
+        key = "att/task/id/report.txt"
+        storage.put(key, b"original", "text/plain")
+
+        class BrokenStream(BytesIO):
+            def read(self, size=-1):
+                raise OSError("simulated interrupted upload")
+
+        with self.assertRaises(OSError):
+            storage.put_stream(key, BrokenStream(b"replacement"), 11, "text/plain")
+        self.assert_payload(key, b"original")
+        self.assertFalse(list(Path(self.folder.name).rglob(".upload-*")))
+
+    def test_migration_preflights_all_aliases_before_changing_any_file(self):
+        first, second = "att/t/a__b/name.txt", "att/t/a/b/name.txt"
+        shared = self.legacy_file(first, b"cannot know which record owns these bytes")
+        unique = self.legacy_file("att/t/unique/name.txt", b"unique")
+        before = Path(shared).read_bytes()
+        with self.assertRaises(storage.AmbiguousLocalKeys) as caught:
+            storage.migrate_local_objects(["att/t/unique/name.txt", first, second])
+        self.assertIn(sorted([first, second]), caught.exception.collisions)
+        self.assertEqual(Path(shared).read_bytes(), before)
+        self.assertEqual(Path(unique).read_bytes(), b"unique")
+        self.assertFalse(os.path.exists(os.path.join(self.folder.name, "objects-v2")))
+
+    def test_migration_reports_case_ambiguity_before_cross_platform_restore(self):
+        keys = ["att/t/id/Report.txt", "att/t/id/report.txt"]
+        original = self.legacy_file(keys[0], b"original")
+        # On a case-sensitive host these are two files; on NTFS one file.
+        self.legacy_file(keys[1], b"original")
+        with self.assertRaises(storage.AmbiguousLocalKeys):
+            storage.migrate_local_objects(keys)
+        self.assertEqual(Path(original).read_bytes(), b"original")
+
+    def test_unique_migration_is_repeatable_and_uses_unchanged_logical_keys(self):
+        key = "att/task/id/report.txt"
+        old = self.legacy_file(key, b"old payload")
+        self.assertEqual(storage.migrate_local_objects([key, key]), 1)
+        self.assertFalse(os.path.exists(old))
+        self.assertEqual(storage.migrate_local_objects([key]), 0)
+        self.assert_payload(key, b"old payload")
+        storage.delete(key, "local")
+        with self.assertRaises(FileNotFoundError):
+            storage.get(key, "local")
+
+    def test_migration_preserves_conflicting_old_and_new_objects(self):
+        key = "att/task/id/report.txt"
+        old = self.legacy_file(key, b"old")
+        storage.put(key, b"new", "text/plain")
+        with self.assertRaises(FileExistsError):
+            storage.migrate_local_objects([key])
+        self.assertEqual(Path(old).read_bytes(), b"old")
+        self.assert_payload(key, b"new")
+
+    def test_multiple_historical_formats_for_one_key_are_not_guessed(self):
+        key = "att/task/id/report.txt"
+        first = self.legacy_file(key, b"first", "flat")
+        second = self.legacy_file(key, b"second", "compact")
+        with self.assertRaisesRegex(ValueError, "Multiple legacy objects"):
+            storage.migrate_local_objects([key])
+        self.assertEqual(Path(first).read_bytes(), b"first")
+        self.assertEqual(Path(second).read_bytes(), b"second")
+
+    def test_interrupted_migration_can_resume(self):
+        keys = ["att/task/a/report.txt", "att/task/b/report.txt"]
+        for key in keys:
+            self.legacy_file(key, key.encode())
+        rename = os.rename
+        calls = 0
+
+        def interrupted(source, destination):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("simulated interruption")
+            return rename(source, destination)
+
+        with patch.object(os, "rename", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                storage.migrate_local_objects(keys)
+        self.assertEqual(storage.migrate_local_objects(keys), 1)
+        for key in keys:
+            self.assert_payload(key, key.encode())
+
+    @unittest.skipUnless(os.name == "nt", "requires real Windows filesystem")
+    def test_windows_deep_directory_with_non_bmp_characters(self):
+        deep = os.path.join(self.folder.name, "项目📅" * 30, "uploads")
         with patch.object(storage, "_LOCAL_DIR", deep):
-            path = storage._local_path(key)
-            self.assertLessEqual(len(path), 259, path)
-            self.assertTrue(_windows_rules(os.path.basename(path), path))
-            self.assertTrue(path.endswith(".pdf"))
-            storage.put(key, b"deep directory", "application/pdf")
-            self.assertEqual(storage.get(key, "local"), b"deep directory")
-            # A second, different name in the same directory never collides.
-            self.assertNotEqual(storage._local_path(key[:-4] + "2.pdf"), path)
+            for key in ("att/t/id/会议纪要:final.pdf", "att/t/id/" + "表" * 196 + ".txt"):
+                storage.put(key, b"deep path payload", "text/plain")
+                self.assert_payload(key, b"deep path payload")
+                storage.delete(key, "local")
+                with self.assertRaises(FileNotFoundError):
+                    storage.get(key, "local")
+
+
+class AttachmentInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_startup_inventories_local_task_and_message_records_only(self):
+        from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+        from app.models import Attachment
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(storage, "_LOCAL_DIR", directory):
+            engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+            try:
+                async with engine.begin() as connection:
+                    await connection.run_sync(Attachment.__table__.create)
+                keys = ["att/task/id/brief.txt", "mate-messages/id/snapshot.txt"]
+                async with async_sessionmaker(engine)() as session:
+                    for key in keys:
+                        session.add(Attachment(task_id="", storage_key=key, backend="local"))
+                        Path(directory, key.replace("/", "__")).write_bytes(key.encode())
+                    session.add(Attachment(task_id="", storage_key="remote-only", backend="minio"))
+                    session.add(Attachment(task_id="", storage_key="", backend="local"))
+                    await session.commit()
+                    self.assertEqual(await storage.migrate_local_attachments(session), 2)
+                    self.assertEqual(await storage.migrate_local_attachments(session), 0)
+                for key in keys:
+                    self.assertEqual(storage.get(key, "local"), key.encode())
+                    self.assertFalse(Path(directory, key.replace("/", "__")).exists())
+                self.assertEqual(len(list(Path(directory, "objects-v2").iterdir())), 2)
+            finally:
+                await engine.dispose()
 
 
 if __name__ == "__main__":
