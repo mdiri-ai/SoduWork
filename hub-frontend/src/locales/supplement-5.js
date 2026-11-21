@@ -223,5 +223,13 @@ export default {
   "方案正文\n汇报材料": "Proposal document\nPresentation",
   "目标和边界清楚\n关键判断有依据": "Clear objectives and boundaries\nEvidence supporting key decisions",
   "系统会在任务创建时冻结这份交付标准": "These delivery standards are frozen when the issue is created",
-  "停用后不再参与新任务匹配，历史任务不受影响": "Disabled scenarios no longer match new issues; historical issues are unaffected"
+  "停用后不再参与新任务匹配，历史任务不受影响": "Disabled scenarios no longer match new issues; historical issues are unaffected",
+  "未配置账号": "No pull account",
+  "已配置未同步": "Ready to sync",
+  "同步成功但 0 仓库": "Synced, 0 repos",
+  "先配固定拉取账号，再点立即同步": "Configure a fixed pull account first, then click Sync now",
+  "点立即同步，拉取仓库目录": "Click Sync now to fetch the repository catalog",
+  "拉取账号可访问的仓库为空，检查账号权限或源站范围": "The pull account can access no repositories; check account permissions or the source scope",
+  "查看上方失败原因，修复后重新同步": "Check the failure above, fix it, then sync again",
+  "这里是任务挂载可用的仓库清单：先配好拉取账号，再点「立即同步」，仓库会出现在这里。": "This is the catalog of repositories issues can attach to: configure a pull account first, then click Sync now, and repositories appear here."
 }

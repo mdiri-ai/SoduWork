@@ -141,8 +141,8 @@ test('the sync action describes scope and duration and distinguishes an empty su
   const action = page.nodes(node => node.type === 'button' && node.props.children?.includes?.('立即同步'))[0]
   assert.match(action.props.title, /此代码源.*几分钟.*项目映射/)
   assert.equal(page.nodes(node => node.props.id === action.props['aria-describedby'])[0].props.children, action.props.title)
-  assert.match(JSON.stringify(page.render()), /未发现仓库/)
-  page.render({ source: { id: 'source', type: 'gitlab', repositorySyncAt: 1700000000000, repositorySyncOk: true, repositorySyncCount: 2 },
+  assert.match(JSON.stringify(page.render()), /同步成功但 0 仓库/)
+  page.render({ source: { id: 'source', type: 'gitlab', pullAccountSet: true, repositorySyncAt: 1700000000000, repositorySyncOk: true, repositorySyncCount: 2 },
     syncError: 'request timed out' })
   assert.match(JSON.stringify(page.render()), /同步成功/)
   assert.equal(page.nodes(node => node.props.role === 'status')[0].props.children, '本次同步请求：request timed out')
