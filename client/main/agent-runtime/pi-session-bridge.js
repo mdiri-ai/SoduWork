@@ -212,7 +212,28 @@ function createPiSessionBridge(options) {
     const request = { adapterId, consumer: legacyOptions.intent === 'goal' ? 'goal' : 'chat',
       runtimeId: String(legacyOptions.runtimeId || 'desktop'), runtime: { app: legacyOptions.app || opts.app },
       identity: legacyOptions.identity, native: { pi: { openOptions: legacyOptions }, runner: { openOptions: legacyOptions } } };
-    const record = legacyOptions.resumePath ? await registry.resumeSession(request) : await registry.createSession(request);
+    const register = () => (legacyOptions.resumePath
+      ? registry.resumeSession(request) : registry.createSession(request));
+    let record;
+    try {
+      record = await register();
+    } catch (error) {
+      if (error?.code !== 'DUPLICATE_SESSION') throw error;
+      // A prior open can fail after registering its runtime session, leaving an
+      // orphan registry record that no facade entry can reach and no close can
+      // dispose. Reopening then recreates the same session id and keeps hitting
+      // the duplicate refusal forever. Dispose the stale record once and retry;
+      // a session still held by a live entry keeps its conflict.
+      const key = String(error.details?.key || '');
+      const prefix = adapterId + ':';
+      const staleId = key.startsWith(prefix) ? key.slice(prefix.length) : '';
+      const held = !staleId || bySessionId.has(staleId) ||
+        [...byRef.values()].some((entry) => entry.record && entry.record.session.id === staleId);
+      if (held) throw error;
+      try { await registry.disposeSession(adapterId, staleId); } catch (cleanupError) { /* verified below */ }
+      if (registry.session(adapterId, staleId)) throw error;
+      record = await register();
+    }
     const details = record.adapterId === 'pi' ? getPiSessionDetails(record.session) : getRunnerSessionDetails(record.session);
     if (!details?.handle) { await registry.disposeSession(record.adapterId, record.session.id); throw Error('Agent Runtime did not expose its compatibility handle'); }
     return { record, raw: details.handle, details };

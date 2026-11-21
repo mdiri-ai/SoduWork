@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const { createPiSessionBridge, RUNTIME_RECORD } = require('./pi-session-bridge');
+const { AgentRuntimeRegistry } = require('./registry');
 const { MemoryGoalCheckpointStore } = require('./goal-checkpoint-store');
 
 function fakeSessionModule() {
@@ -398,5 +399,58 @@ test('Pi bridge close waits for the runtime handle before archive deletion can c
   releaseClose();
   assert.equal(await closing, true);
   assert.equal(raw.handles[0].closed, true);
+  await bridge.dispose();
+});
+
+test('Pi bridge disposes an orphan registry record when a reopen recreates the same session id', async () => {
+  const raw = fakeSessionModule();
+  const baseOpen = raw.open.bind(raw);
+  // A resume recreates the same native session id every time, mirroring the
+  // persisted archive identity of a real Pi session.
+  raw.open = async (options) => {
+    const result = await baseOpen(options);
+    result.session.sessionId = 'pi-orphan';
+    return result;
+  };
+  const registry = new AgentRuntimeRegistry();
+  const bridge = createPiSessionBridge({ sessionModule: raw, registry, runnerAdapters: [] });
+
+  // A prior open registered the runtime session but its facade entry is gone:
+  // the orphan record that made every reopen refuse with DUPLICATE_SESSION.
+  const stale = await registry.createSession({ adapterId: 'pi', consumer: 'chat',
+    native: { pi: { openOptions: {} } } });
+  assert.equal(stale.session.id, 'pi-orphan');
+
+  const result = await bridge.open({ ref: 'reopened' });
+  assert.equal(result.ok, true);
+  assert.equal(raw.opened.length, 3);
+  assert.equal(raw.handles[0].closed, true);
+  assert.equal(bridge.get('reopened'), result.session);
+  assert.equal(bridge.findBySessionId('pi-orphan'), result.session);
+  await bridge.dispose();
+});
+
+test('Pi bridge keeps a live session when a reopen recreates its session id', async () => {
+  const raw = fakeSessionModule();
+  const baseOpen = raw.open.bind(raw);
+  raw.open = async (options) => {
+    const result = await baseOpen(options);
+    result.session.sessionId = 'pi-live';
+    return result;
+  };
+  const registry = new AgentRuntimeRegistry();
+  const bridge = createPiSessionBridge({ sessionModule: raw, registry, runnerAdapters: [] });
+  const first = await bridge.open({ ref: 'live-a' });
+  assert.equal(first.ok, true);
+
+  // Reopening the same conversation without closing the live session must keep
+  // its runtime record: the duplicate refusal is the correct conflict here.
+  const again = await bridge.open({ ref: 'live-b' });
+  assert.equal(again.ok, false);
+  assert.equal(again.runtimeError, 'DUPLICATE_SESSION');
+  assert.match(again.reason, /already exists/);
+  assert.equal(bridge.get('live-a'), first.session);
+  assert.equal(bridge.findBySessionId('pi-live'), first.session);
+  assert.equal(raw.handles[0].closed, false);
   await bridge.dispose();
 });
