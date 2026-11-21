@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import inspect
 import re
 import time
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
 from ..config import get_settings
+from .. import log_safety
 from ..deps import current_ai_client, current_model_client, enforce_client_quota
 from ..models import Client
 from ..services import (
@@ -110,6 +112,41 @@ def _upstream_message(status: int, detail: str, *, responses: bool = False) -> s
     }.get(status, "")
     return (str(detail or f"HTTP {status}") + ("：" + hint if hint else "")).strip()
 
+
+def _upstream_detail_enabled() -> bool:
+    """Opt-in switch for redacted upstream error details in server logs."""
+    return os.getenv("SODUWORK_AI_PROXY_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _upstream_error_detail(upstream: str) -> str | None:
+    """Return a short, redacted upstream message for operator diagnostics.
+
+    Only the ``error.message``/``message`` field is considered; the value is
+    squashed, passed through the shared log redaction filter, and capped so a
+    chatty gateway cannot flood the log or leak credentials.
+    """
+    text = str(upstream or "").strip()
+    if not text:
+        return None
+    message = ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        error = data.get("error")
+        if isinstance(error, dict):
+            message = str(error.get("message") or "")
+        if not message:
+            message = str(data.get("message") or "")
+    if not message:
+        message = text
+    message = " ".join(message.split())
+    if not message:
+        return None
+    return log_safety.redact_log_text(message)[:200]
+
+
 def _err(status: int, msg: str, upstream: str = "") -> JSONResponse:
     """Return an OpenAI-shaped error whose error.message can be displayed by pi-ai."""
     body: dict = {"error": {"message": msg, "type": "soduwork_proxy_error", "code": status,
@@ -138,9 +175,15 @@ def _err(status: int, msg: str, upstream: str = "") -> JSONResponse:
                          "code": "image_input_rejected", "status": status}
     if upstream:
         # The raw body can contain internal gateway data and is not a client
-        # diagnostic contract. Keep only a size signal in server logs.
+        # diagnostic contract. Keep only a size signal in server logs unless an
+        # operator explicitly opts into redacted upstream details.
         log.warning("[ai-proxy] upstream error suppressed: status=%s bytes=%s",
                     status, len(upstream.encode("utf-8", "replace")))
+        if _upstream_detail_enabled():
+            detail = _upstream_error_detail(upstream)
+            if detail:
+                log.warning("[ai-proxy] upstream detail: status=%s message=%s",
+                            status, detail)
     return JSONResponse(status_code=status, content=body)
 
 
