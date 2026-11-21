@@ -515,7 +515,13 @@ async def save_secret_ref(session: AsyncSession, body: dict,
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", locator):
         raise ValueError("Runner 环境变量名不合法")
     if row is None:
-        row = am.SecretReference(org_id=body.get("orgId") or None,
+        org_id = body.get("orgId") or None
+        if org_id is not None:
+            if not isinstance(org_id, str):
+                raise ValueError("部门标识必须是字符串")
+            if await session.get(models.OrgUnit, org_id) is None:
+                raise ValueError("部门不存在")
+        row = am.SecretReference(org_id=org_id,
                                  name=_text(body.get("name"), 100) or locator,
                                  provider=provider, locator=locator)
         session.add(row)
