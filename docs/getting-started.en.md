@@ -277,6 +277,32 @@ On a profile without existing device credentials, if the system keyring is unava
 
 The source launcher's Linux desktop mode rejects root users (including launches through `sudo`) before creating instance data or installing dependencies. This check also applies to `--check --desktop` and `--prepare-only --desktop`. Run `sh start.sh --desktop` in an ordinary user's graphical session; use `sh start.sh` for a headless server.
 
+**To use the system keyring, or when the recovery page keeps coming back**
+
+The local encrypted vault above needs no system service, and for most setups it is enough. Some integrations — anything that reads `org.freedesktop.secrets` directly — still require a system keyring, and an existing profile may already hold credentials encrypted by one. Check that case with the steps below.
+
+First, see whether the current session has a secret service:
+
+```bash
+busctl --user list 2>/dev/null | grep org.freedesktop.secrets
+```
+
+No output means nothing is serving it. Install GNOME Keyring (KWallet works too) for your distribution:
+
+| Distribution | Command |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install gnome-keyring libsecret-1-0` |
+| Fedora / openEuler | `sudo dnf install gnome-keyring libsecret` |
+| Arch | `sudo pacman -S gnome-keyring libsecret` |
+
+Then **quit SoduWork and start it again inside the same graphical session**. The secret service is activated over the D-Bus session bus, so reopening the client in an old session does not pick it up. If the recovery page persists, check whether the shell carries the session bus:
+
+```bash
+echo $DBUS_SESSION_BUS_ADDRESS   # empty means this terminal is outside the graphical session
+```
+
+Launched through `su`, `sudo`, `ssh`, or a systemd unit, `DBUS_SESSION_BUS_ADDRESS` is often empty; in that case run `sh start.sh --desktop` from a terminal owned by the graphical session.
+
 Linux installation acceptance first checks that a fresh `.deb` / `.rpm` installation supplies its credential-service dependencies, then uses an isolated real GNOME keyring to check ciphertext after first launch, restart, and upgrade. The current upgrade scenario reuses dependencies from the initial installation and does not certify that upgrading an older environment resolves newly added dependencies. Container acceptance also does not replace interactive GNOME/KDE and Wayland/X11 sign-in and unlock verification.
 
 To use management while resolving desktop setup, double-click `start.cmd` on Windows or `start.command` on macOS, or run `sh start.sh` on Linux. The browser management UI is for configuration; it is not the desktop AI conversation workspace.

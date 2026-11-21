@@ -278,6 +278,32 @@ start.cmd --desktop
 
 源码启动器的 Linux 桌面模式会提前拒绝 root 用户（包括通过 `sudo` 启动），在创建实例数据或安装依赖前给出提示；`--check --desktop` 和 `--prepare-only --desktop` 也会执行此检查。请在普通用户的图形会话中运行 `sh start.sh --desktop`；服务器只需运行 `sh start.sh`。
 
+**想用系统密钥环，或者反复回到恢复页**
+
+上面那个本地加密凭据库不需要任何系统服务，多数情况下用它就够了。但有些集成（例如直接读 `org.freedesktop.secrets` 的组件）仍然需要系统密钥环；你的配置里也可能还存着用密钥环加密的旧凭据。这时按下面查。
+
+先确认当前会话里有没有密钥服务：
+
+```bash
+busctl --user list 2>/dev/null | grep org.freedesktop.secrets
+```
+
+没有输出说明没有服务在跑。按发行版安装 GNOME Keyring（KWallet 亦可）：
+
+| 发行版 | 安装命令 |
+| --- | --- |
+| Debian / Ubuntu | `sudo apt install gnome-keyring libsecret-1-0` |
+| Fedora / openEuler | `sudo dnf install gnome-keyring libsecret` |
+| Arch | `sudo pacman -S gnome-keyring libsecret` |
+
+装完后**退出 SoduWork、在同一个图形会话里重新启动**：密钥服务由 D-Bus 会话激活，直接在旧会话里重开客户端不会生效。仍然停在恢复页时，检查当前 shell 是否带着会话总线：
+
+```bash
+echo $DBUS_SESSION_BUS_ADDRESS   # 空值说明这个终端不在图形会话里
+```
+
+通过 `su`、`sudo`、`ssh` 或 systemd 服务启动时，`DBUS_SESSION_BUS_ADDRESS` 常常是空的；这种情况需要在图形会话自己的终端里运行 `sh start.sh --desktop`。
+
 Linux 安装验收先检查 `.deb` / `.rpm` 的首次安装是否已提供密钥服务依赖，再使用隔离的真实 GNOME 密钥环检查首次启动、重启和升级后的密文读取。当前升级场景复用首次安装的依赖，不证明旧环境升级时能自动补齐新增依赖；容器验收也不替代 GNOME/KDE、Wayland/X11 的真实桌面登录与解锁验证。
 
 需要先看管理端时，Windows 双击 `start.cmd`，macOS 双击 `start.command`，Linux 运行 `sh start.sh`。浏览器管理端用于管理配置，不是桌面的 AI 对话工作区。
