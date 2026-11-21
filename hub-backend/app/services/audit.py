@@ -7,7 +7,10 @@ other administrators see actors in their department subtree.
 import csv
 import io
 import json
+import logging
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +44,13 @@ async def log(session: AsyncSession, actor, action: str, target_type: str = "",
         await session.commit()
     except Exception:
         await session.rollback()
+        # The business operation is already committed and cannot be rolled back;
+        # surface the audit gap so it can be observed and compensated.
+        logger.error(
+            "audit write failed: action=%s target=%s/%s actor=%s",
+            action, target_type, target_id,
+            getattr(actor, "username", None) or getattr(actor, "id", None),
+            exc_info=True)
 
 
 def _to_api(a: models.AuditLog) -> dict:
