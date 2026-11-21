@@ -394,13 +394,18 @@ async def install(session: AsyncSession, data: bytes, user, org_id: str | None =
             parsed, user, source_channel, source_name, signature_proof, candidate),
         package_path=path,
         trust_state="quarantined", visibility=mode, enabled=False, created_by=uid)
-    version, created = await plugin_identity.insert_version_once(session, version)
-    if not created:
-        return await reuse_version(version)
-    await plugin_audience.replace(
-        session, version, mode, selected_users, org_id=org_id, created_by=uid,
-        org_unit_ids=selected_orgs)
-    await session.commit()
+    try:
+        version, created = await plugin_identity.insert_version_once(session, version)
+        if not created:
+            return await reuse_version(version)
+        await plugin_audience.replace(
+            session, version, mode, selected_users, org_id=org_id, created_by=uid,
+            org_unit_ids=selected_orgs)
+        await session.commit()
+    except BaseException:
+        if os.path.exists(path):
+            os.remove(path)
+        raise
     return {"created": created, "versionId": version.id,
             "plugin": await plugin_api(session, plugin, True)}
 
