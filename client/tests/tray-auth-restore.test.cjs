@@ -39,6 +39,7 @@ test('tray reopening preserves cached authentication and renews expiry without l
   });
   const state = require('../main/workspace-state.cjs').create({ ownerOf: () => auth.localOwner(app) });
   const windows = new Map();
+  const quitCalls = [];
   class Window extends EventEmitter {
     constructor() {
       super();
@@ -61,12 +62,16 @@ test('tray reopening preserves cached authentication and renews expiry without l
     setContextMenu() {}
   }
   const source = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
+  const flags = { tray: true };
+  const overlayVisible = { value: true };
   const context = {
     _desktopOverlay: {
       notifyBlur() {}, setWorkspaceMaximized() {},
-      window: { isDestroyed: () => false, isVisible: () => true, webContents: { isLoading: () => false } },
+      window: { isDestroyed: () => false, isVisible: () => overlayVisible.value, webContents: { isLoading: () => false } },
     },
     _WORK_SPEC: require('../main/window-specs'), _workspaceState: state, _workWindows: windows,
+    _flags: { all: () => ({ tray: flags.tray }) }, app: { quit: () => quitCalls.push('quit') },
+    process: { platform: 'darwin' },
     _geom: {
       get: () => null, restore: () => null, initial: () => ({ width: 1440, height: 900 }),
       limits: () => ({}), remember() {},
@@ -104,6 +109,7 @@ test('tray reopening preserves cached authentication and renews expiry without l
   first.close();
   assert.equal(first.isDestroyed(), true);
   assert.equal(windows.has('workspace'), false);
+  assert.deepEqual(quitCalls, [], 'A tray-resident close keeps the process alive');
   assert.equal(auth.session(app), initial.session);
 
   context.tray.emit('click');
@@ -130,4 +136,15 @@ test('tray reopening preserves cached authentication and renews expiry without l
   assert.equal(renewed.user.id, restored.user.id);
   assert.equal(requests.length, 2, 'Only expiry requires another enrollment request');
   renewedWindow.close();
+
+  /* Tray disabled: a last close with the overlay hidden exits on Windows and
+     Linux, while macOS keeps its always-present dock icon resident. */
+  flags.tray = false;
+  context.process.platform = 'darwin';
+  renewedWindow.close();
+  assert.deepEqual(quitCalls, [], 'macOS dock click stays a way back when the tray is disabled');
+  context.process.platform = 'win32';
+  overlayVisible.value = false;
+  renewedWindow.close();
+  assert.deepEqual(quitCalls, ['quit'], 'A tray-disabled close with no way back exits the application');
 });

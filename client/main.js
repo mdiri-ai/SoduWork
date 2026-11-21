@@ -309,6 +309,22 @@ function revealWorkWindow(win) {
   win.focus();
 }
 
+/*
+ * Exit only when closing the last work window leaves no way back in: the tray
+ * icon is disabled and the pet/dock overlay is hidden. A resident tray icon or
+ * a visible overlay keeps the process available as before. On macOS the native
+ * dock icon is always present, so the dock click stays a way back and the
+ * process remains resident.
+ */
+function _exitWhenNoWayBack() {
+  if (_flags.all().tray) return;
+  if (process.platform === 'darwin') return;
+  if (_workWindows.size > 0) return;
+  const overlay = _desktopOverlay.window;
+  if (overlay && !overlay.isDestroyed() && overlay.isVisible()) return;
+  app.quit();
+}
+
 function openDeskWindow(payload, sourceWin) {
   /* Close temporary task views when opening a native window, regardless of whether the OS changes focus. */
   _desktopOverlay.notifyBlur();
@@ -438,6 +454,7 @@ function openDeskWindow(payload, sourceWin) {
     if (panel === 'workspace') {
       try { _desktopOverlay.setWorkspaceMaximized(false); } catch (_e) { /* Application shutdown is in progress. */ }
     }
+    _exitWhenNoWayBack();
   });
 }
 
@@ -748,8 +765,12 @@ if (!gotTheLock) {
 }
 
 app.on('window-all-closed', () => {
-  // Keep the process available in the tray after windows close.
-  // Explicit tray Quit exits the application.
+  // With the tray icon enabled, keep the process available in the tray after
+  // windows close; explicit tray Quit exits the application. With the tray
+  // disabled there is no way back in, so all windows closing exits. On macOS
+  // the always-present dock icon stays a way back, so the process remains
+  // resident as before.
+  if (!_flags.all().tray && process.platform !== 'darwin') app.quit();
 });
 
 /*
