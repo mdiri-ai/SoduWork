@@ -384,10 +384,18 @@ async def update_repo(rid: str, body: dict = Body(default_factory=dict),
 @router.delete("/repos/{rid}")
 async def delete_repo(rid: str, user: User = Depends(require_perm("task.dispatch")),
                       session: AsyncSession = Depends(get_session)):
-    from ..models import Repo
+    from ..models import DeploymentTarget, Repo
     r = await session.get(Repo, rid)
     if r is None:
         return {"ok": True}
+    # Referential-integrity guard: deleting a repo while its deployment targets still exist
+    # leaves orphan target rows that disappear from list_targets' join but keep referencing
+    # the deleted repo, permanently blocking environment deletion (#932).
+    targets = await session.scalar(
+        select(func.count()).select_from(DeploymentTarget).where(DeploymentTarget.repo_id == rid))
+    if targets:
+        raise HTTPException(status_code=409,
+                            detail=f"该仓库名下还有 {targets} 个部署目标，请先删除或改指这些部署目标后再删除仓库")
     name = r.name
     await session.delete(r)
     await session.commit()
