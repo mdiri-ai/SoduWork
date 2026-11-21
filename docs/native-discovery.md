@@ -1,5 +1,7 @@
 # Native screen and conversation relay discovery
 
+[简体中文](native-discovery.zh-CN.md) · **English** · [Documentation](README.md)
+
 The desktop reuses the authenticated account-sync WebSocket; it does not open
 another connection. After a screen/relay request commits, the Hub publishes a
 `native-discovery` hint to its source device **and owner account**. Hints contain
