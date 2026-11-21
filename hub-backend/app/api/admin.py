@@ -500,7 +500,7 @@ async def list_clients(
     state: str = Query(default="all", pattern="^(all|online|offline|pending)$"),
     form: str = Query(default="all", pattern="^(all|desktop|mobile)$"),
     page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=25, alias="pageSize", ge=10, le=100),
+    page_size: int = Query(default=25, alias="pageSize", ge=1, le=100),
     user: User = Depends(require_perm("client.view")),
     session: AsyncSession = Depends(get_session),
 ):
