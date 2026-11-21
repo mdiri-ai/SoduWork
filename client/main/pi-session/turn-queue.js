@@ -239,7 +239,7 @@ function createTurnQueue(now, onCompleted) {
       taskId: item.options.taskId, title: item.options.taskTitle || '', status: 'cancelled', at: clock(),
     });
     if (typeof item.options.afterTurn === 'function') {
-      Promise.resolve(item.options.afterTurn('stopped')).catch(() => {
+      Promise.resolve().then(() => item.options.afterTurn('stopped')).catch(() => {
         pauseReason = '已从队列移除，但任务回执未同步，请刷新后确认';
         pauseSource = 'external';
       });
