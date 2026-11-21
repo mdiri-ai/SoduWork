@@ -349,11 +349,15 @@ function ScenarioEditor({ row, copy, orgId, professions, workflows, onClose, onD
   const [busy, setBusy] = useState(false)
   const editing = !!row && !copy && row.orgId === orgId && !row.isSystem
   const workflow = workflows.find((item) => item.key === pluginKey)
+  const hasEnabledWorkflow = workflows.some((item) => item.enabled)
   const checks = [
     [!!name.trim(), tx("已说明这类工作叫什么")],
     [lines(hints).length > 0 || positionIds.length > 0, tx("有识别关键词或适用职业")],
     [lines(capabilities).length > 0, tx("声明了 Agent 所需能力（可选）")],
-    [!pluginKey || !!(workflow && workflow.enabled), tx("默认流程当前可用")],
+    [hasEnabledWorkflow && (!pluginKey || !!(workflow && workflow.enabled)),
+      !hasEnabledWorkflow ? tx("暂无可用流程，请先在流程页创建")
+        : !pluginKey ? tx("未指定流程（不参与校验）")
+        : workflow && workflow.enabled ? tx("默认流程当前可用") : tx("默认流程已停用")],
     [!!summary.trim() && lines(deliverables).length > 0 && lines(acceptance).length > 0, tx("交付物与验收标准完整")],
   ]
 
