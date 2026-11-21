@@ -484,9 +484,19 @@ async def trust_version(
             session, version,
             confirm_without_evaluation=bool(body.get("confirmWithoutEvaluation")))
         if not gate["ok"]:
-            raise HTTPException(
-                status_code=409,
-                detail="发布评测尚未通过：" + "；".join(gate.get("blockers") or []))
+            reasons = [str(item) for item in (gate.get("blockers") or []) if str(item).strip()]
+            if not reasons:
+                # Cases that only wait for release review never reach blockers, which used to
+                # produce a 409 whose reason was an empty string after the colon.
+                states = {"not-run": "尚未运行", "queued": "正在排队", "running": "正在执行",
+                          "completed": "等待审核", "failed": "执行失败", "cancelled": "已取消",
+                          "review-failed": "未通过"}
+                reasons = ["%s：%s" % (case.get("name") or case.get("key"),
+                                      states.get(case.get("state"), "未通过"))
+                           for case in (gate.get("cases") or []) if not case.get("ok")]
+                reasons = reasons or ["评测状态为 %s，请检查评测用例" % (gate.get("state") or "未知")]
+            raise HTTPException(status_code=409,
+                                detail="发布评测尚未通过：" + "；".join(reasons))
         # Evaluation helpers may commit their own results. Reacquire the
         # transition lock after those prerequisites, before trust/history change.
         await plugin_lifecycle_notifications.lock_plugin(session, plugin)
