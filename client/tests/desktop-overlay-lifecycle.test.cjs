@@ -74,6 +74,7 @@ function harness(t, { readyDuringLoad = false, synchronousBlur = false } = {}) {
       this.focusCount = 0;
       this.focusable = true;
       const wc = this.webContents = new EventEmitter();
+      wc.setWindowOpenHandler = () => ({ action: 'deny' });
       wc.isDestroyed = () => this.destroyed;
       wc.isDevToolsOpened = () => false;
       wc.openDevTools = () => {};

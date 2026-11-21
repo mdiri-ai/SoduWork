@@ -521,6 +521,15 @@ function create({ app, BrowserWindow, ipcMain, screen, globalShortcut, Notificat
   }
 
   function loadRenderer() { mainWindow.loadFile(path.join(rendererRoot(), 'index.html')); }
+  function _isLocalOverlayUrl(url) {
+    try {
+      const target = new URL(String(url || ''));
+      if (target.protocol !== 'file:') return false;
+      const root = path.resolve(rendererRoot()) + path.sep;
+      const dest = path.resolve(decodeURIComponent(target.pathname || ''));
+      return dest === path.resolve(rendererRoot()) || dest.startsWith(root);
+    } catch (_) { return false; }
+  }
 
   function redrawOverlay() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
@@ -632,6 +641,11 @@ function create({ app, BrowserWindow, ipcMain, screen, globalShortcut, Notificat
      * on reload.
      */
     const owner = mainWindow;
+    mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+      if (_isLocalOverlayUrl(url)) return;
+      event.preventDefault();
+    });
     _initialPaintReady = false;
     _initialRevealPending = true;
     parkOverlayShape();

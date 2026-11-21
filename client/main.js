@@ -237,6 +237,19 @@ function ensureAutostartDefault() {
 // The renderer always belongs to the same complete client release.
 function rendererRoot() { return __dirname; }
 
+function _isLocalRendererUrl(url) {
+  // Only local file: documents under the packaged renderer directory are trusted in this window.
+  try {
+    const target = new URL(String(url || ''));
+    if (target.protocol !== 'file:') return false;
+    const root = path.resolve(rendererRoot()) + path.sep;
+    const dest = path.resolve(decodeURIComponent(target.pathname || ''));
+    return dest === path.resolve(rendererRoot()) || dest.startsWith(root);
+  } catch (_) {
+    return false;
+  }
+}
+
 ipcMain.handle('app-version', () => app.getVersion());
 ipcMain.handle('hub-connection-info', () => _hubEndpoint.current(app));
 ipcMain.on('client-distribution-info', event => { event.returnValue = _distribution.publicInfo(); });
@@ -360,6 +373,19 @@ function openDeskWindow(payload, sourceWin) {
     }
   });
   _workWindows.set(windowKey, win);
+  // A model- or page-authored link must not navigate the privileged window away from the
+  // renderer (the preload bridge persists across navigation) or spawn a child window that
+  // inherits it. External links keep working through shell.openExternal, which the renderer
+  // already uses for http(s) targets.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (event, url) => {
+    if (_isLocalRendererUrl(url)) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(url)) shell.openExternal(url).catch(() => {});
+  });
   win.setMenuBarVisibility(false);
   _workspaceTitlebar.attach(win, titlebarOptions);
   /*
