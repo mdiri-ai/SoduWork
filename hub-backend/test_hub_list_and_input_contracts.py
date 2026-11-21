@@ -112,6 +112,26 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         limited = await self.request("GET", "admin/users?limit=1")
         self.assertEqual(([user["id"] for user in limited["items"]], limited["total"]), (["row-0"], 1))
 
+    async def test_device_search_treats_keywords_as_literal_substrings(self):
+        async with self.sessions() as session:
+            (await session.get(models.Client, "row-0")).name = "Win_01"
+            (await session.get(models.Client, "row-1")).name = "WinX01"
+            (await session.get(models.User, "row-1")).display_name = "ops%team"
+            (await session.get(models.User, "row-2")).username = r"hq\admin"
+            session.add(models.Client(id="dev_special", user_ref="row-2", auth_state="active"))
+            await session.commit()
+        for route in ("admin/clients", "admin/client-inventory"):
+            for term, ids in ((" WIN_01 ", ["row-0"]), ("%", ["row-1"]),
+                              ("dev_", ["dev_special"]), ("a%", []),
+                              ("\\", ["row-2", "dev_special"])):
+                with self.subTest(route=route, term=term):
+                    page = await self.request("GET", route, params={"paged": "true", "q": term})
+                    self.assertEqual(page["total"], len(ids))
+                    self.assertCountEqual([row["id"] for row in page["items"]], ids)
+        self.user.is_super = False
+        page = await self.request("GET", "admin/clients", params={"paged": "true", "q": "%"})
+        self.assertEqual((page["total"], page["items"]), (0, []))
+
     async def test_library_pages_cross_folder_boundary(self):
         with patch("app.api.library.library_read_cache.ensure_ready", new_callable=AsyncMock):
             first = await self.request("GET", "library?scope=all&limit=2")
