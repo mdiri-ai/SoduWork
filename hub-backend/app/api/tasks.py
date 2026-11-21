@@ -2017,7 +2017,10 @@ async def add_task_comment(
 ):
     """Post a comment and notify mentioned colleagues; body contains body and mentions entries."""
     t = await _view_task(session, client, tid)
-    text = (body.get("body") or "").strip()
+    raw = body.get("body")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(status_code=422, detail="body 必须是字符串")
+    text = (raw or "").strip()
     mentions = body.get("mentions") or []
     if not text:
         raise HTTPException(status_code=400, detail="评论不能为空")
