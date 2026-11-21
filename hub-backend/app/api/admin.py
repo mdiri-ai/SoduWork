@@ -618,12 +618,14 @@ async def paged_clients(
     keyword = q.strip().lower()
     search = []
     if keyword:
+        # Keep wildcards inside the keyword literal; a lone "%" used to return the whole fleet.
+        keyword = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         like = f"%{keyword}%"
         search = [or_(
-            func.lower(func.coalesce(Client.name, "")).like(like),
-            func.lower(Client.id).like(like),
-            func.lower(func.coalesce(User.display_name, "")).like(like),
-            func.lower(func.coalesce(User.username, "")).like(like),
+            func.lower(func.coalesce(Client.name, "")).like(like, escape="\\"),
+            func.lower(Client.id).like(like, escape="\\"),
+            func.lower(func.coalesce(User.display_name, "")).like(like, escape="\\"),
+            func.lower(func.coalesce(User.username, "")).like(like, escape="\\"),
         )]
 
     total = int(await session.scalar(
