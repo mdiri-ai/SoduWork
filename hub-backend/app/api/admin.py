@@ -357,6 +357,10 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     await _assert_user_in_scope(session, user, target)
+    # Self-privilege-escalation guard: a non-super admin must not change their own
+    # role (grant or clear), which would bypass the permission model entirely.
+    if uid == user.id and "roleId" in body.model_fields_set and not user.is_super:
+        raise HTTPException(status_code=403, detail="不能修改自己的角色")
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)
@@ -1798,6 +1802,12 @@ async def put_team_module_scope(
     return {"ok": True, "scope": scope}
 
 
+def _mask_webhook(url: str) -> str:
+    """Mask the bot key segment so the raw credential never round-trips to the client."""
+    import re
+    return re.sub(r"(key=)[^&\s]+", r"\1***masked***", url or "")
+
+
 @router.get("/alert-config", dependencies=[Depends(require_perm("integration.manage"))])
 async def get_alert_config(session: AsyncSession = Depends(get_session)):
     """Configure delivery alert channels; an empty configuration keeps alerts in the application."""
@@ -1805,7 +1815,7 @@ async def get_alert_config(session: AsyncSession = Depends(get_session)):
     from ..services import notify
     row = (await session.execute(select(AppSetting).where(
         AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-    return {"url": (row.value if row else "") or ""}
+    return {"url": _mask_webhook((row.value if row else "") or "")}
 
 
 @router.put("/alert-config")
@@ -1819,6 +1829,12 @@ async def put_alert_config(
     url = str(body.get("url") or "").strip()[:600]
     if url and not url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
+    if "***masked***" in url:
+        # The client echoed the masked value back; keep the stored credential untouched.
+        row = (await session.execute(select(AppSetting).where(
+            AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
+        configured = bool(row and row.value)
+        return {"ok": True, "configured": configured}
     row = (await session.execute(select(AppSetting).where(
         AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
     if row is None:
