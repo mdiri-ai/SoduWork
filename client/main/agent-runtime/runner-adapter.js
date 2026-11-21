@@ -736,11 +736,13 @@ async function createRunnerHandle(request, defaults, initialSession) {
     const sentAt = messageTime.epoch(item.sentAt);
     const id = String(item.submissionId || '').slice(0, 128);
     if (id && row.submissionId && id !== row.submissionId) return false;
-    if (sentAt && sentAt !== row.sentAt) return false;
     if (item.admissionKey !== key && !(id && id === row.submissionId)) {
+      // The admission key is authoritative: a Runner echoing our own key is
+      // replaying the turn just dispatched, so never require timestamp equality.
       // Older Runners omit the key or stamp a comment before advancing the
       // admission. Require the original timestamp for a previous-key echo.
       if (item.admissionKey && (item.admissionKey !== previousKey || !sentAt)) return false;
+      if (sentAt && sentAt !== row.sentAt) return false;
       if (_text(row.text, 50000) !== text) return false;
     }
     pendingUserEcho = null;
