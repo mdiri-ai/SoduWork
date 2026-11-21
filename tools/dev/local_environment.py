@@ -18,6 +18,7 @@ import re
 import tempfile
 import time
 
+from . import intel_macos_build
 from .local_path_check import check_windows_source_paths
 
 
@@ -42,9 +43,12 @@ class DiskFullError(StartupError):
     """A storage failure that must not be replaced with download advice."""
 
 
-def command_failure(message: str, log: Path, offset: int) -> StartupError:
+def command_failure(message: str, log: Path, offset: int, *, pip_python: str | None = None,
+                    env: dict | None = None) -> StartupError:
     """Classify only this attempt, without echoing potentially private output."""
     prefix = f"{message}. See {log}. "
+    intel_pip = pip_python is not None and sys.platform == "darwin"
+    compiler_failure = False
     try:
         with log.open('rb') as output:
             output.seek(offset)
@@ -56,9 +60,22 @@ def command_failure(message: str, log: Path, offset: int) -> StartupError:
                     return DiskFullError(prefix + '磁盘空间不足 / Disk full. '
                                          'Free space on the data, cache or temporary-directory volume '
                                          'and retry; completed steps are reused.')
-                tail = text[-128:]
+                if intel_pip and re.search(rb"Check for working C compiler:[^\r\n]{1,512} - broken|"
+                                           rb"No CMAKE_C_COMPILER could be found|C compiler cannot create executables",
+                                           text, re.I):
+                    compiler_failure = True
+                tail = text[-600:]
     except OSError:
         pass  # Preserve the command failure even if its log cannot be read.
+    if compiler_failure:
+        install_env = env if env is not None else os.environ
+        arch = intel_macos_build.output([pip_python, "-I", "-B", "-c", "import platform; print(platform.machine())"], install_env)
+        if arch.lower() in {"x86_64", "amd64"} and not intel_macos_build.compiler_ready(install_env):
+            return StartupError(prefix + "其他 Python 依赖需要可用的 Intel C 编译器和 macOS SDK。"
+                                "请安装适配系统的 Xcode 命令行工具（xcode-select --install），或配置可编译 x86_64 的 CC 和 SDKROOT 后重试。 "
+                                "A source dependency could not compile for Intel macOS. Install compatible Xcode "
+                                "Command Line Tools, configure CC and SDKROOT for x86_64, or supply compatible wheels "
+                                "for the remaining source dependencies.")
     return StartupError(prefix + 'Check the failing step in the log for the cause and retry; '
                         'completed steps are reused.')
 
@@ -110,7 +127,7 @@ def wait_child(child: subprocess.Popen, *, progress_label: str | None = None,
 
 
 def run(command: list[str], *, cwd: Path, log: Path, label: str,
-        env: dict | None = None, timeout: float | None = None) -> None:
+        env: dict | None = None, timeout: float | None = None, diagnose_pip_build: bool = False) -> None:
     print(label, flush=True)
     started = time.monotonic()
     with log.open("ab") as output:
@@ -128,7 +145,8 @@ def run(command: list[str], *, cwd: Path, log: Path, label: str,
                 stop_child(child)
                 raise
     if code:
-        raise command_failure(f"{label} failed (exit {code})", log, offset)
+        raise command_failure(f"{label} failed (exit {code})", log, offset,
+                              pip_python=command[0] if diagnose_pip_build else None, env=env)
     print(f"  完成 / Done ({time.monotonic() - started:.1f}s)", flush=True)
 
 
@@ -190,16 +208,27 @@ def check_desktop_session() -> None:
                            "or use start.py without --desktop for a headless service.")
 
 
-def dependency_report(*, desktop: bool = False) -> None:
+def dependency_report(*, desktop: bool = False, state: Path | None = None) -> None:
     """Read-only prerequisite check; never initialize an instance or install software."""
     _, npm, version = _probe_dependencies()
     print(f"Python: {platform.python_version()} ({sys.executable})")
     print(f"Node.js: {version}")
     print(f"npm: {npm}\nPlatform: {platform.system()} {platform.machine()}")
+    python = state / "venv/bin/python" if state else None
+    pin, gaps = intel_macos_build.requirements_for(python, ROOT / "hub-backend/requirements.txt", os.environ, read_only=True)
+    if gaps:
+        guidance = intel_macos_build.instructions(pin, gaps)
+        if not intel_macos_build.explicit_wheel_source(os.environ):
+            raise StartupError(guidance)
+        print(guidance)
     if desktop:
         check_desktop_session()
         print("Desktop: Electron will be installed in this instance's private application directory.")
-    print("Prerequisites are ready. First-time setup needs internet access; no files were changed.")
+    if gaps:
+        print(f"已配置 pip 软件源，兼容 wheel 待安装时核验 / pip will verify availability and compatibility "
+              f"of {pin} from the configured source during setup. This check did not access it or change files.")
+    else:
+        print("Prerequisites are ready. First-time setup needs internet access; no files were changed.")
 
 
 @lru_cache(maxsize=1)
@@ -216,8 +245,11 @@ def checkout_files() -> set[Path] | None:
         output = subprocess.check_output([git, "-C", str(ROOT), "ls-files", "-co",
                                           "--exclude-standard", "-z"], timeout=20,
                                          stderr=subprocess.DEVNULL, **spawn_options())
-    except subprocess.SubprocessError as exc:
-        raise StartupError("Cannot inspect source checkout files. Check Git access or use a clean source archive.") from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        reason = "Cannot inspect source checkout files. Check Git access or use a clean source archive."
+        if sys.platform == "darwin" and not intel_macos_build.output(["xcrun", "--find", "git"], os.environ):
+            reason += " 找不到 Xcode 命令行工具 / Install Xcode Command Line Tools with xcode-select --install."
+        raise StartupError(reason) from exc
     return {ROOT / item.decode("utf-8") for item in output.split(b"\0") if item}
 
 
@@ -403,7 +435,8 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
     requirements = [ROOT / "hub-backend" / name for name in ("requirements.txt", "requirements-runner.txt")]
     py_stamp = state / "python-dependencies.sha256"
     wanted = digest_files(requirements, ROOT)
-    install = read_stamp(py_stamp) != wanted
+    pin, gaps = intel_macos_build.requirements_for(python, requirements[0], python_env)
+    install = bool(pin) or read_stamp(py_stamp) != wanted
     if not install:
         try:
             verify_runner_environment(python, backend, log, env=python_env)
@@ -414,9 +447,22 @@ def prepare(state: Path, log: Path) -> tuple[Path, Path]:
             # launcher's environment, never a checkout or activated shell venv.
             install = True
     if install:
+        if gaps:
+            # A local wheelhouse or private index can supply a matching wheel
+            # without any compiler. Never fall back to an implicit Rust download.
+            guidance = intel_macos_build.instructions(pin, gaps)
+            print(guidance, flush=True)
+            try:
+                run([str(python), "-I", "-m", "pip", "install", "--disable-pip-version-check",
+                     "--only-binary=:all:", "--no-deps", pin], cwd=state, log=log, env=python_env,
+                    label="[Intel macOS] 查找预编译 wheel / Checking for a compatible wheel")
+            except DiskFullError:
+                raise
+            except StartupError as exc:
+                raise StartupError(f"{guidance}\n{exc}") from exc
         run([str(python), "-I", "-m", "pip", "install", "--disable-pip-version-check",
              *[argument for file in requirements for argument in ("-r", str(file))]], cwd=state, log=log,
-            env=python_env,
+            env=python_env, diagnose_pip_build=True,
             label="[2/4] 安装服务依赖 / Installing server dependencies (first run needs internet)")
         verify_runner_environment(python, backend, log, env=python_env)
         py_stamp.write_text(wanted, encoding="utf-8")

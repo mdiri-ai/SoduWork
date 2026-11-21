@@ -115,7 +115,7 @@ class LocalStartupTests(unittest.TestCase):
                 patch.object(start, 'dependency_report') as report, \
                 patch.object(start, 'initialize') as initialize:
             self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
-        report.assert_called_once_with(desktop=False)
+        report.assert_called_once_with(desktop=False, state=self.state.resolve())
         initialize.assert_not_called()
         self.assertFalse(self.state.exists())
 
@@ -1132,7 +1132,7 @@ class LocalStartupTests(unittest.TestCase):
         with patch.dict(os.environ, {'DISPLAY': ':fixture'}), \
                 patch.object(start, 'dependency_report') as report, patch.object(start, 'initialize') as initialize:
             self.assertEqual(start.main(['--check', '--desktop', '--data-dir', str(self.state)]), 0)
-        report.assert_called_once_with(desktop=True)
+        report.assert_called_once_with(desktop=True, state=self.state.resolve())
         initialize.assert_not_called()
         self.assertFalse(self.state.exists())
 
@@ -1449,6 +1449,8 @@ class LocalStartupTests(unittest.TestCase):
             cache_env = build.prepare_environment(state)
             build.prepare(state, state / 'startup.log')
         installs = run.call_args_list
+        self.assertEqual([call.args[0] for call in installs if call.kwargs.get("diagnose_pip_build")],
+                         [call.args[0] for call in installs if "pip" in call.args[0]])
         self.assertEqual(len(installs), 5)  # venv, pip, Runner probe, npm ci, build
         self.assertTrue(any('pip' in call.args[0] for call in installs))
         for call in installs:
@@ -1470,6 +1472,211 @@ class LocalStartupTests(unittest.TestCase):
         imports = {module.name for statement in ast.parse(command[3]).body
                    if isinstance(statement, ast.Import) for module in statement.names}
         self.assertIn('truststore', imports)
+
+    def test_intel_pin_readiness_uses_target_interpreter_and_leaves_other_platforms_alone(self):
+        intel = build.intel_macos_build
+        python = self.state / "venv/bin/python"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        requirements = self.state / "requirements.txt"
+        requirements.write_text("cryptography==50.0.2\n", encoding="utf-8")
+        for target, installed, expected in (("x86_64", "50.0.2", ""), ("x86_64", "49.0.0", "cryptography==50.0.2"),
+                                            ("arm64", "", "")):
+            with self.subTest(target=target, installed=installed), patch.object(sys, "platform", "darwin"), \
+                    patch.object(intel.platform, "machine", return_value="arm64"), \
+                    patch.object(intel, "output", side_effect=[target, installed]), \
+                    patch.object(intel, "build_gaps", return_value=[]) as probes:
+                pin, gaps = intel.requirements_for(python, requirements, {})
+                self.assertEqual((pin, gaps), (expected, []))
+                self.assertEqual(probes.called, bool(expected))
+        for system in ("linux", "win32"):
+            with patch.object(sys, "platform", system), patch.object(intel, "output") as probe:
+                self.assertEqual(intel.requirements_for(python, requirements, {}), ("", []))
+                probe.assert_not_called()
+
+    @unittest.skipUnless(os.name == "posix", "The POSIX launcher uses sh; Windows uses start.cmd")
+    def test_intel_source_launcher_check_with_a_synthetic_toolchain(self):
+        tools = Path(self.temp.name) / "toolchain"
+        tools.mkdir()
+        prefix = tools / "openssl"
+        inc, libs = prefix / "include/openssl", prefix / "lib"
+        inc.mkdir(parents=True)
+        libs.mkdir()
+        (inc / "ssl.h").touch()
+        header = inc / "opensslv.h"
+        header.write_text("# define OPENSSL_VERSION_MAJOR 3\n")
+        for name in ("ssl", "crypto"):
+            (libs / f"lib{name}.dylib").touch()
+        (tools / "libstd-fixture.rlib").touch()
+        driver = tools / "driver.py"
+        driver.write_text(
+            "import os, platform, runpy, sys\nsys.path.insert(0, os.getcwd())\n"
+            "from tools.dev import start_local\nplatform.machine = lambda: os.environ['FIXTURE_ARCH']\n"
+            "sys.platform = 'darwin'\nsys.argv = sys.argv[1:]\nrunpy.run_path('start.py', run_name='__main__')\n")
+        scripts = {
+            "python3": 'if [ "$1" = start.py ]; then exec "$TEST_PYTHON" "$TEST_DRIVER" "$@"; fi\nexec "$TEST_PYTHON" "$@"',
+            "node": "echo v22.23.3", "npm": "echo 10.9.7",
+            "rustc": 'if [ "$1" = --version ]; then echo "rustc ${TEST_RUST}"; else echo "$TEST_LIBS"; fi',
+            "cargo": 'echo "cargo 1.83.0"',
+            "cross-cc": 'test "$1" = "-isysroot" && test "$2" = "$TEST_LIBS" || exit 1\n'
+                        'test "$TEST_CC_ARCH" = x86_64 || exit 1\n'
+                        'grep -q "TargetConditionals.h" && echo SODUWORK_INTEL_SDK',
+            "xcrun": 'if [ "$TEST_XCRUN" = broken ] && [ "$1" != lipo ]; then exit 1; fi\n'
+                     'case "$1" in --find|--show-sdk-path) echo "$TEST_LIBS";; lipo) echo "$TEST_LIB_ARCH";; esac',
+        }
+        for name, script in scripts.items():
+            path = tools / name
+            path.write_text("#!/bin/sh\n" + script + "\n")
+            path.chmod(0o700)
+        env = {**os.environ, "PATH": str(tools) + ":" + os.defpath, "TEST_PYTHON": sys.executable,
+               "TEST_DRIVER": str(driver), "FIXTURE_ARCH": "x86_64", "TEST_RUST": "1.83.0",
+               "TEST_LIBS": str(tools), "TEST_LIB_ARCH": "x86_64", "OPENSSL_DIR": str(prefix)}
+        for key in ("CARGO", "RUSTC", "OPENSSL_STATIC", "OPENSSL_LIB_DIR", "OPENSSL_INCLUDE_DIR", "CC",
+                    "SDKROOT", "ARCHFLAGS", "PIP_FIND_LINKS", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_NO_INDEX"):
+            env.pop(key, None)
+        command = ["/bin/sh", "start.sh", "--check", "--data-dir", str(self.state)]
+
+        def check(**overrides):
+            return subprocess.run(command, cwd=build.ROOT, env={**env, **overrides}, capture_output=True,
+                                  text=True, timeout=25)
+
+        self.assertEqual(check().returncode, 0)
+        self.assertFalse(self.state.exists())
+        for changes, missing in (({"TEST_RUST": "1.82.9"}, "rustc >= 1.83.0"),
+                                 ({"TEST_LIB_ARCH": "arm64"}, "OpenSSL")):
+            result = check(**changes)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(missing, result.stderr)
+        cross = {"CC": str(tools / "cross-cc"), "SDKROOT": str(tools), "TEST_XCRUN": "broken"}
+        self.assertEqual(check(**cross, TEST_CC_ARCH="x86_64").returncode, 0)
+        self.assertIn("Clang + macOS SDK", check(**cross, TEST_CC_ARCH="arm64").stderr)
+        self.assertIn("Clang + macOS SDK", check(TEST_XCRUN="broken").stderr)
+        pending = check(TEST_XCRUN="broken", PIP_FIND_LINKS=str(tools / "private-wheelhouse"))
+        self.assertEqual(pending.returncode, 0)
+        self.assertIn("pip will verify", pending.stdout)
+        self.assertNotIn("Prerequisites are ready", pending.stdout)
+        self.assertNotIn("private-wheelhouse", pending.stdout)
+        header.write_text("#define OPENSSL_VERSION_NUMBER 0x1010107fL\n")
+        self.assertIn("OpenSSL", check().stderr)
+        self.assertEqual(check(FIXTURE_ARCH="arm64", TEST_RUST="0.0.0").returncode, 0)
+
+        interpreter = self.state / "venv/bin/python"
+        interpreter.parent.mkdir(parents=True)
+        marker = self.state / "untrusted-python-was-run"
+        interpreter.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+        interpreter.chmod(0o700)
+        self.assertNotEqual(check().returncode, 0)
+        self.assertFalse(marker.exists())
+
+    def test_read_only_intel_check_reuses_installed_native_package_metadata_without_running_it(self):
+        intel = build.intel_macos_build
+        venv = self.state / "venv"
+        python = venv / "bin/python"
+        python.parent.mkdir(parents=True)
+        python.touch()
+        (venv / "pyvenv.cfg").write_text("version = 3.13.12\n")
+        (self.state / "local-service.json").write_text('{"schema": 1}')
+        site = venv / "lib/python3.13/site-packages"
+        metadata = site / "cryptography-50.0.2.dist-info/METADATA"
+        native = site / "cryptography/hazmat/bindings/_rust.abi3.so"
+        for item in (metadata, native):
+            item.parent.mkdir(parents=True)
+        metadata.write_text("Metadata-Version: 2.4\nName: cryptography\nVersion: 50.0.2\n")
+        native.touch()
+        requirements = self.state / "requirements.txt"
+        requirements.write_text("cryptography==50.0.2\n")
+        def binary_type(command, env):
+            self.assertEqual(command[:2], ["/usr/bin/file", "-Lb"])
+            return "Mach-O 64-bit x86_64"
+        with patch.object(sys, "platform", "darwin"), patch.object(intel, "output", side_effect=binary_type), \
+                patch.object(intel, "build_gaps", side_effect=AssertionError("unneeded compiler probe")):
+            self.assertEqual(intel.requirements_for(python, requirements, {}, read_only=True), ("", []))
+
+    def test_intel_library_inspection_falls_back_only_to_system_tools(self):
+        intel = build.intel_macos_build
+        lib = self.state / "libcrypto.dylib"
+        commands = []
+        def inspect(command, env):
+            commands.append(command)
+            return "x86_64 arm64" if command[:3] == ["/usr/bin/arch", "-arm64", "/usr/bin/xcrun"] else ""
+        with patch.object(intel, "output", side_effect=inspect):
+            self.assertIn("x86_64", intel.library_arches(lib, {}))
+            self.assertEqual(commands, [
+                ["xcrun", "lipo", "-archs", str(lib)], ["/usr/bin/lipo", "-archs", str(lib)],
+                ["/usr/bin/arch", "-arm64", "/usr/bin/xcrun", "lipo", "-archs", str(lib)]])
+        with patch.object(intel, "output", return_value="arm64") as probe:
+            self.assertEqual(intel.library_arches(lib, {}), ["arm64"])
+            probe.assert_called_once()
+
+    def test_arm_launcher_checks_default_compiler_as_the_intel_pip_child(self):
+        intel = build.intel_macos_build
+        with patch.object(intel.platform, "machine", return_value="arm64"), patch.object(intel, "output", return_value="") as probe:
+            self.assertFalse(intel.compiler_ready({}))
+            probe.assert_called_once_with(["/usr/bin/arch", "-x86_64", "/usr/bin/xcrun", "--find", "clang"], {})
+
+    def test_only_explicit_alternate_pip_sources_defer_wheel_verification(self):
+        check = build.intel_macos_build.explicit_wheel_source
+        self.assertFalse(check({"PIP_INDEX_URL": "https://pypi.org/simple"}))
+        self.assertFalse(check({"PIP_INDEX_URL": "https://mirror.example/simple", "PIP_NO_INDEX": "true"}))
+        self.assertTrue(check({"PIP_EXTRA_INDEX_URL": "https://mirror.example/simple"}))
+        self.assertTrue(check({"PIP_NO_INDEX": "1", "PIP_FIND_LINKS": "local-wheelhouse"}))
+
+    def test_macos_checkout_failure_identifies_missing_command_line_tools(self):
+        with patch.object(sys, "platform", "darwin"), patch.object(build.shutil, "which", return_value="git"), \
+                patch.object(build, "ROOT", self.state), patch.object(build.subprocess, "check_output",
+                    side_effect=subprocess.CalledProcessError(1, "git")), \
+                patch.object(build.intel_macos_build, "output", return_value=""):
+            self.state.mkdir()
+            (self.state / ".git").mkdir()
+            build.checkout_files.cache_clear()
+            self.addCleanup(build.checkout_files.cache_clear)
+            with self.assertRaisesRegex(build.StartupError, "xcode-select --install"):
+                build.checkout_files()
+
+    def test_intel_pip_compiler_diagnostic_uses_only_current_native_build_evidence(self):
+        log = Path(self.temp.name) / "pip.log"
+        native_error = b"Check for working C compiler: /usr/bin/cc - broken\nERROR: Failed building wheel for a package\n"
+        log.write_bytes(native_error)
+        offset = log.stat().st_size
+        with patch.object(sys, "platform", "darwin"), patch.object(build.intel_macos_build, "output", return_value="x86_64"), \
+                patch.object(build.intel_macos_build, "compiler_ready", return_value=False):
+            for unrelated in (b"TLS certificate verify failed", b"No matching distribution found for fastapi"):
+                log.write_bytes(native_error + unrelated)
+                error = build.command_failure("pip failed", log, offset, pip_python="python", env={})
+                self.assertNotIn("xcode-select", str(error))
+            log.write_bytes(native_error + native_error)
+            self.assertIn("SDKROOT", str(build.command_failure("pip failed", log, offset, pip_python="python", env={})))
+            self.assertNotIn("SDKROOT", str(build.command_failure("npm failed", log, offset)))
+            log.write_bytes(native_error + native_error + b"No space left on device")
+            self.assertIsInstance(build.command_failure("pip failed", log, offset, pip_python="python", env={}), build.DiskFullError)
+        log.write_bytes(native_error)
+        with patch.object(sys, "platform", "darwin"), patch.object(build.intel_macos_build, "output", return_value="x86_64"), \
+                patch.object(build.intel_macos_build, "compiler_ready", return_value=True):
+            self.assertNotIn("xcode-select", str(build.command_failure("pip failed", log, 0, pip_python="python", env={})))
+
+    def test_intel_missing_toolchain_tries_only_the_pinned_wheel_before_other_packages(self):
+        self.state.mkdir()
+        pin = "cryptography==50.0.2"
+        fake_venv = self.fake_venv_run(self.state)
+
+        def fail_wheel(command, **kwargs):
+            if pin in command:
+                raise build.StartupError("fixture: no compatible wheel")
+            fake_venv(command, **kwargs)
+
+        with patch.object(build, "check_dependencies", return_value=("node", "npm")), \
+                patch.object(build, "sync_source"), patch.object(build, "shutil"), \
+                patch.object(build, "source_copy_targets", return_value=()), \
+                patch.object(build.intel_macos_build, "requirements_for", return_value=(pin, ["Cargo"])), \
+                patch.object(build, "run", side_effect=fail_wheel) as run:
+            with self.assertRaisesRegex(build.StartupError, "Cargo"):
+                build.prepare(self.state, self.state / "startup.log")
+        commands = [call.args[0] for call in run.call_args_list if "pip" in call.args[0]]
+        self.assertEqual(len(commands), 1)
+        self.assertIn("--only-binary=:all:", commands[0])
+        self.assertIn("--no-deps", commands[0])
+        self.assertIn(pin, commands[0])
+        self.assertFalse((self.state / "python-dependencies.sha256").exists())
 
     def test_cached_runner_disk_full_is_not_retried_as_a_dependency_repair(self):
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
