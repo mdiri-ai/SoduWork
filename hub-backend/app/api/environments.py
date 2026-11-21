@@ -8,8 +8,8 @@ from ..db import get_session
 from ..deps import require_perm
 from ..models import User
 from ..services import (approval_policies as policy_svc, audit, deployments,
-                        environment_service as svc, project_setup, rbac,
-                        release_control, runner_hub)
+                        environment_service as svc, library_conversation_save,
+                        project_setup, rbac, release_control, runner_hub)
 from .input_validation import parse_integer
 
 router = APIRouter(prefix="/api/v1/admin", tags=["environments"])
@@ -344,7 +344,11 @@ async def create_environment(
             raise ValueError("请先加入组织后再创建环境")
         if "sort" in safe:
             safe["sort"] = parse_integer(safe["sort"], field="sort", default=0)
-        row = await svc.save_environment(session, safe)
+        # Serialize check-then-insert on the key: without this, concurrent creates all pass the
+        # count check and write duplicate promotion-graph nodes.
+        async with library_conversation_save.save_lock(
+                session, "environment", str(body.get("key") or "").lower()):
+            row = await svc.save_environment(session, safe)
     except ValueError as e:
         raise _bad(e) from e
     await audit.log(session, user, "environment.create", "environment", row.id, row.name,
