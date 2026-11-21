@@ -23,6 +23,16 @@ from .plugin_bindings import (
     public_inputs, public_workflow_node, available_bindings,
 )
 
+def _discard_package(path: str) -> None:
+    """Remove a stored package whose database transaction never landed."""
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def _ms(dt):
     from .release_control import _ms as stamp
     return stamp(dt)
@@ -384,23 +394,32 @@ async def install(session: AsyncSession, data: bytes, user, org_id: str | None =
             "同一个版本号的插件内容已经变化，请提升版本号后再导入")
 
     path = plugin_packages.store(parsed)
-    capability_report = dict(parsed["capabilities"] or {})
-    capability_report["sourceKind"] = parsed["sourceKind"]
-    version = am.PluginVersion(
-        plugin_id=plugin.id, version=manifest["version"], checksum=parsed["checksum"],
-        manifest=manifest, workflow=parsed["workflow"],
-        capability_report=capability_report,
-        provenance=_provenance(
-            parsed, user, source_channel, source_name, signature_proof, candidate),
-        package_path=path,
-        trust_state="quarantined", visibility=mode, enabled=False, created_by=uid)
-    version, created = await plugin_identity.insert_version_once(session, version)
+    try:
+        capability_report = dict(parsed["capabilities"] or {})
+        capability_report["sourceKind"] = parsed["sourceKind"]
+        version = am.PluginVersion(
+            plugin_id=plugin.id, version=manifest["version"], checksum=parsed["checksum"],
+            manifest=manifest, workflow=parsed["workflow"],
+            capability_report=capability_report,
+            provenance=_provenance(
+                parsed, user, source_channel, source_name, signature_proof, candidate),
+            package_path=path,
+            trust_state="quarantined", visibility=mode, enabled=False, created_by=uid)
+        version, created = await plugin_identity.insert_version_once(session, version)
+        if created:
+            await plugin_audience.replace(
+                session, version, mode, selected_users, org_id=org_id, created_by=uid,
+                org_unit_ids=selected_orgs)
+            await session.commit()
+    except Exception:
+        # The stored file is only reachable through its version row; without the row it is an
+        # orphan the delete endpoint can never find, so drop it here.
+        _discard_package(path)
+        raise
     if not created:
+        # Another import won the race and owns its own package file.
+        _discard_package(path)
         return await reuse_version(version)
-    await plugin_audience.replace(
-        session, version, mode, selected_users, org_id=org_id, created_by=uid,
-        org_unit_ids=selected_orgs)
-    await session.commit()
     return {"created": created, "versionId": version.id,
             "plugin": await plugin_api(session, plugin, True)}
 
