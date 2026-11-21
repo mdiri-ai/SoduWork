@@ -169,6 +169,7 @@ npm 注册表与二进制下载使用不同的地址。设置 npm 镜像只改�
 先区分失败发生在哪一步：
 
 - **`git clone` 报 schannel `0x80092012` / 撤销检查失败**：这是 Git 获取源码时的证书撤销检查问题，发生在启动器运行之前。核对系统时间、可信证书链、代理及证书撤销服务的可达性；受管理的网络应请管理员确认代理证书与访问策略。切换 `sh` / `cmd` 启动入口不能修复克隆失败。不建议设置全局 `http.schannelCheckRevoke=false`，它会关闭撤销检查并影响后续 Git 请求。
+- **`git clone` 报 `Connection was reset` / 443 连接超时**：这是 GitHub 不可达的连接层失败，与上面的证书撤销检查问题不同，发生在启动器运行之前。网络环境无法直连 github.com 时，可通过可信的 Git 镜像克隆，例如 `git clone https://<镜像>/https://github.com/mdiri-ai/SoduWork`；克隆完成后用 `git remote set-url origin https://github.com/mdiri-ai/SoduWork` 恢复官方地址，避免影响后续同步与贡献流程。镜像只中继 Git 协议，应保持证书校验开启，并自行确认镜像可信。克隆成功但启动仍报下载失败时，按下文各下载源的镜像说明分别处理。
 - **Electron 或 PortableGit 下载报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE` 等证书链错误**：检查对应下载地址及代理提供的证书链。企业 TLS 代理需要由管理员提供可信 CA，并按所用 Git / Node 下载工具的方式配置信任；Git 的证书配置不等于 Node 的配置。不要用 `NODE_TLS_REJECT_UNAUTHORIZED=0` 绕过校验；即使某个归档有固定摘要，也不能保护同一安装过程中所有请求。
 - **只看到 `TypeError: fetch failed`**：这是通用网络错误，不足以判断是 GitHub 不可达或证书问题。查看 `startup.log` 中同一失败步骤的底层错误（如 `cause.code`）及下载地址，再分别核查 DNS、代理、超时或 TLS。
 
