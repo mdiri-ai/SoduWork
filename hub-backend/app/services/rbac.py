@@ -289,6 +289,13 @@ async def delete_org(
     users = await session.scalar(select(func.count()).select_from(models.User).where(models.User.org_id == oid))
     if users:
         return {"ok": False, "reason": "has_users"}
+    # Positions, scenarios and projects reference the department by org_id without a foreign key;
+    # deleting the department first used to leave rows no scoped list could ever show again.
+    for model, reason in ((models.Position, "has_positions"),
+                          (models.WorkScenario, "has_scenarios"),
+                          (models.Project, "has_projects")):
+        if await session.scalar(select(func.count()).select_from(model).where(model.org_id == oid)):
+            return {"ok": False, "reason": reason}
     deleted = {"id": o.id, "name": o.name}
     await session.delete(o)
     await session.commit()
