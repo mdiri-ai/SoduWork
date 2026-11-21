@@ -30,6 +30,11 @@ async def settings(_user: User = Depends(require_perm("identity.manage")),
 @router.put("/mail-settings")
 async def save(body: dict = Body(default_factory=dict), user: User = Depends(require_perm("identity.manage")),
                session: AsyncSession = Depends(get_session)):
+    # Global SMTP credentials control password-reset mail for the whole instance: a scoped
+    # identity.manage in a sub-department must not be able to hijack them (#930).
+    if not user.is_super:
+        raise HTTPException(status_code=403,
+                            detail="SMTP 配置为平台级凭据，仅超级管理员可修改")
     try:
         result = await mail.save_settings(session, body)
         await session.commit()
