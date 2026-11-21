@@ -246,24 +246,26 @@ The Electron binary download has a ten-minute limit. If it times out, configure 
 macOS/Linux:
 
 ```sh
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ sh start.sh --desktop
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_CUSTOM_DIR='{{ version }}' sh start.sh --desktop
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+$env:ELECTRON_CUSTOM_DIR = '{{ version }}'
 .\start.cmd --desktop
 ```
 
 Windows Command Prompt:
 
 ```bat
-set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
+set "ELECTRON_CUSTOM_DIR={{ version }}"
 start.cmd --desktop
 ```
 
-Existing `ELECTRON_MIRROR` and proxy settings are passed to the installer, which verifies download checksums. This mirror setting affects Electron only; Windows PortableGit uses the separate settings above. Slow connections can set `ELECTRON_DOWNLOAD_TIMEOUT` to a larger number of seconds. Successfully installed dependencies are reused on the next attempt.
+Check `startup.log` for the requested Electron URL and proxy settings. For a certificate error, check the chain trusted by Node.js. For a checksum failure, verify that the artifact matches the locked release. Rerun the same launcher to reuse successfully installed npm dependencies. Windows PortableGit uses the separate mirror settings above.
 
 Check `desktop.log` in the same data directory. Resolve Electron download problems and retry. Linux desktop mode requires a graphical session and Electron's native libraries, such as NSS, GTK, and X11/Wayland. The launcher does not disable the sandbox or install operating system packages.
 

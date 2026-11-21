@@ -247,24 +247,26 @@ Electron 二进制文件的下载有十分钟超时限制。超时后，按上�
 macOS/Linux：
 
 ```sh
-ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ sh start.sh --desktop
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_CUSTOM_DIR='{{ version }}' sh start.sh --desktop
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+$env:ELECTRON_CUSTOM_DIR = '{{ version }}'
 .\start.cmd --desktop
 ```
 
 Windows 命令提示符：
 
 ```bat
-set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/
+set "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/"
+set "ELECTRON_CUSTOM_DIR={{ version }}"
 start.cmd --desktop
 ```
 
-安装器会沿用已有 `ELECTRON_MIRROR` 和代理设置，并校验下载文件的摘要。这个镜像设置只影响 Electron，Windows PortableGit 需按上面的独立设置处理。慢速网络可将 `ELECTRON_DOWNLOAD_TIMEOUT` 设置为更大的秒数。下次启动会复用已安装成功的依赖。
+在 `startup.log` 中查看实际请求的 Electron 地址和代理设置状态。遇到证书错误时检查 Node.js 信任的证书链，校验失败时确认下载文件与锁定的版本一致。重新运行原启动命令会复用已成功安装的 npm 依赖。Windows PortableGit 使用上文的独立镜像设置。
 
 查看同一数据目录中的 `desktop.log`。Electron 下载失败时先解决下载问题，再重试。Linux 桌面需要图形会话和 Electron 所需的系统库（如 NSS、GTK、X11/Wayland）；启动器不会关闭沙箱或自动修改系统包。
 

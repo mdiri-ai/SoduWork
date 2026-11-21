@@ -1310,14 +1310,192 @@ class LocalStartupTests(unittest.TestCase):
                 build.prepare_desktop(self.state, self.state / 'startup.log')
         self.assertFalse((self.state / 'desktop-dependencies.sha256').exists())
 
+    def test_electron_failure_uses_this_attempt_and_offers_mirror_only_for_official_network_errors(self):
+        log = self.state / 'startup.log'
+        self.state.mkdir()
+        previous = b'Electron source: official https://github.com/electron/old (ELECTRON_MIRROR=unset)\nElectron transport: ECONNRESET\n'
+        cases = (
+            ('official', 'Electron transport: ETIMEDOUT', 'ETIMEDOUT', True),
+            ('official', 'Electron transport: ENOTFOUND', 'ENOTFOUND', True),
+            ('mirror', 'Electron transport: ECONNRESET', 'ECONNRESET', False),
+            ('official', 'Electron transport: UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'certificate', False),
+            ('official', 'Electron transport: PROXY_HTTP_407', 'authentication', False),
+            ('official', 'Error: Electron HTTP status: 403', 'HTTP 403', False),
+            ('official', 'Error: Generated checksum for "fixture" did not match expected checksum.', 'checksum', False),
+            ('official', 'Error: invalid zip archive', 'extraction', False),
+        )
+        for source, diagnostic, expected, offer in cases:
+            with self.subTest(diagnostic=diagnostic):
+                setting = 'set' if source == 'mirror' else 'unset'
+                attempt = f'Electron source: {source} https://fixture.invalid/ (ELECTRON_MIRROR={setting})\n{diagnostic}\n'
+                log.write_bytes(previous + attempt.encode())
+                message = str(build.electron_download_failure('install failed', log, len(previous)))
+                self.assertIn(expected, message)
+                self.assertEqual('npmmirror.com' in message, offer)
+                if offer and os.name == 'nt':
+                    self.assertIn('$env:ELECTRON_MIRROR', message)
+                    self.assertIn('set "ELECTRON_CUSTOM_DIR={{ version }}"', message)
+
+    def test_electron_repairs_incomplete_runtime_without_reinstalling_npm(self):
+        client = self.cached_desktop()
+        package = client / 'node_modules/electron'
+        for file, invalid in [('path.txt', None), ('path.txt', 'wrong'),
+                              ('dist/version', 'wrong'), ('dist/version', None)]:
+            with self.subTest(file=file, invalid=invalid):
+                marker = package / file
+                if invalid is None:
+                    marker.unlink()
+                else:
+                    marker.write_text(invalid)
+                installer = str(client / 'scripts/install-electron.cjs')
+                def repair(command, **kwargs):
+                    if command[-1] == installer:
+                        self.write_electron_fixture(client)
+                with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+                        patch.object(build, 'check_desktop_session'), patch.object(build, 'run', side_effect=repair) as run:
+                    build.prepare_desktop(self.state, self.state / 'startup.log')
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertIn(['node', installer], commands)
+                self.assertFalse(any(command[0] == 'npm' for command in commands))
+
+    def test_electron_retry_reinstalls_npm_if_lock_changed_or_package_was_removed(self):
+        client = self.cached_desktop()
+        ready = self.state / 'desktop-dependencies.sha256'
+        npm_stamp = self.state / 'desktop-npm.sha256'
+        lock = client / 'package-lock.json'
+        ready.replace(npm_stamp)
+        lock.write_text('{"lockfileVersion":3}')
+        for change in ('lockfile', 'missing installer'):
+            with self.subTest(change=change):
+                if change == 'missing installer':
+                    npm_stamp.write_text(build.hashlib.sha256(lock.read_bytes()).hexdigest())
+                    (client / 'node_modules/electron/install.js').unlink()
+                with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+                        patch.object(build, 'check_desktop_session'), \
+                        patch.object(build, 'run', side_effect=build.StartupError('npm failed')) as run:
+                    with self.assertRaisesRegex(build.StartupError, 'npm failed'):
+                        build.prepare_desktop(self.state, self.state / 'startup.log')
+                self.assertEqual(run.call_args.args[0][:2], ['npm', 'ci'])
+                self.assertFalse(npm_stamp.exists())
+                self.assertFalse(ready.exists())
+
+    def test_electron_real_download_reports_failure_and_retries_only_the_runtime(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        import shutil
+        from zipfile import ZipFile
+
+        dependencies = build.ROOT / 'client/node_modules'
+        electron = dependencies / 'electron'
+        node = shutil.which('node')
+        if not node or not (electron / 'install.js').is_file():
+            self.skipTest('requires Node and the locked client dependencies')
+        client = self.state / 'application/client'
+        (client / 'scripts').mkdir(parents=True)
+        wrapper = Path('scripts/install-electron.cjs')
+        shutil.copyfile(build.ROOT / 'client' / wrapper, client / wrapper)
+        (client / 'package-lock.json').write_text('{}')
+        version = json.loads((electron / 'package.json').read_text(encoding='utf-8'))['version']
+        binary = build.electron_binary(client)
+        archive = io.BytesIO()
+        with ZipFile(archive, 'w') as fixture:
+            fixture.writestr('version', version)
+            fixture.writestr(binary.relative_to(client / 'node_modules/electron/dist').as_posix(), 'fixture')
+        digest = build.hashlib.sha256(archive.getvalue()).hexdigest()
+        requests = []
+
+        class Mirror(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                requests.append(self.path)
+                if len(requests) == 1:
+                    self.send_response(200)
+                    self.send_header('Content-Length', '1000')
+                    self.end_headers()
+                    self.wfile.write(b'truncated')
+                elif len(requests) == 2:
+                    self.send_response(302)
+                    self.send_header('Location', '/denied?token=private-fixture')
+                    self.end_headers()
+                elif self.path.startswith('/denied'):
+                    self.send_error(403)
+                else:
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'wrong checksum' if len(requests) == 4 else archive.getvalue())
+
+        real_run = build.run
+        npm_calls = []
+        def run(command, **kwargs):
+            if command[0] == 'fixture-npm':
+                npm_calls.append(command)
+                package = client / 'node_modules/electron'
+                package.mkdir(parents=True, exist_ok=True)
+                for file in ('install.js', 'package.json'):
+                    shutil.copyfile(electron / file, package / file)
+                names = json.loads((electron / 'checksums.json').read_text(encoding='utf-8'))
+                (package / 'checksums.json').write_text(json.dumps(dict.fromkeys(names, digest)))
+            elif command[-1] == str(client / wrapper):
+                real_run(command, **kwargs)
+
+        log = self.state / 'startup.log'
+        ready = self.state / 'desktop-dependencies.sha256'
+        with ThreadingHTTPServer(('127.0.0.1', 0), Mirror) as server:
+            Thread(target=server.serve_forever, daemon=True).start()
+            environment = {key: os.environ[key] for key in ('PATH', 'SystemRoot') if key in os.environ}
+            environment.update(HOME=str(self.state), USERPROFILE=str(self.state), NODE_PATH=str(dependencies),
+                               ELECTRON_GET_USE_PROXY='0',
+                               HTTPS_PROXY='http://private-user:private-password@localhost',
+                               ELECTRON_MIRROR=f'http://127.0.0.1:{server.server_port}/',
+                               ELECTRON_CUSTOM_DIR='{{ version }}', ELECTRON_CUSTOM_FILENAME='fixture.zip')
+            try:
+                with patch.dict(os.environ, environment, clear=True), patch.object(build, 'check_desktop_session'), \
+                        patch.object(build, 'check_dependencies', return_value=(node, 'fixture-npm')), \
+                        patch.object(build, 'run', side_effect=run):
+                    with socket.socket() as unused:
+                        unused.bind(('127.0.0.1', 0))
+                        with patch.dict(os.environ, ELECTRON_MIRROR=f'http://127.0.0.1:{unused.getsockname()[1]}/'):
+                            with self.assertRaisesRegex(build.StartupError, 'ECONNREFUSED'):
+                                build.prepare_desktop(self.state, log)
+                    for expected in ('UND_ERR_(SOCKET|RES_CONTENT_LENGTH_MISMATCH)', 'HTTP 403', 'checksum'):
+                        with self.assertRaises(build.StartupError) as error:
+                            build.prepare_desktop(self.state, log)
+                        self.assertRegex(str(error.exception), expected, log.read_text(encoding='utf-8'))
+                        self.assertFalse(ready.exists())
+                        self.assertNotIn('npmmirror.com', str(error.exception))
+                    build.prepare_desktop(self.state, log)
+                    build.prepare_desktop(self.state, log)
+            finally:
+                server.shutdown()
+        artifact = f'/{version}/fixture.zip'
+        self.assertEqual(requests, [artifact, artifact, '/denied?token=private-fixture', artifact, artifact])
+        self.assertEqual(len(npm_calls), 1)
+        self.assertEqual(binary.read_bytes(), b'fixture')
+        self.assertTrue(ready.is_file())
+        output = log.read_text(encoding='utf-8')
+        for expected in (f'http://127.0.0.1:{server.server_port}{artifact}', 'ECONNREFUSED',
+                         'Electron HTTP status: 403', 'expected checksum', 'HTTPS_PROXY=set', 'proxy mode: disabled'):
+            self.assertIn(expected, output)
+        self.assertNotIn('private-', output)
+
+    def write_electron_fixture(self, client):
+        package = client / 'node_modules/electron'
+        binary = build.electron_binary(client)
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_text('electron fixture')
+        (package / 'install.js').touch()
+        (package / 'package.json').write_text('{"version":"1.2.3"}')
+        (package / 'dist/version').write_text('v1.2.3')
+        (package / 'path.txt').write_text(binary.relative_to(package / 'dist').as_posix())
+
     def cached_desktop(self):
         client = self.state / 'application/client'
         client.mkdir(parents=True)
         lock = client / 'package-lock.json'
         lock.write_text('{}')
-        binary = build.electron_binary(client)
-        binary.parent.mkdir(parents=True)
-        binary.write_text('electron fixture')
+        self.write_electron_fixture(client)
         (self.state / 'desktop-dependencies.sha256').write_text(
             build.hashlib.sha256(lock.read_bytes()).hexdigest())
         return client
@@ -1345,6 +1523,7 @@ class LocalStartupTests(unittest.TestCase):
                     patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                     patch.object(build, 'run') as run:
                 (self.state / 'desktop-dependencies.sha256').unlink(missing_ok=True)
+                (self.state / 'desktop-npm.sha256').unlink(missing_ok=True)
                 self.assertEqual(build.prepare_desktop(self.state, self.state / 'startup.log'), client)
                 command = next(call.args[0] for call in run.call_args_list if call.args[0][:2] == ['npm', 'ci'])
                 self.assertIn('--include=dev', command)
@@ -1594,9 +1773,7 @@ class LocalStartupTests(unittest.TestCase):
         def run(command, **kwargs):
             calls.append((command, kwargs))
             if command[-1] == str(client / 'scripts/install-electron.cjs'):
-                binary = build.electron_binary(client)
-                binary.parent.mkdir(parents=True)
-                binary.write_text('electron fixture')
+                self.write_electron_fixture(client)
 
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'run', side_effect=run), \
@@ -1643,14 +1820,17 @@ class LocalStartupTests(unittest.TestCase):
                 self.assertEqual(kwargs['env']['ELECTRON_MIRROR'], 'https://mirror.example/electron/')
                 self.assertEqual(kwargs['env']['HTTPS_PROXY'], 'http://proxy.example:8080')
                 self.assertEqual(kwargs['env']['ELECTRON_GET_USE_PROXY'], '1')
-                raise build.StartupError('Download fixture timed out')
+                real_run([sys.executable, '-c', 'import sys; print("Electron transport: ETIMEDOUT"); sys.exit(1)'],
+                         **kwargs)
+        real_run = build.run
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'run', side_effect=run), patch.dict(os.environ, {
                     'DISPLAY': ':fixture', 'ELECTRON_MIRROR': 'https://mirror.example/electron/',
                     'HTTPS_PROXY': 'http://proxy.example:8080',
                 }):
-            with self.assertRaisesRegex(build.StartupError, 'ELECTRON_MIRROR'):
+            with self.assertRaisesRegex(build.StartupError, 'ETIMEDOUT') as error:
                 build.prepare_desktop(self.state, self.state / 'startup.log')
+            self.assertNotIn('npmmirror.com', str(error.exception))
         self.assertEqual(calls[-1][1]['timeout'], build.ELECTRON_DOWNLOAD_TIMEOUT)
         self.assertEqual(calls[-1][0], ['node', str(client / 'scripts/install-electron.cjs')])
         self.assertFalse((self.state / 'desktop-dependencies.sha256').exists())

@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const { execFile } = require('node:child_process');
+const execFileAsync = require('node:util').promisify(execFile);
 const { installElectron } = require('../scripts/install-electron.cjs');
 
 function dependencies({ proxy, env = {} } = {}) {
@@ -81,7 +82,7 @@ test('the real downloader dispatcher reaches an unresolved artifact host through
   };
   write('node_modules/@electron/get/index.js', 'module.exports = {};');
   write('node_modules/undici/index.js', 'module.exports = require(' + JSON.stringify(require.resolve('undici')) + ');');
-  const installer = write('node_modules/electron/install.js', `
+  write('node_modules/electron/install.js', `
     fetch('http://electron-artifact.invalid/fixture.zip').then(async response => {
       if (await response.text() !== 'artifact-fixture') process.exit(3);
       console.log('fixture installed'); process.exit(0);
@@ -102,10 +103,41 @@ test('the real downloader dispatcher reaches an unresolved artifact host through
   const env = { ...process.env, ELECTRON_GET_USE_PROXY: '1',
     HTTP_PROXY: 'http://127.0.0.1:' + proxy.address().port, HTTPS_PROXY: '', NO_PROXY: '' };
   for (const key of ['http_proxy', 'https_proxy', 'no_proxy', 'ALL_PROXY', 'all_proxy', 'NODE_USE_ENV_PROXY', 'NODE_OPTIONS']) delete env[key];
-  const script = 'require(' + JSON.stringify(require.resolve('../scripts/install-electron.cjs')) +
-    ').installElectron({ installer: ' + JSON.stringify(installer) + ' });';
-  const output = await new Promise((resolve, reject) => execFile(process.execPath, ['-e', script],
-    { env, timeout: 10000, windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(stdout)));
-  assert.equal(output.trim(), 'fixture installed');
+  const script = write('scripts/install-electron.cjs', fs.readFileSync(require.resolve('../scripts/install-electron.cjs')));
+  const { stdout, stderr } = await execFileAsync(process.execPath, [script],
+    { env, timeout: 10000, windowsHide: true });
+  assert.equal(stdout.trim(), 'fixture installed');
+  assert.match(stderr, /proxy mode: environment/);
+  assert.match(stderr, /requesting a proxy tunnel/);
   assert.deepEqual(tunnels, ['electron-artifact.invalid:80']);
+});
+
+test('a fetch failure reports nested connection codes without logging signed URLs or private causes', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-electron-cause-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const script = path.join(root, 'scripts/install-electron.cjs');
+  const installer = path.join(root, 'node_modules/electron/install.js');
+  fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.mkdirSync(path.dirname(installer), { recursive: true });
+  fs.copyFileSync(require.resolve('../scripts/install-electron.cjs'), script);
+  const preload = path.join(root, 'fetch.cjs');
+  fs.writeFileSync(preload, `
+    globalThis.fetch = async () => {
+      const failures = ['ETIMEDOUT', 'ECONNRESET'].map(code => Object.assign(Error('private-address'), { code }));
+      throw new TypeError('fetch failed', { cause: new AggregateError(failures) });
+    };
+  `);
+  fs.writeFileSync(installer, `
+    fetch('https://github.com/electron/electron/releases/download/v1/fixture.zip?private-token')
+      .catch(error => { console.error(error.stack); process.exitCode = 1; });
+  `);
+  await assert.rejects(execFileAsync(process.execPath, ['--require', preload, script], {
+    env: { ...process.env, ELECTRON_GET_USE_PROXY: '0' }, timeout: 10000, windowsHide: true,
+  }), error => {
+    assert.equal(error.code, 1);
+    assert.match(error.stderr, /Electron source: official https:\/\/github\.com\/electron\/electron\/releases\/download\/v1\/fixture\.zip /);
+    for (const code of ['ETIMEDOUT', 'ECONNRESET']) assert.ok(error.stderr.includes('Electron transport: ' + code));
+    assert.doesNotMatch(error.stderr, /private-/);
+    return true;
+  });
 });

@@ -6,6 +6,7 @@ databases and private settings are never replaced by a source refresh.
 from __future__ import annotations
 
 import hashlib
+import json
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -110,7 +111,7 @@ def wait_child(child: subprocess.Popen, *, progress_label: str | None = None,
 
 
 def run(command: list[str], *, cwd: Path, log: Path, label: str,
-        env: dict | None = None, timeout: float | None = None) -> None:
+        env: dict | None = None, timeout: float | None = None, failure=command_failure) -> None:
     print(label, flush=True)
     started = time.monotonic()
     with log.open("ab") as output:
@@ -123,12 +124,12 @@ def run(command: list[str], *, cwd: Path, log: Path, label: str,
                 code = wait_child(child, progress_label=label, timeout=timeout)
             except subprocess.TimeoutExpired as exc:
                 stop_child(child)
-                raise command_failure(f"{label} timed out after {timeout:g}s", log, offset) from exc
+                raise failure(f"{label} timed out after {timeout:g}s", log, offset) from exc
             except BaseException:
                 stop_child(child)
                 raise
     if code:
-        raise command_failure(f"{label} failed (exit {code})", log, offset)
+        raise failure(f"{label} failed (exit {code})", log, offset)
     print(f"  完成 / Done ({time.monotonic() - started:.1f}s)", flush=True)
 
 
@@ -460,6 +461,75 @@ def electron_binary(client: Path) -> Path:
     return client / 'node_modules/electron/dist' / relative
 
 
+def electron_ready(client: Path) -> bool:
+    package = client / 'node_modules/electron'
+    binary = electron_binary(client)
+    expected_path = binary.relative_to(package / 'dist').as_posix()
+    try:
+        if not binary.is_file() or (package / 'path.txt').read_text(encoding='utf-8') != expected_path:
+            return False
+        installed = (package / 'dist/version').read_text(encoding='utf-8').removeprefix('v')
+        return installed == json.loads((package / 'package.json').read_text(encoding='utf-8'))['version']
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def electron_download_failure(message: str, log: Path, offset: int) -> StartupError:
+    fallback = command_failure(message, log, offset)
+    if isinstance(fallback, DiskFullError):
+        return fallback
+    # Only read this installer's attempt. Never echo arbitrary log lines or URLs.
+    try:
+        with log.open('rb') as output:
+            end = output.seek(0, os.SEEK_END)
+            output.seek(max(offset, end - 32768))
+            attempt = output.read().decode('utf-8', errors='replace')
+    except OSError:
+        return fallback
+    codes = re.findall(r'^Electron transport: ([A-Z0-9_]+)\r?$', attempt, re.M)
+    status = re.search(r'^Error: Electron HTTP status: (\d{3})\b', attempt, re.M)
+    if re.search(r'^Error: (?:Generated checksum|No checksum found|Could not parse checksum|Provided "checksums")', attempt, re.M):
+        hint = 'Electron checksum verification failed. Check the artifact against the locked release.'
+    elif 'Electron proxy configuration is invalid' in attempt:
+        hint = 'Electron proxy configuration is invalid. Check HTTP_PROXY and HTTPS_PROXY.'
+    elif 'Electron proxy support is unavailable' in attempt:
+        hint = 'Electron proxy support is unavailable. Check the installed desktop npm dependencies.'
+    elif 'Electron download URL contains unsupported credentials' in attempt:
+        hint = 'Remove embedded credentials from the configured Electron download URL.'
+    elif status:
+        hint = f'Electron HTTP {status[1]}. Check access to the configured artifact URL in the log.'
+    elif any('CERT' in code or 'TLS' in code or 'SSL' in code or 'ISSUER' in code or
+             code == 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' for code in codes):
+        hint = 'Check the certificate chain and the CA trusted by Node.js.'
+    elif any(code.startswith('PROXY_') for code in codes):
+        hint = 'Check the configured proxy and its authentication.'
+    elif set(codes).intersection({'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED',
+                                  'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'UND_ERR_SOCKET',
+                                  'UND_ERR_RES_CONTENT_LENGTH_MISMATCH',
+                                  'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'}):
+        hint = '检查网络或代理 / Check connectivity to the download source and the proxy settings.'
+        sources = re.findall(r'^Electron source: (official|mirror) .* \(ELECTRON_MIRROR=(set|unset)\)\r?$', attempt, re.M)
+        if sources and sources[-1] == ('official', 'unset'):
+            mirror = 'https://npmmirror.com/mirrors/electron/'
+            hint += '\n如需改用镜像，在当前终端设置后重跑原启动命令 / Optional mirror, then rerun the same launcher:\n'
+            if os.name == 'nt':
+                hint += (f"PowerShell:\n$env:ELECTRON_MIRROR = '{mirror}'\n"
+                         "$env:ELECTRON_CUSTOM_DIR = '{{ version }}'\n"
+                         f'CMD:\nset "ELECTRON_MIRROR={mirror}"\n' 'set "ELECTRON_CUSTOM_DIR={{ version }}"')
+            else:
+                hint += f"export ELECTRON_MIRROR='{mirror}' " "ELECTRON_CUSTOM_DIR='{{ version }}'"
+    elif codes:
+        hint = 'Check the reported Electron transport error and the download settings in the log.'
+    elif re.search(r'^Error: .*?(?:\bextract(?:ion)?\b|invalid zip|end of central directory)', attempt, re.I | re.M):
+        hint = 'Electron archive extraction failed. Check the archive and write access to the install directory.'
+    elif re.search(r'^Error: (?:EACCES|EPERM)\b', attempt, re.M):
+        hint = 'Electron installation permission denied. Check write access to the install and cache directories.'
+    else:
+        return fallback
+    detail = ', '.join(dict.fromkeys(codes))
+    return StartupError(f'{message}. See {log}. ' + (detail + '. ' if detail else '') + hint)
+
+
 def electron_install_environment(environment: dict | None = None) -> dict[str, str]:
     """Enable the locked downloader's proxy only in its installation process."""
     env = dict(os.environ if environment is None else environment)
@@ -485,32 +555,26 @@ def prepare_desktop(state: Path, log: Path) -> Path:
     client = state / 'application/client'
     stamp = state / 'desktop-dependencies.sha256'
     wanted = hashlib.sha256((client / 'package-lock.json').read_bytes()).hexdigest()
-    if read_stamp(stamp) != wanted or not electron_binary(client).is_file():
-        run([npm, 'ci', '--include=dev', '--no-audit', '--no-fund', '--ignore-scripts'], cwd=client, log=log,
-            env=cache_env,
-            label='[Desktop] 安装桌面端 / Installing the desktop application (first run needs internet)')
+    ready_stamp = read_stamp(stamp) == wanted
+    if not ready_stamp or not electron_ready(client):
+        npm_stamp = state / 'desktop-npm.sha256'
+        stamp.unlink(missing_ok=True)
+        if ((not ready_stamp and read_stamp(npm_stamp) != wanted)
+                or not (client / 'node_modules/electron/install.js').is_file()):
+            npm_stamp.unlink(missing_ok=True)
+            run([npm, 'ci', '--include=dev', '--no-audit', '--no-fund', '--ignore-scripts'], cwd=client, log=log,
+                env=cache_env,
+                label='[Desktop] 安装桌面端 / Installing the desktop application (first run needs internet)')
+        npm_stamp.write_text(wanted, encoding='utf-8')
         # npm versions differ in install-script policy. Download the locked Electron
         # runtime explicitly without enabling unrelated dependencies' lifecycle scripts.
-        if not electron_binary(client).is_file():
-            print("桌面运行环境下载最多等待 10 分钟 / Electron download allows up to 10 minutes. "
-                  "If GitHub is unreachable, configure ELECTRON_MIRROR or your proxy and retry.", flush=True)
-            try:
-                run([node, str(client / 'scripts/install-electron.cjs')], cwd=client, log=log,
-                    label='[Desktop] 下载桌面运行环境 / Downloading the Electron runtime',
-                    env=electron_install_environment(cache_env),
-                    timeout=ELECTRON_DOWNLOAD_TIMEOUT)
-            except DiskFullError:
-                raise
-            except StartupError as exc:
-                raise StartupError(
-                    f"{exc}\nElectron 准备失败；先查看日志中的具体原因。仅网络连接失败时检查代理或 ELECTRON_MIRROR。\n"
-                    "If the log reports a download connection failure, check your proxy or set "
-                    "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ in your shell "
-                    "if that mirror is reachable, then run the same launcher again. "
-                    "See docs/getting-started.md for shell-specific commands."
-                ) from exc
-        if not electron_binary(client).is_file():
-            raise StartupError(f"Electron was not downloaded. Check npm install-script policy and {log}; then retry.")
+        if not electron_ready(client):
+            run([node, str(client / 'scripts/install-electron.cjs')], cwd=client, log=log,
+                label='[Desktop] 下载桌面运行环境 / Downloading the Electron runtime (10 min limit)',
+                env=electron_install_environment(cache_env), timeout=ELECTRON_DOWNLOAD_TIMEOUT,
+                failure=electron_download_failure)
+            if not electron_ready(client):
+                raise StartupError(f"Electron was not downloaded completely. Check {log}; then retry.")
         stamp.write_text(wanted, encoding='utf-8')
     if sys.platform == 'win32':
         # Electron's dependency stamp does not cover the Shell payload. The
