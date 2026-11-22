@@ -185,7 +185,11 @@ def _org_mutation_error(exc: rbac.OrgMutationError) -> HTTPException:
 @router.get("/orgs")
 async def list_orgs(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
                     window: PageQuery = None):
-    return await rbac.list_orgs(session, await rbac.scope_org_ids(session, user), page=window)
+    scope = await rbac.scope_org_ids(session, user)
+    if not user.is_super and not getattr(user, "_perms", set()) and user.org_id:
+        # Permission-less accounts only see their own department (#1028).
+        scope = {user.org_id}
+    return await rbac.list_orgs(session, scope, page=window)
 
 
 @router.post("/orgs")
@@ -246,8 +250,10 @@ async def delete_org(
 # Roles.
 
 @router.get("/roles")
-async def list_roles(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
-                    window: PageQuery = None):
+async def list_roles(user: User = Depends(require_perm("role.manage")),
+                     session: AsyncSession = Depends(get_session),
+                     window: PageQuery = None):
+    # Role assignments are administrative metadata (#1029).
     return await rbac.list_roles(session, page=window)
 
 
@@ -359,11 +365,6 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     await _assert_user_in_scope(session, user, target)
-    if body.password is not None:
-        if len(body.password) < 8:
-            raise HTTPException(status_code=422, detail="密码长度不能少于 8 个字符")
-        if len(body.password) > 128:
-            raise HTTPException(status_code=422, detail="密码长度不能超过 128 个字符")
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)
@@ -491,8 +492,10 @@ async def delete_position(
 # Responsibility catalog: readable by authenticated users; mutations require user.manage.
 
 @router.get("/domains")
-async def list_domains(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
-                    window: PageQuery = None):
+async def list_domains(user: User = Depends(require_perm("work.catalog.manage")),
+                       session: AsyncSession = Depends(get_session),
+                       window: PageQuery = None):
+    # Domain definitions are administrative metadata (#1030).
     return await rbac.list_domains(session, page=window)
 
 
@@ -1842,25 +1845,20 @@ async def put_alert_config(
 ):
     from ..models import AppSetting
     from ..services import notify
-    url = body.get("url")
-    if url is not None:
-        url = str(url).strip()[:600]
-        if url and not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
-        row = (await session.execute(select(AppSetting).where(
-            AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-        if row is None:
-            session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
-        else:
-            row.value = url
-        await session.commit()
-    # Read current state for audit and response.
-    current_row = (await session.execute(select(AppSetting).where(
+    url = str(body.get("url") or "").strip()[:600]
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
+    row = (await session.execute(select(AppSetting).where(
         AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
+    if row is None:
+        session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
+    else:
+        row.value = url
+    await session.commit()
     # Webhook URLs permit message injection if leaked; audit only whether a URL is configured.
     await audit.log(session, user, "alert.config", "setting", None, "告警通道",
-                    {"configured": bool(current_row and current_row.value)})
-    return {"ok": True, "configured": bool(current_row and current_row.value)}
+                    {"configured": bool(url)})
+    return {"ok": True, "configured": bool(url)}
 
 
 @router.post("/alert-config/test")
