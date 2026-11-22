@@ -98,7 +98,11 @@ def main() -> int:
             ok(await team_svc.team_module_scope(s) == "managers", "默认口径=负责人及以上")
             ok(await team_svc.set_team_module_scope(s, "everyone") == "everyone", "可放宽为全员")
             ok(await team_svc.team_module_scope(s) == "everyone", "放宽后读取一致")
-            ok(await team_svc.set_team_module_scope(s, "banana") == "managers", "非法值回落 managers")
+            try:
+                await team_svc.set_team_module_scope(s, "banana")
+                ok(False, "非法值应被拒绝")
+            except ValueError:
+                ok(True, "非法值 raise ValueError（scope 保持不变）")
     asyncio.run(scope_check())
     print(f"\n{passed} passed, {failed} failed")
     return 1 if failed else 0
