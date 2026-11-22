@@ -135,9 +135,8 @@ async def api_contract() -> None:
             "/api/v1/clients/enroll", headers={"X-Device-Key": "u" * 48},
             json={"device": "assigned-without-proof", "name": "Old assigned row"},
         )
-        ok(unproven.status_code == 200 and unproven.json().get("activationRequired") is True
-           and not unproven.json().get("session"),
-           "an assigned row without an existing credential bypassed activation")
+        ok(unproven.status_code == 403 and not unproven.json().get("session"),
+           "an assigned row without an existing credential must not be claimed by a self-chosen key")
         inactive_owner = await client.post(
             "/api/v1/clients/enroll", headers={"X-Device-Key": "i" * 48},
             json={"device": "inactive-owner-device", "name": "Inactive owner device"},
