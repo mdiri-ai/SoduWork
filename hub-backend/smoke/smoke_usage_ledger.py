@@ -71,13 +71,13 @@ async def main():
         chat_start = datetime.now(timezone.utc).replace(hour=23, minute=30, second=0, microsecond=0) - timedelta(days=2)
         chat_retry = chat_start + timedelta(hours=1, minutes=30)
         await usage_ledger.from_client(session, client, {
-            "idempotencyKey": "chat-1", "sourceId": "chat-1",
+            "idempotencyKey": "chat-1", "sourceId": "aaaa1111-0005-cccc-dddd-eeeeffff0005",
             "conversationId": "chat-1", "agent": "pi",
             "sourceTitle": "  周报整理与今日同步  ",
             "model": "office-model", "occurredAt": chat_start.isoformat(),
             "usage": {"input": 80, "output": 20}})
         await usage_ledger.from_client(session, client, {
-            "idempotencyKey": "chat-1", "sourceId": "chat-1",
+            "idempotencyKey": "chat-1", "sourceId": "aaaa1111-0005-cccc-dddd-eeeeffff0005",
             "conversationId": "chat-1", "agent": "pi", "sourceType": "task",
             "taskId": foreign_task.id,
             "model": "office-model", "occurredAt": chat_retry.isoformat(),
@@ -86,17 +86,17 @@ async def main():
         today_report = datetime.now(beijing).astimezone(timezone.utc)
         yesterday_report = (today_report - timedelta(days=1))
         await usage_ledger.from_client(session, client, {
-            "idempotencyKey": "cross-day", "sourceId": "cross-day",
+            "idempotencyKey": "cross-day", "sourceId": "aaaa1111-0006-cccc-dddd-eeeeffff0006",
             "conversationId": "cross-day", "agent": "pi",
             "model": "office-model", "occurredAt": yesterday_report.isoformat(),
             "usage": {"input": 1000, "output": 0}})
         await usage_ledger.from_client(session, client, {
-            "idempotencyKey": "cross-day", "sourceId": "cross-day",
+            "idempotencyKey": "cross-day", "sourceId": "aaaa1111-0006-cccc-dddd-eeeeffff0006",
             "conversationId": "cross-day", "agent": "pi",
             "model": "office-model", "occurredAt": today_report.isoformat(),
             "usage": {"input": 1800, "output": 0}})
         await usage_ledger.from_client(session, client, {
-            "idempotencyKey": "cross-day", "sourceId": "cross-day",
+            "idempotencyKey": "cross-day", "sourceId": "aaaa1111-0006-cccc-dddd-eeeeffff0006",
             "conversationId": "cross-day", "agent": "pi",
             "model": "office-model", "occurredAt": today_report.isoformat(),
             "usage": {"input": 1800, "output": 0}})
@@ -133,7 +133,7 @@ async def main():
         ok(report["quality"]["coveragePct"] == 100, "reported data quality visible")
         ok(report["recent"][0]["user"] == "用量用户", "user display name resolved")
         titles = {row["sourceId"]: row["title"] for row in report["recent"]}
-        ok(titles.get("chat-1") == "周报整理与今日同步",
+        ok(titles.get("aaaa1111-0005-cccc-dddd-eeeeffff0005") == "周报整理与今日同步",
            "chat events show the reported conversation title")
         ok(all(t != "新建会话" for t in titles.values()),
            "legacy generic label never reappears")
