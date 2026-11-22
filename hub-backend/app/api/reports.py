@@ -128,7 +128,14 @@ async def generate_reports(
     await audit.log(session, user, "report.generate", "team_report", focus or None,
                     info["label"], {"period": info["type"], "made": made,
                                     "skipped": skipped, "teams": len(teams), "via": "client"})
-    return {"ok": True, "made": made, "skipped": skipped, "teamReports": len(teams)}
+    # Return generated report details so callers can verify the numbers (#1034).
+    details = [{"id": row.id, "orgId": row.org_id, "orgName": row.org_name,
+                "status": row.status,
+                "doneCount": int((row.metrics or {}).get("doneCount") or 0),
+                "reportedMembers": int((row.metrics or {}).get("reportedMembers") or 0)}
+               for row in teams]
+    return {"ok": True, "made": made, "skipped": skipped, "teamReports": len(teams),
+            "reports": details}
 
 
 @router.post("/team/{report_id}/confirm")
