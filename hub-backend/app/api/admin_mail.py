@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..deps import require_perm
+from ..deps import no_store, require_perm
 from ..mail_models import MailOutbox
 from ..models import User
 from ..services import account_mail as mail, audit
@@ -18,7 +18,7 @@ def failure(exc):
     return HTTPException(status_code=422, detail={"code": "MAIL_CONFIG_INVALID", "message": str(exc)})
 
 
-@router.get("/mail-settings")
+@router.get("/mail-settings", dependencies=[Depends(no_store)])
 async def settings(_user: User = Depends(require_perm("identity.manage")),
                    session: AsyncSession = Depends(get_session)):
     try:

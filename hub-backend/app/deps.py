@@ -1,7 +1,7 @@
 """FastAPI authentication dependencies for devices, users and integrations."""
 from datetime import datetime, timezone
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request, Response
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +14,12 @@ from .services import client_access, device_auth
 from .services.auth_principals import DevicePrincipal
 
 settings = get_settings()
+
+
+async def no_store(response: Response) -> None:
+    """Sensitive admin responses must not be reused by shared caches across principals."""
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Vary"] = "Authorization"
 
 
 def identity_only(endpoint):

@@ -19,7 +19,7 @@ from ..config import get_settings
 from ..services.catalog_names import DuplicateName
 from ..pagination import PageQuery
 from ..db import get_session
-from ..deps import current_user, has_perm, require_perm
+from ..deps import current_user, has_perm, no_store, require_perm
 from ..models import Attachment, Client, Role, Task, TaskEvent, User
 from ..permissions import ALL_KEYS, PERMISSIONS
 from ..realtime import hub
@@ -182,7 +182,7 @@ def _org_mutation_error(exc: rbac.OrgMutationError) -> HTTPException:
 
 # Organizational structure.
 
-@router.get("/orgs")
+@router.get("/orgs", dependencies=[Depends(no_store)])
 async def list_orgs(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
                     window: PageQuery = None):
     return await rbac.list_orgs(session, await rbac.scope_org_ids(session, user), page=window)
@@ -301,7 +301,7 @@ async def delete_role(rid: str,
 
 # Users within the current scope.
 
-@router.get("/users", dependencies=[Depends(require_perm("user.manage"))])
+@router.get("/users", dependencies=[Depends(require_perm("user.manage")), Depends(no_store)])
 async def list_users(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
                     window: PageQuery = None):
     return await rbac.list_users(session, await rbac.scope_org_ids(session, user), page=window)
@@ -1819,7 +1819,7 @@ async def put_team_module_scope(
     return {"ok": True, "scope": scope}
 
 
-@router.get("/alert-config", dependencies=[Depends(require_perm("integration.manage"))])
+@router.get("/alert-config", dependencies=[Depends(require_perm("integration.manage")), Depends(no_store)])
 async def get_alert_config(session: AsyncSession = Depends(get_session)):
     """Configure delivery alert channels; an empty configuration keeps alerts in the application."""
     from ..models import AppSetting
@@ -1867,7 +1867,7 @@ async def test_alert_config(
             else "没发出去：地址没配，或者这台后端连不上它"}
 
 
-@router.get("/llm-config", dependencies=[Depends(require_perm("integration.manage"))])
+@router.get("/llm-config", dependencies=[Depends(require_perm("integration.manage")), Depends(no_store)])
 async def get_llm_config(session: AsyncSession = Depends(get_session)):
     """Return redacted LLM settings with key presence and length, never the plaintext key."""
     from ..services import model_config_guard
@@ -2112,7 +2112,7 @@ def _audit_filters(action: str | None = None, actor: str | None = None,
     return {"action": action, "actor": actor, "since": since, "until": until}
 
 
-@router.get("/audit")
+@router.get("/audit", dependencies=[Depends(no_store)])
 async def list_audit(
     filters: dict = Depends(_audit_filters),
     limit: Annotated[int, Query(ge=0)] = 50, offset: Annotated[int, Query(le=2**63-1)] = 0,

@@ -9,7 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
-from ..deps import require_perm
+from ..deps import no_store, require_perm
 from ..models import AppSetting, AuditLog, ModelDef, ModelProvider, User
 from ..services import client_access, client_domain_events, quota_plans as qp, quota_usage, rbac
 from ..services.model_runtime import lock_setting
@@ -62,7 +62,7 @@ async def validate_model_definitions(session, allowances):
             raise HTTPException(422, "请选择模型目录中已有的模型")
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(no_store)])
 async def configuration(user: User = Depends(require_perm("quota.manage")),
                         session: AsyncSession = Depends(get_session)):
     rows = await settings_rows(session)
