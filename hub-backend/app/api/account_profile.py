@@ -180,10 +180,12 @@ async def change_email(body: EmailChange, client: Client = Depends(authenticated
     user = await account_security.owner(session, client)
     email = email_auth.normalize_email(body.email)
     try:
-        # Wrong OTP attempts remain durable; successful proofs join the change transaction.
+        # One-time proofs commit immediately: a failed business check below must not
+        # roll the consumed challenge/grant back and hand them out for retry.
         await email_auth.consume_challenge(session, challenge_id=body.challengeId, email=email,
             purpose="change_email", device_id=client.id, code=body.code, user_id=user.id)
         await account_security.consume_grant(session, user, client, body.verificationToken, "change_email")
+        await session.commit()
         if email == user.email_normalized:
             raise account_security.error(409, "EMAIL_UNCHANGED", "请输入新的邮箱地址")
         registered = await session.scalar(select(User.id).where(User.email_normalized == email, User.id != user.id))
