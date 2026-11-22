@@ -153,7 +153,7 @@ export default function WorkCatalog({ me }) {
         <div className="wc-intro-metrics">
           <span><b>{professions.length}</b>{tx(" 个职业画像")}</span>
           <span><b>{scenarios.filter((item) => item.enabled).length}</b>{tx(" 个可用场景")}</span>
-          <span><b>{workflows.filter((item) => item.enabled).length}</b>{tx(" 条可用流程")}</span>
+          <span><b>{workflows.filter((item) => item.enabled).length}</b>{tx(" 条可用流程")}{workflows.filter((item) => item.enabled).length === 0 ? tx("（先在自动化模板启用）") : null}</span>
         </div>
       </section>
 
@@ -224,7 +224,7 @@ export default function WorkCatalog({ me }) {
                     <span key={capability}>{CAP_LABEL[capability] || capability}</span>)}</div>
                   <small className={flow && flow.enabled ? 'ready' : 'missing'}>
                     {item.defaultPluginKey
-                      ? (flow && flow.enabled ? tx("默认流程 · ") + flow.name : tx("默认流程尚未启用"))
+                      ? (flow && flow.enabled ? tx("默认流程 · ") + flow.name : tx("默认流程尚未启用") + tx("（到自动化模板启用）"))
                       : tx("不指定默认流程")}
                   </small>
                 </div>
@@ -366,7 +366,7 @@ function ScenarioEditor({ row, copy, orgId, professions, workflows, onClose, onD
       toast(tx("启用场景前，请配置识别关键词或适用职业")); return
     }
     if (pluginKey && !(workflow && workflow.enabled)) {
-      toast(tx("默认工作流尚未启用，请先启用或选择“不指定”")); return
+      toast(tx("默认工作流尚未启用，请到“自动化模板”启用或选择“不指定”")); return
     }
     if (enabled && (!summary.trim() || !lines(deliverables).length || !lines(acceptance).length)) {
       toast(tx("启用场景前，请把交付摘要、成果物和验收标准补完整")); return
