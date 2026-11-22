@@ -46,7 +46,7 @@ class PersonalModelQuotaTests(unittest.IsolatedAsyncioTestCase):
         return await self.http.get("/api/v1/ai-proxy/config", headers=self.headers,
                                    params={"model": model, "agent": agent})
 
-    async def receipt(self, count, *, key="mixed", token="", provider="shared", model="shared-model", **fields):
+    async def receipt(self, count, *, key="aaaa1111-0002-cccc-dddd-eeeeffff0002", token="", provider="shared", model="shared-model", **fields):
         return await self.http.post("/api/v1/usage/events", headers=self.headers, json={
             "sourceId": key, "provider": provider, "model": model, "agent": "pi",
             "quotaUsageToken": token, "usage": {"input": count}, **fields})
@@ -111,16 +111,16 @@ class PersonalModelQuotaTests(unittest.IsolatedAsyncioTestCase):
                 token = configured.json()["quotaUsageToken"]
                 claims = verify_claims(token, token_type="model-quota-usage")
                 self.assertEqual(claims["runtime"], agent)
-                receipt = await self.receipt(3, key="managed-" + agent, token=token,
+                receipt = await self.receipt(3, key=f"aaaa1111-0008-000{index}-cccc-dddd-eeeeffff0008", token=token,
                     provider="custom-local", model="local-model", agent=agent)
                 self.assertEqual(receipt.status_code, 200, receipt.text)
-                mismatched = await self.receipt(1, key="mismatched-" + agent, token=token,
+                mismatched = await self.receipt(1, key=f"aaaa1111-0009-000{index}-cccc-dddd-eeeeffff0009", token=token,
                     provider="custom-local", model="local-model", agent="pi")
                 self.assertEqual(mismatched.status_code, 200, mismatched.text)
                 async with self.sessions() as session:
                     self.assertEqual(await client_access.monthly_tokens(session, self.user.id), index + 1)
         custom = (await self.config(agent="custom-acp")).json()
-        reported = await self.receipt(5, key="custom-device-runtime", token=custom["quotaUsageToken"],
+        reported = await self.receipt(5, key="aaaa1111-0010-cccc-dddd-eeeeffff0010", token=custom["quotaUsageToken"],
             provider="custom-local", model="local-model", agent="custom-device-example")
         self.assertEqual(reported.status_code, 200, reported.text)
         async with self.sessions() as session:
@@ -206,11 +206,11 @@ class PersonalModelQuotaTests(unittest.IsolatedAsyncioTestCase):
         invalid.append(sign_claims(claims, token_type="model-quota-usage", ttl_seconds=1,
                                    issued_at=int(time.time()) - 10))
         for i, bad in enumerate(invalid):
-            result = await self.receipt(1, key="invalid-" + str(i), token=bad,
+            result = await self.receipt(1, key=f"aaaa1111-0012-000{i}-cccc-dddd-eeeeffff0012", token=bad,
                 provider="custom-local", model="local-model", credentialScope="personal", billingMode="free")
             self.assertEqual(result.status_code, 200, result.text)
-        for runtime in ("", "codex-harness", "codex"):
-            result = await self.receipt(1, key="runtime-" + runtime, token=token,
+        for runtime_index, runtime in enumerate(("", "codex-harness", "codex")):
+            result = await self.receipt(1, key=f"aaaa1111-0013-000{runtime_index}-cccc-dddd-eeeeffff0013", token=token,
                 provider="custom-local", model="local-model", agent=runtime)
             self.assertEqual(result.status_code, 200, result.text)
         async with self.sessions() as session:
@@ -219,12 +219,12 @@ class PersonalModelQuotaTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_event_without_daily_keeps_unknown_usage_charged(self):
         private = (await self.config()).json()
         async with self.sessions() as session:
-            session.add(models.AIUsageEvent(idempotency_key="client:" + self.devices[0].id + ":legacy",
+            session.add(models.AIUsageEvent(idempotency_key="client:" + self.devices[0].id + ":aaaa1111-0011-cccc-dddd-eeeeffff0011",
                 billing_user_id=self.user.id, client_id=self.devices[0].id,
                 provider="shared", model="shared-model", input_tokens=42, total_tokens=42,
                 credential_scope="personal", billing_mode="free", occurred_at=datetime.now(timezone.utc)))
             await session.commit()
-        result = await self.receipt(47, key="legacy", token=private["quotaUsageToken"],
+        result = await self.receipt(47, key="aaaa1111-0011-cccc-dddd-eeeeffff0011", token=private["quotaUsageToken"],
                                     provider="custom-local", model="local-model")
         self.assertEqual(result.status_code, 200, result.text)
         async with self.sessions() as session:
