@@ -196,8 +196,15 @@ async def review(submission_id: str, body: dict = Body(default_factory=dict),
     row = await session.get(AppSetting, submission_id) if submission_id.startswith(PREFIX) else None
     if row is None:
         raise HTTPException(404, "共享申请不存在")
+    record = json.loads(row.value)
+    # Reviewers may only act on submissions from members of their own organization.
+    owner_client = await session.get(Client, str(record.get("owner") or ""))
+    owner_user = await session.get(User, owner_client.user_ref) \
+        if owner_client and owner_client.user_ref else None
+    if owner_user and owner_user.org_id and user.org_id \
+            and str(owner_user.org_id) != str(user.org_id):
+        raise HTTPException(403, "只能审核本组织成员提交的共享申请")
     previous = row.value
-    record = json.loads(previous)
     if record["status"] != "pending":
         return {"ok": True, "item": public(record)}
     action = body.get("action")
