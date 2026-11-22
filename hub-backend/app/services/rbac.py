@@ -2,6 +2,8 @@
 other users are scoped to their organization subtree. Clients inherit organization through
 user_ref.
 """
+import re
+
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import String, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
