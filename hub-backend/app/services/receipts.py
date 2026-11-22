@@ -64,8 +64,13 @@ async def notify_on_close(session: AsyncSession, task: models.Task, closer_box_i
         session.add(models.TaskEvent(
             **({"id": receipt_id} if receipt_id else {}),
             task_id=task.id, kind="receipt",
-            detail={"to": target, "contact": rcontact, "via": via,
-                    "requesterUserId": ruid, "title": title, "external": not ruid},
+            # Bound receipt fields: an over-long task title/contact must not blow up
+            # the receipt dashboard or storage (#1035). Counts are bounded by the
+            # list endpoint (limit<=200); each field is truncated here at write time.
+            detail={"to": (target or "")[:120], "contact": (rcontact or "")[:120],
+                    "via": via,
+                    "requesterUserId": ruid, "title": (title or "")[:200],
+                    "external": not ruid},
             actor="",
         ))
         await session.commit()
