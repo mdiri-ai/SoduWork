@@ -36,9 +36,8 @@ async def organization_context(response: Response, client=Depends(current_client
     from ..services import org_memory
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Authorization"
-    value = await org_memory.for_client(session, client)
-    await session.commit()
-    return value
+    # GET 只读：重算结果不再 commit 落库，落库刷新改由 sweep/后台任务触发。
+    return await org_memory.for_client(session, client)
 
 
 @router.get("/{rid}")
