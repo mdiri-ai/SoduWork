@@ -192,9 +192,11 @@ async def _migrate_model_renames(
 
         for client in clients:
             agent_models = dict(client.agent_models or {})
-            if old_name in agent_models.values():
+            # Rewrite both bare names and composite ids (<provider_id>:<name>) so stored
+            # preferences follow the rename instead of falling back to the default.
+            if old_name in agent_models.values() or old_id in agent_models.values():
                 client.agent_models = {
-                    key: new_name if value == old_name else value
+                    key: new_id if value == old_id else new_name if value == old_name else value
                     for key, value in agent_models.items()
                 }
                 changed += 1
@@ -667,6 +669,15 @@ def agent_model(client, cli_key: str) -> str:
     return canonical_model_name(table.get(str(cli_key or "").strip().lower(), ""))
 
 
+def match_usable(rows: list[dict], want: str) -> dict | None:
+    """Match a stored model preference against usable catalog rows: exact catalog id
+    (<provider_id>:<model>) first so the provider the user picked wins, then bare name
+    for preferences stored before composite ids existed.
+    """
+    return (next((m for m in rows if m.get("id") == want), None)
+            or next((m for m in rows if m.get("name") == want), None))
+
+
 async def resolve_for_agent(session: AsyncSession, client, cli_key: str,
                             override: str = "") -> dict:
     """Behavior and constraints for this operation."""
@@ -676,8 +687,13 @@ async def resolve_for_agent(session: AsyncSession, client, cli_key: str,
     # Check that a stored runtime preference remains usable.
     # Do not rely on implicit model substitution during resolution.
     # Keep preference validation and any fallback explicit to the caller.
-    if any(m["name"] == want for m in await usable(session, client)):
-        return await resolve(session, client, want)
+    # Catalog ids are <provider_id>:<model>, so an exact id match routes to the provider
+    # the user picked; legacy bare names fall back to the first provider.
+    lst = await usable(session, client)
+    hit = match_usable(lst, want)
+    if hit is not None:
+        return await resolve(session, client, hit["name"], provider_id=hit["providerId"],
+                             available=lst, providers=await effective_provider_map(session, client))
     # If the stored preference becomes unavailable, explain any fallback to the default.
     got = await resolve(session, client, "")
     if got:

@@ -1974,7 +1974,7 @@
         if (agent.modelPick === false || ['codex'].includes(agent.key)) return agent;
         var savedModel = selected?.configured ? selected.modelName : agent.model || '';
         var missing = selected?.configured ? selected.unavailable : agent.modelGone ||
-          (savedModel && !models.some(row => row.name === savedModel));
+          (savedModel && !models.some(row => (row.id && row.id === savedModel) || row.name === savedModel));
         // Use the first available model only when no valid preference remains.
         // Resolve from the displayed local-first catalog without rewriting it.
         var automatic = agent.modelPick === true && firstModel && (!savedModel || missing);

@@ -66,11 +66,13 @@ async def get_agent_setup(
 
 
 
-    data["models"] = [{"name": m["name"], "label": m.get("label") or m["name"],
+    # Composite ids (<provider>:<model>) let clients disambiguate the same model name
+    # published by several providers; bare names stay for older clients.
+    data["models"] = [{"id": m["id"], "name": m["name"], "label": m.get("label") or m["name"],
                        "provider": m.get("providerName") or m.get("providerId", ""),
                        "providerKind": m.get("providerKind", ""),
                        "keyFrom": m.get("keyFrom", "")} for m in usable]
-    default_model = usable[0]["name"] if usable else ""
+    default_model = usable[0]["id"] if usable else ""
     for m in machines:
         for a in m.get("agents") or []:
             if not isinstance(a, dict):
@@ -82,10 +84,12 @@ async def get_agent_setup(
                 a.update(model="", modelEffective="", modelGone=False)
                 continue
             picked = model_catalog.agent_model(client, a.get("key", ""))
-            a["model"] = picked
+            hit = model_catalog.match_usable(usable, picked) if picked else None
+            # Report the canonical catalog id so clients render the stored provider choice.
+            a["model"] = hit["id"] if hit else picked
             # Report unavailable selections immediately, before dispatch.
-            a["modelGone"] = bool(picked and not any(x["name"] == picked for x in usable))
-            a["modelEffective"] = picked if (picked and not a["modelGone"]) else default_model
+            a["modelGone"] = bool(picked and hit is None)
+            a["modelEffective"] = hit["id"] if hit else default_model
     return data
 
 
@@ -180,28 +184,33 @@ async def put_agent_model(
     session: AsyncSession = Depends(get_session),
 ):
     """Store per-agent choices in Client.agent_models. Empty model clears the override and restores
-    the client's default.
+    the client's default. Composite ids (<provider>:<model>) and legacy bare names both resolve
+    against the usable catalog; the canonical catalog id is stored.
     """
     key = str(body.get("key") or "").strip().lower()
     if key not in agent_setup._SPECS:
         raise HTTPException(status_code=404, detail="该执行底座已不可用，请选择其他底座")
-    name = str(body.get("model") or "").strip()[:160]
-    if name and (AGENTS.get(key) or {}).get("modelMode") != "managed":
+    model = str(body.get("model") or "").strip()[:160]
+    if model and (AGENTS.get(key) or {}).get("modelMode") != "managed":
         raise HTTPException(status_code=422, detail="该底座使用独立账号模型，不能选择 Hub 模型")
-    if name:
+    if model:
         lst = await model_catalog.usable(session, client)
-        if not any(m["name"] == name for m in lst):
+        hit = model_catalog.match_usable(lst, model)
+        if hit is None:
             raise HTTPException(status_code=422, detail="这个模型你现在用不了，换一个或先去「我的模型」配 key")
+        # Store the exact catalog id so the provider the user picked is honored at dispatch
+        # time; bare names would always fall back to the first provider.
+        model = str(hit.get("id") or hit["name"])
     table = dict(getattr(client, "agent_models", None) or {})
-    if name:
-        table[key] = name
+    if model:
+        table[key] = model
     else:
         table.pop(key, None)
     client.agent_models = table
     await session.commit()
     from ..services.client_domain_events import device_changed
     await device_changed(client, "models")
-    return {"ok": True, "key": key, "model": name}
+    return {"ok": True, "key": key, "model": model}
 
 
 @router.post("/agent-setup/install")

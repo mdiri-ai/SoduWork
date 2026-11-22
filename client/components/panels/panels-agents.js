@@ -560,6 +560,8 @@ function _agModelHtml(a) {
   const availableModels = (_agData && _agData.models) || [];
   // This panel manages the current device. Local defaults never enter Hub settings.
   const list = availableModels;
+  // Hub catalog rows carry a composite id (<provider>:<model>); local rows fall back to name.
+  const mval = m => String((m && (m.id || m.name)) || '');
   const localHint = availableModels.some(model => model.localOnly === true || String(model.name || '').startsWith('local:'))
     ? '<span class="ag-model-own">本地默认模型仅保存在当前设备，供本机执行使用</span>' : '';
   if (!list.length && !a.modelGone) {
@@ -568,14 +570,14 @@ function _agModelHtml(a) {
   }
   const fallback = a.modelEffective || '';
   const cur = a.modelAutomatic ? fallback : a.model || '';
-  const fallbackLabel = list.find(model => model.name === fallback)?.label || fallback;
+  const fallbackLabel = list.find(model => mval(model) === fallback || model.name === fallback)?.label || fallback;
   return '<div class="ag-model' + (a.modelGone ? ' is-bad' : '') + '">' +
     '<span class="ag-model-cap">模型</span>' +
     '<select class="ag-model-sel" data-amodel="' + esc(a.key) + '" data-amodel-value="' + esc(cur) + '">' +
       '<option value=""' + (cur ? '' : ' selected') + '>跟这台 SoduWork 的默认' +
         (fallback && !cur ? '（' + esc(fallbackLabel) + '）' : '') + '</option>' +
-      list.map(m => '<option value="' + esc(m.name) + '"' +
-        (m.name === cur ? ' selected' : '') + '>' + esc(m.label || m.name) +
+      list.map(m => '<option value="' + esc(mval(m)) + '"' +
+        (mval(m) === cur || m.name === cur ? ' selected' : '') + '>' + esc(m.label || m.name) +
         (m.provider ? ' · ' + esc(_agTx(m.provider)) : '') +
         (m.providerKind === 'anthropic' ? ' · Anthropic' : '') +
         (m.keyFrom === 'mine' ? ' · 走我的额度' : '') + '</option>').join('') +
@@ -591,7 +593,7 @@ function _agModelHtml(a) {
     (a.modelGone
       ? '<span class="ag-model-warn">' + (a.localModelDefault
         ? '请主动选择可用模型后再执行，不会自动切换模型'
-        : '这个模型现在用不了，派活会退回默认' + (fallback ? '（' + esc(fallback) + '）' : '')) + '</span>'
+        : '这个模型现在用不了，派活会退回默认' + (fallbackLabel ? '（' + esc(fallbackLabel) + '）' : '')) + '</span>'
       : '') +
   '</div>';
 }
