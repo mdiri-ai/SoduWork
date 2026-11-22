@@ -179,7 +179,6 @@ async def list_ai_schedule_runs(sid: str, limit: int = 20,
     from ..services import schedules as sch
     s = await _scoped_ai_schedule(session, sid, user)
     items = await sch.list_runs(session, sid, limit=limit)
-    await session.commit()
     return {"items": items}
 
 
