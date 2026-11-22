@@ -56,6 +56,7 @@ async def main():
             id="usage-session", task_id=task.id, ref="usage-ref",
             runner_id="runner-any", runner_client_id=client.id,
             engine="future-agent", model="future-model", state="done",
+            started_at=datetime.now(timezone.utc), finished_at=datetime.now(timezone.utc),
             metadata_={"usage": {
                 "input": 120, "output": 30, "cacheRead": 50,
                 "inputIncludesCache": True, "steps": 4,
