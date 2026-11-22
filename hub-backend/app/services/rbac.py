@@ -67,9 +67,19 @@ def domain_to_api(d: models.Domain) -> dict:
     return {"id": d.id, "name": d.name, "sort": d.sort, "isSystem": d.is_system}
 
 
+# Control characters (NUL/ESC), bidi overrides (RTL/LRO/RLO/PDF) and newlines
+# must not reach stored names: they make lists display a different name than
+# what audits and logs record.
+_NAME_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f\u200e\u200f\u202a-\u202e\u2066-\u2069\n\r\t]")
+
+def sanitize_name(name: str) -> str:
+    """Strip control and bidi-override characters from a display name."""
+    return _NAME_CONTROL_RE.sub("", str(name))
+
+
 def _validate_org_name(name: str) -> str:
     """Validate and normalize an organization/department name."""
-    name = str(name).strip()
+    name = sanitize_name(name).strip()
     if not name:
         return "未命名部门"
     if len(name) > 200:
@@ -380,9 +390,10 @@ async def create_user(session: AsyncSession, username: str, password: str, displ
                       org_id: str | None, role_id: str | None, positions: list | None = None,
                       domains: list | None = None, *, token_quota=None) -> dict:
     password = client_access.validate_password(password, new_account=True)
+    display_name = sanitize_name(display_name or "").strip() or username
     u = models.User(
         username=username, password_hash=hash_password(password),
-        display_name=display_name or username, org_id=org_id or None, role_id=role_id or None,
+        display_name=display_name, org_id=org_id or None, role_id=role_id or None,
         positions=list(positions or []), domains=list(domains or []),
     )
     session.add(u)
@@ -467,7 +478,8 @@ async def list_positions(
 
 async def create_position(session: AsyncSession, name: str, sort: int = 0) -> dict:
     from uuid import uuid4
-    p = models.Position(id="pos_" + uuid4().hex[:10], name=name or "未命名岗位", sort=sort)
+    name = sanitize_name(name or "").strip() or "未命名岗位"
+    p = models.Position(id="pos_" + uuid4().hex[:10], name=name, sort=sort)
     session.add(p)
     await session.commit()
     await session.refresh(p)
