@@ -252,10 +252,31 @@ def _raise_reasoning_budget(conf: dict, body: dict, message: dict) -> bool:
     return True
 
 
+def _strip_probe_controls(body: dict) -> dict | None:
+    """Drop probe-injected optional controls; returns None when nothing can be removed."""
+    removable = ("thinking", "enable_thinking", "chat_template_kwargs",
+                 "reasoning", "reasoning_effort", "stream_options")
+    stripped = {key: value for key, value in body.items() if key not in removable}
+    return stripped if len(stripped) != len(body) else None
+
+
 async def _check(conf, check, budget, working, phase):
     body, expected = _payload({**conf, "compatibility": {**working, **budget.candidate}}, check)
-    data = await _exchange(conf, body, budget, working, stream=body["stream"], tools=check == "toolCalling",
-                           retry_reasoning_budget=check in ("connection", "imageInput"))
+    try:
+        data = await _exchange(conf, body, budget, working, stream=body["stream"], tools=check == "toolCalling",
+                               retry_reasoning_budget=check in ("connection", "imageInput"))
+    except UpstreamError as error:
+        # Probe-injected optional controls can trigger a generic refusal that reads like a
+        # missing capability; retry without them before accepting an "unsupported" verdict
+        # for the feature under test.
+        if check != "toolCalling" or error.status not in (400, 422):
+            raise
+        stripped = _strip_probe_controls(body)
+        if stripped is None:
+            raise
+        data = await _exchange(conf, stripped, budget, working, stream=stripped["stream"], tools=True)
+        body = stripped
+        phase["compatibilityHint"] = "optional_controls_stripped"
     if (check == "toolCalling" and isinstance(body.get("tool_choice"), dict)
             and data["choices"][0].get("finish_reason") == "stop"
             and meaningful(data["choices"][0]["message"].get("content"))
@@ -299,6 +320,9 @@ async def _check(conf, check, budget, working, phase):
         assistant["reasoning_content"] = value["reasoning_content"]
     followup, _ = _payload({**conf, "compatibility": {**working, **budget.candidate}}, "toolCalling")
     followup.pop("tool_choice", None)
+    if phase.get("compatibilityHint") == "optional_controls_stripped":
+        # The same optional controls would re-trigger the refusal on the follow-up turn.
+        followup = _strip_probe_controls(followup) or followup
     followup["messages"] = [*body["messages"], assistant, {"role": "tool", "tool_call_id": call["id"],
         "content": receipt}]
     # This result is fabricated locally. No model-suggested function is executed.
