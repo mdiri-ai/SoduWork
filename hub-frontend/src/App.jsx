@@ -312,7 +312,7 @@ export default function App() {
           })}
         </nav>
         <div className="side-foot-wrap" ref={profileRef}>
-          {profileOpen && <div id="profile-settings" className="profile-menu" role="dialog" aria-label={t('account.settings')}
+          {profileOpen && <div id="profile-settings" className="profile-menu" role="menu" aria-label={t('account.settings')}
             onKeyDown={(event) => {
               if (event.key === 'Escape' && !event.defaultPrevented) {
                 event.stopPropagation(); setProfileOpen(false); profileTriggerRef.current?.focus()
@@ -340,7 +340,7 @@ export default function App() {
             <button type="button" className="profile-logout" onClick={logout}><Icon name="logout" />{t("account.logout")}</button>
           </div>}
           <button ref={profileTriggerRef} type="button" className="side-foot" aria-expanded={profileOpen}
-            aria-label={t('account.settings')} aria-haspopup="dialog" aria-controls={profileOpen ? 'profile-settings' : undefined} onClick={() => setProfileOpen((open) => !open)}>
+            aria-label={t('account.settings')} aria-haspopup="menu" aria-controls={profileOpen ? 'profile-settings' : undefined} onClick={() => setProfileOpen((open) => !open)}>
             <span className="avatar" aria-hidden="true">{accountName.slice(0, 1)}</span>
             <span className="u"><b>{accountName}</b><span>{accountRole === accountName ? tx("企业内网") : accountRole + tx(" · 内网")}</span></span>
             <Icon name="settings" className="profile-trigger-icon" />

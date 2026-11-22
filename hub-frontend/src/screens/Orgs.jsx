@@ -161,10 +161,15 @@ export default function Orgs() {
             setSelectedId(org.id)
           }
         }}>
-        <button className={'og-tree-toggle' + (childRows.length ? (open ? ' open' : '') : ' leaf')}
-          aria-label={open ? tx("收起子部门") : tx("展开子部门")} onClick={(event) => { event.stopPropagation(); childRows.length && toggle(org.id) }}>
-          <Icon name="chevron" />
-        </button>
+        {childRows.length ? (
+          <button type="button" className={'og-tree-toggle' + (open ? ' open' : '')}
+            aria-label={open ? tx("收起子部门") : tx("展开子部门")} aria-expanded={open}
+            onClick={(event) => { event.stopPropagation(); toggle(org.id) }}>
+            <Icon name="chevron" />
+          </button>
+        ) : (
+          <span className="og-tree-toggle leaf" aria-hidden="true"><Icon name="chevron" /></span>
+        )}
         <span className="og-tree-mark"><Icon name="building" /></span>
         <span className="og-tree-name" title={org.name}>{org.name}</span>
       </div>
