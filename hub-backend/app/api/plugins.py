@@ -7,6 +7,7 @@ import json
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel, StrictBool, StrictStr
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -450,10 +451,17 @@ async def trust_version_publisher_candidate(
     }
 
 
+class TrustVersionBody(BaseModel):
+    # Strict types: a string/array can never mean a boolean, and silently
+    # accepting it would let an admin believe a decision took effect.
+    enabled: StrictBool = False
+    note: StrictStr | None = None
+
+
 @router.post("/versions/{version_id}/trust")
 async def trust_version(
     version_id: str,
-    body: dict = Body(default_factory=dict),
+    body: TrustVersionBody = Body(default=TrustVersionBody()),
     user: User = Depends(require_perm("plugin.manage")),
     session: AsyncSession = Depends(get_session),
 ):
@@ -465,12 +473,12 @@ async def trust_version(
         raise HTTPException(status_code=403, detail="系统级插件只能由超级管理员审批")
     await plugin_lifecycle_notifications.lock_plugin(session, plugin)
     await session.refresh(version)
-    enabled = bool(body.get("enabled"))
+    enabled = body.enabled
     previous_state = str(version.trust_state or "quarantined")
     was_enabled = bool(version.enabled)
     decision = ("approve" if enabled else
                 "reject" if previous_state == "quarantined" else "revoke")
-    note = str(body.get("note") or "").strip()[:1200]
+    note = (body.note or "").strip()[:1200]
     if not note and decision == "reject":
         note = "管理员退回修改"
     elif not note and decision == "revoke":
