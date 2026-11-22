@@ -33,6 +33,11 @@ async def scope_for_user(session: AsyncSession, me: models.User | None) -> set[s
     """Behavior and constraints for this operation."""
     if not (me and me.is_active and me.org_id):
         return set()
+    # Permission-less accounts only see their own department's pool (#1031);
+    # callers that did not resolve permissions keep the broader scope.
+    perms = getattr(me, "_perms", None)
+    if perms is not None and not perms:
+        return {me.org_id}
     ancestors = await _ancestor_org_ids(session, me.org_id)
     subtree = await rbac.subtree_org_ids(session, me.org_id) or set()
     return ancestors | subtree
