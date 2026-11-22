@@ -47,6 +47,10 @@ async def enroll(
     else:
         if c.auth_state == "revoked":
             raise HTTPException(status_code=403, detail="这台 SoduWork 已被停用，请联系管理员重新登记")
+        if not c.secret_hash and not c.secret:
+            # 管理员预留的设备行不持有任何凭证，不能用自选密钥抢注；
+            # 绑定必须由管理员侧完成激活。
+            raise HTTPException(status_code=403, detail="该设备已由管理员预留，请联系管理员完成绑定")
         if c.secret_hash and not device_auth.secret_matches(c, key):
             raise HTTPException(status_code=401, detail="设备密钥不正确")
         if not c.secret_hash:
