@@ -335,7 +335,13 @@ async def delete(session: AsyncSession, client, rid: str) -> dict:
 
 
 async def archive(session: AsyncSession, client, rid: str, archived: bool = True) -> dict:
-    row = await get(session, client, rid)
+    # Lock the row for the read-modify-write window so concurrent
+    # archive/restore requests cannot drop each other's revision bump.
+    row = (await session.execute(
+        select(MemoryRecord).where(MemoryRecord.id == rid).with_for_update()
+        .execution_options(populate_existing=True))).scalar_one_or_none()
+    if row is None:
+        row = await get(session, client, rid)
     row.archived = bool(archived)
     row.revision += 1
     row.updated_at = datetime.now(timezone.utc)
