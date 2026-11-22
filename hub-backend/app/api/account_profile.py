@@ -179,18 +179,25 @@ async def change_email(body: EmailChange, client: Client = Depends(authenticated
                        session: AsyncSession = Depends(get_session)):
     user = await account_security.owner(session, client)
     email = email_auth.normalize_email(body.email)
+    # Validate the target email before consuming the OTP/grant so a form error
+    # does not roll back (and thereby invalidate) both credentials; wrong-code
+    # attempts still burn the OTP durably inside consume_challenge.
+    if email == user.email_normalized:
+        raise account_security.error(409, "EMAIL_UNCHANGED", "请输入新的邮箱地址")
+    registered = await session.scalar(select(User.id).where(User.email_normalized == email, User.id != user.id))
+    legacy_conflict = False
+    if not registered:
+        legacy = await client_access.find_user(session, email)
+        legacy_conflict = bool(legacy and legacy.id != user.id)
+    if registered or legacy_conflict:
+        raise account_security.error(409, "EMAIL_UNAVAILABLE", "此邮箱无法绑定，请使用其他邮箱")
     try:
         # Wrong OTP attempts remain durable; successful proofs join the change transaction.
         await email_auth.consume_challenge(session, challenge_id=body.challengeId, email=email,
             purpose="change_email", device_id=client.id, code=body.code, user_id=user.id)
         await account_security.consume_grant(session, user, client, body.verificationToken, "change_email")
-        if email == user.email_normalized:
-            raise account_security.error(409, "EMAIL_UNCHANGED", "请输入新的邮箱地址")
-        registered = await session.scalar(select(User.id).where(User.email_normalized == email, User.id != user.id))
-        if registered:
-            raise account_security.error(409, "EMAIL_UNAVAILABLE", "此邮箱无法绑定，请使用其他邮箱")
-        legacy = await client_access.find_user(session, email)
-        if legacy and legacy.id != user.id:
+        registered_now = await session.scalar(select(User.id).where(User.email_normalized == email, User.id != user.id))
+        if registered_now:
             raise account_security.error(409, "EMAIL_UNAVAILABLE", "此邮箱无法绑定，请使用其他邮箱")
         result = await session.execute(update(User).where(
             User.id == user.id, User.is_active.is_(True), User.account_deleted_at.is_(None),
