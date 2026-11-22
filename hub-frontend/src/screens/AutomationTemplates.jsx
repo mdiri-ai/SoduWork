@@ -25,7 +25,7 @@ function templateErrors(value, items = []) {
   if (typeof name !== 'string' || !name.trim()) errors.name = tx("请填写模板名称，不能全为空白")
   else if (Array.from(name.trim()).length > 80) errors.name = tx("模板名称最多 80 个字符")
   else if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) errors.name = tx("模板名称不能包含换行或控制字符")
-  for (const [key, message] of [['startDate', '开始日期无效，请重新选择'], ['endDate', '结束日期无效，请重新选择']]) {
+  for (const [key, message] of [['startDate', tx('开始日期无效，请重新选择')], ['endDate', tx('结束日期无效，请重新选择')]]) {
     const date = value[key]
     if (date == null || date === '') continue
     const parsed = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && Number(date.slice(0, 4)) > 0
@@ -120,7 +120,7 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
           setLimitedDates(!event.target.checked)
           if (event.target.checked) onChange({ ...value, startDate: '', endDate: '' })
         }} />{tx("长期有效")}</label>
-      {[['startDate', '开始日期', startRef], ['endDate', '结束日期', endRef]].map(([key, label, ref]) =>
+      {[['startDate', tx('开始日期'), startRef], ['endDate', tx('结束日期'), endRef]].map(([key, label, ref]) =>
         <label key={key}><span>{tx(label)}</span><input ref={ref} type="date" name={key} disabled={!limitedDates}
           min="0001-01-01" max="9999-12-31" value={value[key] || ''}
           onChange={(event) => { set(key, event.target.value); touch(key) }} onBlur={() => touch(key)}

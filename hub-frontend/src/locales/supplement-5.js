@@ -1,4 +1,13 @@
 export default {
+  "上传中，请勿关闭": "Uploading; do not close this window",
+  "上传中，安装包较大请稍候…": "Uploading; the installer is large, please wait…",
+  "自定义": "Custom",
+  "开始日期无效，请重新选择": "Invalid start date; please choose again",
+  "结束日期无效，请重新选择": "Invalid end date; please choose again",
+  "开始日期": "Start date",
+  "结束日期": "End date",
+  "参数的双引号后只能填写英文逗号或空白": "After a closing double quote, only a comma or whitespace is allowed",
+  "参数的双引号未闭合": "Double quote is not closed",
   "管理桌面与 Android 安装包。上传后默认停用；启用前服务端会重新校验签名与完整性。": "Manage desktop and Android packages. Uploads start disabled; enabling verifies their signature and integrity again.",
   "启用后可从首页下载此 Android 安装包；停用后下载入口将不可用。已有安装不会被卸载。": "Enabling makes this Android package available for download. Disabling removes access to this package. Existing installations are not removed.",
   "图片识别": "Image understanding",
