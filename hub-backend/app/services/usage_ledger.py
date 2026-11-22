@@ -1,6 +1,11 @@
 """Provider-neutral, idempotent AI usage ledger."""
 from __future__ import annotations
 
+import re
+
+
+_SOURCE_ID_RE = re.compile(r"[0-9a-fA-F-]{8,64}")
+
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
@@ -229,6 +234,12 @@ async def from_client(
     if source_type not in {"chat", "task", "workflow", "automation", "system"}:
         source_type = "chat"
     source_id = str(payload.get("sourceId") or payload.get("conversationId") or "")[:180]
+    # Do not blindly trust client-provided sourceId: conversations are not a
+    # relational table here, so verify at least the identifier format and bind
+    # attribution to this client (idempotency keys already include client.id
+    # and user_id). A non-identifier blob is dropped rather than recorded.
+    if source_id and not _SOURCE_ID_RE.fullmatch(source_id):
+        source_id = ""
     reported_key = str(payload.get("idempotencyKey") or source_id)[:180]
     if not reported_key:
         raise ValueError("sourceId is required")
