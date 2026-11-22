@@ -312,7 +312,7 @@ export default function App() {
           })}
         </nav>
         <div className="side-foot-wrap" ref={profileRef}>
-          {profileOpen && <div id="profile-settings" className="profile-menu" role="dialog" aria-label={t('account.settings')}
+          {profileOpen && <div id="profile-settings" className="profile-menu" role="dialog" aria-modal="false" aria-label={t('account.settings')}
             onKeyDown={(event) => {
               if (event.key === 'Escape' && !event.defaultPrevented) {
                 event.stopPropagation(); setProfileOpen(false); profileTriggerRef.current?.focus()
