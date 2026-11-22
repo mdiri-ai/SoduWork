@@ -1417,7 +1417,9 @@ async def ai_status_task(
         # A continuation must not acknowledge delivery using stale task files
         # when its authoritative Runner snapshot could not be read.
         raise HTTPException(502, "交付结果暂未同步，请恢复本轮重试")
-    if s.get("ok") and (s.get("attachments") or s.get("artifactUrl")):
+    if require_snapshot and s.get("ok") and (s.get("attachments") or s.get("artifactUrl")):
+        # Import artifacts only on explicit verification calls (#1036): plain
+        # status reads stay idempotent read-only.
         await ai_exec.pull_artifacts(session, tid, ctx, s, ref)   # Reuse the administrative path's idempotent artifact import.
         await session.refresh(t)
     # Expose the execution machine and workspace so missing outputs can be investigated.
@@ -1425,7 +1427,7 @@ async def ai_status_task(
     # Collect final usage even when no console viewer or heartbeat has observed the local run.
     # Read the completed session snapshot and persist its usage idempotently.
     # Usage accounting must not depend on whether someone opened the live session view.
-    if runner.get("done"):
+    if require_snapshot and runner.get("done"):
         try:
             from ..services import execution_sessions as _es
             _live = await _aio.to_thread(ai_exec.session_sync, ctx, ref, 10 ** 9)
