@@ -225,9 +225,11 @@ async def from_execution(
 async def from_client(
     session: AsyncSession, client: models.Client, payload: dict,
 ) -> models.AIUsageEvent:
-    source_type = str(payload.get("sourceType") or "chat").lower()
+    raw_source_type = payload.get("sourceType")
+    source_type = str(raw_source_type or "chat").lower()
     if source_type not in {"chat", "task", "workflow", "automation", "system"}:
-        source_type = "chat"
+        # Silence here would disguise abnormal reports as ordinary chat usage.
+        raise ValueError("sourceType must be one of chat/task/workflow/automation/system")
     source_id = str(payload.get("sourceId") or payload.get("conversationId") or "")[:180]
     reported_key = str(payload.get("idempotencyKey") or source_id)[:180]
     if not reported_key:

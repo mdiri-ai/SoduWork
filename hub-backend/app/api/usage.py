@@ -29,7 +29,8 @@ async def report_usage(
         for item in incoming:
             rows.append(await usage_ledger.from_client(session, client, item))
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        # Field-level enum/format errors deserve 422 like the rest of the validation stack.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await session.commit()
     client_access.invalidate_quota(str(client.user_ref or ""))
     quota = await client_access.quota_status(
