@@ -84,8 +84,13 @@ def _csv_cell(value):
     return value
 
 
-async def export_csv(session, user, environment, **filters):
+async def export_csv(session, user, environment, limit: int = 0, offset: int = 0, **filters):
     query = await _audit_query(session, user, **filters)
+    # limit=0 keeps the full export; positive values reuse the list endpoint's paging.
+    if limit > 0:
+        query = query.limit(limit)
+    if offset > 0:
+        query = query.offset(offset)
     rows = await session.stream_scalars(query.execution_options(yield_per=400))
 
     async def chunks():

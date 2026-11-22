@@ -2099,8 +2099,13 @@ async def delete_integration(iid: str, user: User = Depends(require_perm("integr
 
 # Audit log.
 
-def _audit_filters(action: str | None = None, actor: str | None = None,
-                   since: AwareDatetime | None = None, until: AwareDatetime | None = None):
+def _audit_filters(action: str | None = None,
+                   actor: Annotated[str | None, Query(alias="actorId", max_length=200)] = None,
+                   since: Annotated[AwareDatetime | None, Query(alias="from")] = None,
+                   until: Annotated[AwareDatetime | None, Query(alias="to")] = None):
+    # "from" is a Python keyword, so the query aliases above are the only way the
+    # frontend parameter names (actorId/from/to) can reach these filters at all;
+    # without them the filters were silently ignored and the list returned everything.
     # SQLite stores UTC without an offset; compare the same instants on both databases.
     try:
         since = since.astimezone(timezone.utc) if since is not None else None
@@ -2115,7 +2120,7 @@ def _audit_filters(action: str | None = None, actor: str | None = None,
 @router.get("/audit")
 async def list_audit(
     filters: dict = Depends(_audit_filters),
-    limit: Annotated[int, Query(ge=0)] = 50, offset: Annotated[int, Query(le=2**63-1)] = 0,
+    limit: Annotated[int, Query(ge=0)] = 50, offset: Annotated[int, Query(ge=0, le=2**63-1)] = 0,
     user: User = Depends(require_perm("audit.view")),
     session: AsyncSession = Depends(get_session),
 ):
@@ -2127,11 +2132,13 @@ async def list_audit(
 @router.get("/audit/export.csv")
 async def export_audit(
     filters: dict = Depends(_audit_filters),
+    limit: Annotated[int, Query(ge=0)] = 0, offset: Annotated[int, Query(ge=0, le=2**63-1)] = 0,
     user: User = Depends(require_perm("audit.view")),
     session: AsyncSession = Depends(get_session),
 ):
-    """Download every matching event in the same order and scope as the audit list."""
-    chunks = await audit.export_csv(session, user, settings.soduwork_env.strip().lower(), **filters)
+    """Download matching events in the same order and scope as the audit list; limit=0 exports everything."""
+    chunks = await audit.export_csv(session, user, settings.soduwork_env.strip().lower(),
+                                    limit=limit, offset=offset, **filters)
     return StreamingResponse(chunks, media_type="text/csv", headers={
         "Content-Disposition": 'attachment; filename="audit-log.csv"',
         "Cache-Control": "no-store",
