@@ -49,6 +49,7 @@ class PersonalModelQuotaTests(unittest.IsolatedAsyncioTestCase):
     async def receipt(self, count, *, key="mixed", token="", provider="shared", model="shared-model", **fields):
         return await self.http.post("/api/v1/usage/events", headers=self.headers, json={
             "sourceId": key, "provider": provider, "model": model, "agent": "pi",
+            "occurredAt": datetime.now(timezone.utc).isoformat(),
             "quotaUsageToken": token, "usage": {"input": count}, **fields})
 
     async def test_exhaustion_allows_personal_funding_on_all_managed_runtimes(self):
