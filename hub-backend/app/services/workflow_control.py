@@ -44,7 +44,11 @@ async def _mark_cancelled(session: AsyncSession, run: am.WorkflowRun, actor: str
     active_nodes = list((await session.execute(select(am.NodeRun).where(
         am.NodeRun.run_id == run.id, am.NodeRun.state.in_(tuple(_ACTIVE))
     ))).scalars().all())
-    request_ids, acceptance_refs, deployment_ids = _owned_refs(active_nodes)
+    all_run_nodes = list((await session.execute(select(am.NodeRun).where(
+        am.NodeRun.run_id == run.id))).scalars().all())
+    # Approval refs are collected from every node of this run (not only active ones);
+    # leftover approvals from already-finished nodes must be cancelled with the run.
+    request_ids, acceptance_refs, deployment_ids = _owned_refs(all_run_nodes)
     executor_refs = []
     for node in active_nodes:
         executor = dict(node.executor or {})
