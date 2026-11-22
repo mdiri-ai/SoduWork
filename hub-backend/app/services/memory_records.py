@@ -336,9 +336,15 @@ async def delete(session: AsyncSession, client, rid: str) -> dict:
 
 async def archive(session: AsyncSession, client, rid: str, archived: bool = True) -> dict:
     row = await get(session, client, rid)
-    row.archived = bool(archived)
-    row.revision += 1
-    row.updated_at = datetime.now(timezone.utc)
+    old_rev = row.revision
+    result = await session.execute(
+        update(MemoryRecord)
+        .where(MemoryRecord.id == row.id, MemoryRecord.revision == old_rev)
+        .values(archived=bool(archived), revision=old_rev + 1,
+                updated_at=datetime.now(timezone.utc)))
+    if result.rowcount == 0:
+        await session.rollback()
+        raise HTTPException(409, "该记忆刚被并发修改，请刷新后重试")
     await session.commit()
     await session.refresh(row)
     return {"ok": True, "item": view(row, True)}
