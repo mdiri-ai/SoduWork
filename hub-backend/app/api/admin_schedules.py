@@ -50,6 +50,9 @@ async def save_automation_templates(
 ):
     from ..services import automation_templates
     from ..services import template_catalog_revision
+    scope = await rbac.scope_org_ids(session, user)
+    if scope is not None:
+        raise HTTPException(status_code=403, detail="自动化模板为全公司资产，只能由平台级管理员修改")
     if not isinstance(body.get("revision"), str) or not body["revision"]:
         raise HTTPException(status_code=428, detail="Reload the template catalog before saving; a revision is required.")
     try:
