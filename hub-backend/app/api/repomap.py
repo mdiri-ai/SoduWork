@@ -80,8 +80,11 @@ async def upsert_binding(
     # Fill only missing ownership; preserve manual assignments.
     rows = (await session.execute(
         select(Task).where(Task.integration_id == iid))).scalars().all()
+    scope = await rbac.scope_org_ids(session, user)
     fixed = 0
     for t in rows:
+        if scope is not None and not (t.shared_org_id and t.shared_org_id in scope):
+            continue  # Outside the visible scope; backfill only in-scope tasks.
         if (getattr(t, "repo_id", "") or "").strip():
             continue
         if (getattr(t, "ext_repo", "") or "").strip().lower() != ext.lower():
