@@ -135,6 +135,9 @@ async def pending(
     stuck = [t for t in rows
              if not (getattr(t, "repo_id", "") or "").strip()
              and (getattr(t, "ext_repo", "") or "").strip()]
+    scope = await rbac.scope_org_ids(session, user)
+    if scope is not None:
+        stuck = [t for t in stuck if t.shared_org_id and t.shared_org_id in scope]
     groups: dict[tuple[str, str], dict] = {}
     for t in stuck:
         key = (t.integration_id or "", (t.ext_repo or "").strip())
