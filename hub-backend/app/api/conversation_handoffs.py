@@ -34,8 +34,9 @@ async def prepare(transfer_id: str, file: UploadFile = File(...), options: str =
 
 @router.get("/{transfer_id}")
 async def status(transfer_id: str, client=Depends(current_client), session=Depends(get_session)):
+    # 状态查询保持只读：committing 阶段的探测与推进由 POST /{id}/commit 触发，GET 不再联网或落库。
     row = await svc.get(session, client, transfer_id)
-    return svc.public(await svc.refresh(session, row))
+    return svc.public(row)
 
 
 @router.post("/{transfer_id}/commit")
