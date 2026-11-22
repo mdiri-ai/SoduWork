@@ -21,16 +21,25 @@ _COUNTERS = (
 from .usage_values import _QUALITY_RANK, _number, normalize_usage, validate_reported_usage
 from ..timestamps import iso_utc
 
+# Server-local calendar day is Beijing time (see day_key below); naive
+# client timestamps are interpreted in that same zone instead of UTC so
+# local 16:00+ usage is no longer attributed to the next day.
+_SERVER_TZ = timezone(timedelta(hours=8))
+
+
 def _dt(value: Any) -> datetime:
     if isinstance(value, datetime):
-        parsed = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        parsed = value if value.tzinfo else value.replace(tzinfo=_SERVER_TZ)
         return parsed.astimezone(timezone.utc)
+    text = str(value or "").strip()
     try:
-        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
-        parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except (TypeError, ValueError):
-        return datetime.now(timezone.utc)
+        # Invalid timestamps must not silently fall back to "now": the caller
+        # turns this into a 400 so wrong formats surface immediately.
+        raise ValueError(f"occurredAt 不是合法时间戳: {value!r}") from None
+    parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=_SERVER_TZ)
+    return parsed.astimezone(timezone.utc)
 
 
 async def upsert_cumulative(
@@ -53,6 +62,9 @@ async def upsert_cumulative(
         models.AIUsageEvent.idempotency_key == key).limit(1).with_for_update()
         .execution_options(populate_existing=True))).scalar_one_or_none()
     reported_at = _dt(values.get("occurred_at"))
+    # The second report with the same key must not look accepted-new: mark it
+    # so to_api can surface duplicate=true to the caller.
+    duplicate = row is not None
     if row is None:
         # Set the anchor before flush so the model's ``default=now`` cannot
         # win over a client timestamp that arrived a little later.
@@ -141,6 +153,10 @@ async def upsert_cumulative(
             for field, delta in deltas.items():
                 setattr(daily, field, int(getattr(daily, field) or 0) + delta)
         await session.flush()
+    try:
+        row.duplicate_report = duplicate and not any(deltas.values())
+    except AttributeError:
+        pass
     return row
 
 
@@ -169,6 +185,7 @@ def to_api(row: models.AIUsageEvent) -> dict:
         },
         "quality": row.quality,
         "occurredAt": iso_utc(row.occurred_at) if row.occurred_at else "",
+        "duplicate": bool(getattr(row, "duplicate_report", False)),
     }
 
 
@@ -251,7 +268,10 @@ async def from_client(
         workflow_run_id = ""
         node_run_id = ""
     from .model_quota import reported_scope
-    raw_usage = dict(payload.get("usage") or {})
+    raw_usage_in = payload.get("usage")
+    if raw_usage_in is not None and not isinstance(raw_usage_in, dict):
+        raise ValueError("usage 必须是对象，包含 input_tokens/output_tokens 等计数字段")
+    raw_usage = dict(raw_usage_in or {})
     validate_reported_usage(raw_usage)
     values = {
         "quota_scope": reported_scope(client, payload),
