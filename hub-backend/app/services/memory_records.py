@@ -321,15 +321,30 @@ async def edit(session: AsyncSession, client, rid: str, body: MemoryPatch) -> di
     return {"ok": True, "item": view(row, True)}
 
 
-async def delete(session: AsyncSession, client, rid: str) -> dict:
+async def delete(session: AsyncSession, client, rid: str, revision: int | None = None) -> dict:
     """Permanently remove a client-owned summary record.
 
     Client deletion is intentionally separate from archive/restore: callers can
     use archive for normal hiding and DELETE when a user explicitly asks to
     forget a summary. ``get`` enforces the owner and organization boundary.
+
+    When ``revision`` is provided the delete is bound to that revision, so a
+    concurrent edit (which bumps the revision) makes the delete fail with 409
+    instead of silently overwriting the newer content.
     """
     row = await get(session, client, rid)
-    await session.delete(row)
+    if revision is not None and type(revision) is not int:
+        raise HTTPException(400, "revision must be an integer")
+    if revision is not None:
+        result = await session.execute(
+            sql_delete(MemoryRecord).where(
+                MemoryRecord.id == rid,
+                MemoryRecord.revision == revision))
+        if result.rowcount == 0:
+            await session.rollback()
+            raise HTTPException(409, "memory was modified concurrently; refetch and retry")
+    else:
+        await session.delete(row)
     await session.commit()
     return {"ok": True}
 
