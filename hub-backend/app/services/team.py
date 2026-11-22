@@ -129,7 +129,11 @@ async def team_module_scope(session: AsyncSession) -> str:
 
 
 async def set_team_module_scope(session: AsyncSession, scope: str) -> str:
-    value = "everyone" if str(scope or "").strip().lower() == "everyone" else "managers"
+    value = str(scope or "").strip().lower()
+    # Unknown values must be rejected, not silently rewritten to "managers":
+    # a dropped configuration looks accepted but keeps the old value.
+    if value not in ("everyone", "managers"):
+        raise ValueError("scope 只允许 everyone 或 managers")
     row = await session.get(models.AppSetting, "team_module_scope")
     if row is None:
         row = models.AppSetting(key="team_module_scope", value=value)
