@@ -91,6 +91,7 @@ export default function App() {
   const [authed, setAuthed] = useState(!!getToken())
   const [showLogin, setShowLogin] = useState(!!SSO_ERROR)   // Explain SSO callback failures directly.
   const [me, setMe] = useState(getUser())
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [health, setHealth] = useState({ state: 'checking', version: '' })
   const healthRef = useRef(null)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -146,7 +147,8 @@ export default function App() {
   }, [authed, closeHealth])
 
   useEffect(() => {
-    const h = () => { setAuthed(false); setMe(null) }
+    // An expired session must surface the login form with a notice, not the marketing landing page.
+    const h = () => { setAuthed(false); setMe(null); setSessionExpired(true); setShowLogin(true) }
     window.addEventListener('soduwork-hub-unauth', h)
     return () => window.removeEventListener('soduwork-hub-unauth', h)
   }, [])
@@ -213,7 +215,7 @@ export default function App() {
     return (
       <>
         {showLogin
-          ? <Login initialError={SSO_ERROR} onLogin={() => { SSO_ERROR = ''; setAuthed(true); setMe(getUser()) }} onBack={() => { SSO_ERROR = ''; setShowLogin(false) }} />
+          ? <Login initialError={sessionExpired ? tx('登录已失效，请重新登录，未保存内容可能已丢失') : SSO_ERROR} onLogin={() => { SSO_ERROR = ''; setSessionExpired(false); setAuthed(true); setMe(getUser()) }} onBack={() => { SSO_ERROR = ''; setSessionExpired(false); setShowLogin(false) }} />
           : <Landing onLogin={() => setShowLogin(true)} />}
         <LocaleSettings floating />
         <ToastHost />
