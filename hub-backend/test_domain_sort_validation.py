@@ -28,7 +28,7 @@ class DomainSortValidationTests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(lambda sync: Base.metadata.create_all(sync, tables=tables))
         async with self.sessions() as session:
             session.add_all([
-                models.Role(id="manager-role", name="Manager", permissions=["user.manage"]),
+                models.Role(id="manager-role", name="Manager", permissions=["user.manage", "work.catalog.manage"]),
                 models.User(id="manager", username="manager", role_id="manager-role",
                             is_active=True, auth_version=1, domains=["existing"]),
                 models.User(id="reader", username="reader", is_active=True, auth_version=1),
