@@ -682,8 +682,11 @@ async def _generate_media(
         return _err(400, f"模型「{conf['model']}」当前不支持这条媒体生成通道")
 
     config = model_catalog.model_config(conf.get("config"), modality)
+    allowed = {"prompt", "n", "size", "seconds", "quality", "style", "background",
+               "output_format", "output_compression", "response_format"}
     payload = dict(config.get("defaults") or {})
-    payload.update(body)
+    # Client fields must stay within a whitelist; server-controlled defaults are never overridable.
+    payload.update({key: value for key, value in body.items() if key in allowed})
     payload["model"] = conf["model"]
     payload.pop("stream", None)
     endpoint = config["endpointPath"]
