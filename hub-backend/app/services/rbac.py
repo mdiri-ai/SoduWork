@@ -360,10 +360,14 @@ async def delete_role(session: AsyncSession, rid: str) -> dict:
 
 # Users.
 
-async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Page | None = None):
+async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Page | None = None,
+                     is_active: bool | None = None):
     q = select(models.User).order_by(models.User.created_at, models.User.id)
     if scope is not None:
         q = q.where(models.User.org_id.in_(scope or {"__none__"}))
+    if is_active is not None:
+        # State filter so soft-deactivated accounts can be listed separately (#1033).
+        q = q.where(models.User.is_active.is_(bool(is_active)))
     users, total = await select_rows(session, q, page)
     from . import client_access
     quotas = await client_access.user_quotas(session, [u.id for u in users])

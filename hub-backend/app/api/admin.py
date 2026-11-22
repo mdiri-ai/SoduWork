@@ -303,8 +303,10 @@ async def delete_role(rid: str,
 
 @router.get("/users", dependencies=[Depends(require_perm("user.manage"))])
 async def list_users(user: User = Depends(current_user), session: AsyncSession = Depends(get_session),
-                    window: PageQuery = None):
-    return await rbac.list_users(session, await rbac.scope_org_ids(session, user), page=window)
+                    window: PageQuery = None, is_active: bool | None = Query(default=None)):
+    # isActive filter: soft-deactivated accounts can be listed separately (#1033).
+    return await rbac.list_users(session, await rbac.scope_org_ids(session, user), page=window,
+                                 is_active=is_active)
 
 
 @router.post("/users")
@@ -359,11 +361,6 @@ async def update_user(
     if target is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     await _assert_user_in_scope(session, user, target)
-    if body.password is not None:
-        if len(body.password) < 8:
-            raise HTTPException(status_code=422, detail="密码长度不能少于 8 个字符")
-        if len(body.password) > 128:
-            raise HTTPException(status_code=422, detail="密码长度不能超过 128 个字符")
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)
@@ -1842,25 +1839,20 @@ async def put_alert_config(
 ):
     from ..models import AppSetting
     from ..services import notify
-    url = body.get("url")
-    if url is not None:
-        url = str(url).strip()[:600]
-        if url and not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
-        row = (await session.execute(select(AppSetting).where(
-            AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-        if row is None:
-            session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
-        else:
-            row.value = url
-        await session.commit()
-    # Read current state for audit and response.
-    current_row = (await session.execute(select(AppSetting).where(
+    url = str(body.get("url") or "").strip()[:600]
+    if url and not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
+    row = (await session.execute(select(AppSetting).where(
         AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
+    if row is None:
+        session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
+    else:
+        row.value = url
+    await session.commit()
     # Webhook URLs permit message injection if leaked; audit only whether a URL is configured.
     await audit.log(session, user, "alert.config", "setting", None, "告警通道",
-                    {"configured": bool(current_row and current_row.value)})
-    return {"ok": True, "configured": bool(current_row and current_row.value)}
+                    {"configured": bool(url)})
+    return {"ok": True, "configured": bool(url)}
 
 
 @router.post("/alert-config/test")
@@ -1901,6 +1893,12 @@ async def put_llm_config(
     from ..models import AppSetting
     from ..services import llm, model_config_guard
     await model_config_guard.defaults(session, _LLM_KEYS, body.get("expectedRevision"))
+    # Type check: a non-string baseUrl/model is a client error, not a silent clear.
+    # Previously a JSON [] (or any non-string) fell through `or ""` and wiped the stored URL (#1044).
+    for _f in ("baseUrl", "model"):
+        _v = body.get(_f)
+        if _v is not None and not isinstance(_v, str):
+            raise HTTPException(status_code=422, detail=f"{_f} must be a string")
     updates = {"llm_base_url": (body.get("baseUrl") or "").strip(),
                "llm_model": (body.get("model") or "").strip()}
     # Change candidate models only when supplied, preserving compatibility with older callers.
