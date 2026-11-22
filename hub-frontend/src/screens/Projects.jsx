@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, can } from '../api.js'
 import { FilterInput, FilterSelect } from '../FilterControls.jsx'
 import { useViewportHeight } from '../viewport-height.js'
-import { useAsync, Loading, Icon, ErrorState, LiveDot, AUTO, toast, Confirm, Modal, SelectMenu } from '../ui.jsx'
+import { useAsync, Loading, Icon, ErrorState, LiveDot, AUTO, toast, Confirm, Modal, SelectMenu, takeNav } from '../ui.jsx'
 import { DevFlowModal, DevFlowPreview, DevFlowSummary } from './DevFlowCfg.jsx'
 import { RepoSkills } from './Skills.jsx'
 import './project-governance.css'
@@ -407,7 +407,7 @@ export default function Projects() {
   const listRef = useViewportHeight(180)
   const uiLocale = useLocale();
   const projects = useAsync(() => api.projects(), AUTO); const clients = useAsync(() => api.clients().catch(() => []), AUTO); const owners = useAsync(() => api.projectOwners().catch(() => []), AUTO)
-  const [open, setOpen] = useState(null); const [creating, setCreating] = useState(false); const [query, setQuery] = useState(''); const [group, setGroup] = useState('all')
+  const [open, setOpen] = useState(() => (takeNav('projects') || {}).detail || null); const [creating, setCreating] = useState(false); const [query, setQuery] = useState(''); const [group, setGroup] = useState('all')
   if (projects.loading) return <Loading />
   if (projects.error && !projects.data) return <ErrorState onRetry={projects.reload} />
   const list = projects.data || []; const people = owners.data || []; const groups = [...new Set(list.map((p) => (p.group || '').trim() || tx("未分组")))].sort((a, b) => (a === tx("未分组")) - (b === tx("未分组")))
