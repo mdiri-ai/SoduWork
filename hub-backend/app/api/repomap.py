@@ -110,6 +110,8 @@ async def delete_binding(
     repo = await session.get(Repo, b.repo_id)
     if repo is not None:
         await _assert_repo_scope(session, user, repo)
+    else:
+        raise HTTPException(status_code=403, detail="绑定指向的工程不存在，无法确认归属")
     external_repo = b.external_repo
     integration_id = b.integration_id
     repo_id = b.repo_id
