@@ -105,8 +105,11 @@ def test_resource_budget_pause_and_recovery() -> None:
     critical = budget.snapshot(force=True)
     sample.update(cpuPercent=25, memoryAvailableBytes=12 * 1024 ** 3)
     recovered = budget.snapshot(force=True)
-    chk("资源·CPU 或内存压力过高时暂停拉起新进程",
-        critical.pressure == "critical" and not critical.can_start
+    # #531: critical pressure degrades to serial execution (limit=1) instead
+    # of refusing to start anything — hosts running VMs sit above the
+    # thresholds for hours while the execution base itself still works.
+    chk("资源·CPU 或内存压力过高时降级为串行执行（limit=1）",
+        critical.pressure == "critical" and critical.can_start
         and critical.limit == 1, critical.public())
     chk("资源·压力恢复后自动恢复并发且始终限制在 1–20",
         recovered.can_start and recovered.pressure == "normal"

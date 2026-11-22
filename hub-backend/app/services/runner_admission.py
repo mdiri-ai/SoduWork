@@ -209,7 +209,11 @@ class AdaptiveResourceBudget:
             limit = max(1, min(self.ceiling, cpu_slots, memory_slots))
             pressure, can_start = "normal", True
             if cpu >= 95.0 or memory >= 92.0 or (available and available < int(0.75 * _GIB)):
-                pressure, can_start, limit = "critical", False, 1
+                # Degrade to serial execution instead of refusing to start (#531):
+                # hosts running VMs sit above these thresholds for hours while the
+                # execution base itself still works — starving the queue forever
+                # helps nobody. One task at a time, and the pressure stays visible.
+                pressure, limit = "critical", 1
             elif cpu >= 82.0 or memory >= 84.0 or (available and available < int(1.5 * _GIB)):
                 pressure, limit = "busy", max(1, limit // 2)
             elif cpu >= 70.0 or memory >= 76.0:

@@ -903,6 +903,18 @@ class Runner:
             resource = self._resource_budget.snapshot()
             self._resource_snapshot = resource
             self.max_concurrent = resource.limit
+            # Make resource pressure visible (#531): previously the loop spun
+            # silently when admission refused to start anything. Read via
+            # getattr so fixture budgets without a pressure field keep working.
+            pressure = getattr(resource, "pressure", "normal")
+            if pressure != getattr(self, "_pressure_logged", None):
+                if pressure == "critical":
+                    log.warning("admission: pressure=critical cpu=%.1f%% mem_avail=%dMB -> serial execution",
+                                getattr(resource, "cpu_percent", 0.0),
+                                getattr(resource, "memory_available", 0) // (1024 * 1024))
+                else:
+                    log.info("admission: pressure=%s limit=%d", pressure, resource.limit)
+                self._pressure_logged = pressure
             while True:
                 from app.services import ai_local
                 from app.services.runner_event_scope import is_local
