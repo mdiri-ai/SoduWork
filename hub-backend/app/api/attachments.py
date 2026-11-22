@@ -35,6 +35,17 @@ def _safe_name(name: str) -> str:
     return name[:200] or "file"
 
 
+# Uploads are a delivery channel for task attachments, never an executable drop:
+# block executable/installer/script-host extensions and scriptable document
+# formats that can carry inline code (#1014). Send these compressed as zip.
+_BLOCKED_EXTS = {
+    ".exe", ".com", ".bat", ".cmd", ".scr", ".pif", ".msi", ".msp", ".mst",
+    ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".ps1", ".psm1",
+    ".jar", ".sh", ".bash", ".hta", ".chm", ".lnk", ".reg",
+    ".html", ".htm", ".svg",
+}
+
+
 def _upload_size(file: UploadFile) -> int:
     """Measure uploads through the underlying file handle without loading a spooled file into
     memory again.
@@ -60,6 +71,9 @@ async def _save_attachment(session: AsyncSession, client: Client, target_id: str
     if size <= 0:
         raise HTTPException(status_code=400, detail="空文件")
     fn = _safe_name(file.filename)
+    ext = os.path.splitext(fn)[1].lower()
+    if ext in _BLOCKED_EXTS:
+        raise HTTPException(status_code=400, detail="附件不支持可执行文件与脚本类格式（如 .exe/.bat/.html/.svg），请压缩为 zip 后再上传")
     ct = file.content_type or "application/octet-stream"
     attachment = Attachment(
         id=str(uuid.uuid4()), task_id=target_id, filename=fn, content_type=ct,
