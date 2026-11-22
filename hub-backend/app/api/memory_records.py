@@ -36,9 +36,10 @@ async def organization_context(response: Response, client=Depends(current_client
     from ..services import org_memory
     response.headers["Cache-Control"] = "private, no-store"
     response.headers["Vary"] = "Authorization"
-    value = await org_memory.for_client(session, client)
-    await session.commit()
-    return value
+    # Read-only GET: refresh() may recompute in-transaction, but no commit happens
+    # here so reads never write. Durable repair belongs to the periodic sweep
+    # (org_memory.loop), which commits on its own session.
+    return await org_memory.for_client(session, client)
 
 
 @router.get("/{rid}")
