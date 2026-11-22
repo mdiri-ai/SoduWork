@@ -1895,7 +1895,10 @@
     async agentSetup(runnerId) {
       var requestScope = taskStorageKey('ops');
       var target = typeof runnerId === 'string' ? '?runnerId=' + encodeURIComponent(runnerId) : '';
-      var r = await jfetch('/agent-setup' + target, { taskScope: requestScope }) || { env: {}, agents: [], modelCount: 0 };
+      // Hub-side /agent-setup runs a local probe that can take 20-38s; the jfetch default
+      // 8s timeout aborts before the probe finishes (#1010). Follow capabilities/check's
+      // long-timeout pattern with a 90s signal.
+      var r = await jfetch('/agent-setup' + target, { taskScope: requestScope, signal: _abortSignal(90000) }) || { env: {}, agents: [], modelCount: 0 };
       if (!(r.machines || []).length && !(r.agents || []).length) {
         var reason = await localRunnerReason();
         if (reason) r.env = Object.assign({}, r.env, { why: reason });
@@ -1954,7 +1957,7 @@
       var selectedId = runnerId(selected);
       // Keep the captured identity through both requests; an older Hub may ignore runnerId.
       var setupQuery = '?runnerId=' + encodeURIComponent(selectedId) + (hasLocalModel ? '&hasLocalModel=1' : '');
-      var data = await jfetch('/agent-setup' + setupQuery, { taskScope: requestScope }) || {};
+      var data = await jfetch('/agent-setup' + setupQuery, { taskScope: requestScope, signal: _abortSignal(90000) }) || {};
       currentRequest();
       var machine = (Array.isArray(data.machines) ? data.machines : []).find(function (row) {
         if (runnerId(row) !== selectedId || row.execution === 'backend' || row.online === false) return false;
