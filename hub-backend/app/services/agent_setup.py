@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from .local_base import (
     _PROFILES, _WIN, _bundled_pi_cli_js, _bundled_pi_node,
@@ -421,7 +422,14 @@ def detect_all(*, has_model: bool = True) -> list[dict]:
     probes = _load_probes()
     # Discovery can release the GIL while the private desktop pipe adds an ACP
     # declaration. Snapshot identities so that scan remains a coherent batch.
-    return [detect(k, has_model=has_model, probes=probes) for k in list(_SPECS)]
+    keys = list(_SPECS)
+    # Each detect() runs independent read-only CLI probes and subprocesses;
+    # run them concurrently so the slowest probe bounds the whole discovery
+    # instead of their sum (measured 38s serial on Windows). _cached_version_probe
+    # coalesces concurrent same-key calls under its lock, and detect() only reads
+    # shared module state, so this is thread-safe.
+    with ThreadPoolExecutor(max_workers=min(len(keys), 8)) as pool:
+        return list(pool.map(lambda k: detect(k, has_model=has_model, probes=probes), keys))
 
 
 # Installation, version-check, and probe jobs.
