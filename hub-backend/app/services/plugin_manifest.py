@@ -590,6 +590,7 @@ def normalize(manifest: dict, workflow: dict | None = None) -> tuple[dict, dict,
         node["inputs"] = workflow_contracts.normalize_inputs(
             node.pop("_inputRefs", None), node["key"],
             list(node.get("dependsOn") or []), outputs_by_node)
+        workflow_contracts.validate_when_dependency(node)
     result_contract = [{
         "id": f"{node['key']}.{output['key']}",
         "nodeKey": node["key"], "nodeName": node["name"],
