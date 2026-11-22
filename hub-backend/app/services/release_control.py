@@ -568,6 +568,16 @@ async def decide(session: AsyncSession, task: models.Task, actor, *, action: str
             detail = str((problems[0] if problems else {}).get("detail") or
                          "当前主成果尚未通过结构校验")
             return {"ok": False, "reason": "invalid_artifact", "detail": detail}
+    if action == "deploy" and environment_id:
+        # The chosen environment must belong to the task's organization; the same
+        # match is enforced when deployment targets are saved.
+        from . import environment_service
+        env_row = await session.get(am.Environment, str(environment_id))
+        task_org = await environment_service.task_org_id(session, task)
+        if env_row is None or (env_row.org_id is not None and task_org is not None
+                               and str(env_row.org_id) != str(task_org)):
+            return {"ok": False, "reason": "invalid_environment",
+                    "detail": f"发布环境不属于这个任务的组织：{environment_id}"}
     req = (await session.execute(select(am.ApprovalRequest).where(
         am.ApprovalRequest.artifact_version_id == artifact.id,
         am.ApprovalRequest.action == action,
