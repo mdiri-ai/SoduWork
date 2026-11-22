@@ -85,7 +85,10 @@ async def save_configuration(body: CatalogUpdate,
     if old["revision"] != body.revision:
         raise conflict()
     plans = body.model_dump(exclude={"defaultLimit"})
-    if {p["id"] for p in old["plans"]} - {p["id"] for p in plans["plans"]}:
+    plan_ids = [p["id"] for p in plans["plans"]]
+    if len(plan_ids) != len(set(plan_ids)):
+        raise HTTPException(422, "plans 中存在重复的套餐 ID，请检查后重新提交")
+    if {p["id"] for p in old["plans"]} - set(plan_ids):
         raise HTTPException(422, "已建立的套餐需要保留，避免影响已分配的成员")
     await validate_model_definitions(session, body.plans)
     plans["revision"] += 1
