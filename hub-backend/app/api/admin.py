@@ -4,6 +4,8 @@ unassigned devices. Client.user_ref determines device ownership.
 """
 from typing import Annotated
 from datetime import date as calendar_date, datetime, timedelta, timezone
+import asyncio
+import hashlib
 import logging
 import uuid
 
@@ -985,9 +987,12 @@ async def upload_task_attachment(
         raise HTTPException(status_code=400, detail="空文件")
     fn = (file.filename or "file").replace("/", "_").replace("\\", "_").strip()[:200] or "file"
     ct = file.content_type or "application/octet-stream"
+    # Compute the real digest at upload time so integrity checks are usable.
+    digest = hashlib.sha256(data).hexdigest()
     # The column default is applied at flush; the storage key needs the id now.
     a = Attachment(id=str(uuid.uuid4()), task_id=tid, filename=fn, content_type=ct, size=len(data),
-                   uploaded_by="admin:" + user.id)
+                   uploaded_by="admin:" + user.id,
+                   evidence_meta={"sha256": digest})
     a.storage_key = f"att/{tid}/{a.id}/{fn}"
     a.backend = storage.put(a.storage_key, data, ct)
     session.add(a)
@@ -995,8 +1000,39 @@ async def upload_task_attachment(
     await session.refresh(a)
     await audit.log(session, user, "task.attachment.upload", "attachment", a.id, fn,
                     {"taskId": tid, "size": len(data),
-                     "contentType": ct[:120]})
+                     "contentType": ct[:120], "sha256": digest})
     return attachment_to_api(a)
+
+
+@router.delete("/tasks/{tid}/attachments/{aid}")
+async def delete_task_attachment(
+    tid: str, aid: str,
+    user: User = Depends(require_perm("task.dispatch")),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a wrongly-uploaded or sensitive attachment from a scoped task."""
+    t = await session.get(Task, tid)
+    if t is None:
+        raise HTTPException(status_code=404, detail="需求不存在")
+    vis = await _visible_client_ids(session, user)
+    if vis is not None and t.owner_client_id not in vis:
+        raise HTTPException(status_code=403, detail="超出作用域")
+    a = await session.get(Attachment, aid)
+    if a is None or a.task_id != tid:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    if a.role == "handoff":
+        raise HTTPException(status_code=409, detail="会话交接工作包是恢复凭据，不能单独删除")
+    storage_key, backend = a.storage_key, a.backend
+    await session.delete(a)
+    await session.commit()
+    try:
+        await asyncio.to_thread(storage.delete, storage_key, backend)
+    except Exception as exc:  # noqa: BLE001  Storage cleanup failure does not undo the committed deletion.
+        logging.getLogger(__name__).warning("attachment object cleanup failed (%s): %s",
+                                            aid, type(exc).__name__)
+    await audit.log(session, user, "task.attachment.delete", "attachment", aid, a.filename,
+                    {"taskId": tid, "size": a.size})
+    return {"ok": True}
 
 
 @router.get("/tasks/{tid}")
@@ -1818,7 +1854,10 @@ async def put_team_module_scope(
     session: AsyncSession = Depends(get_session),
 ):
     from ..services import team as team_svc
-    scope = await team_svc.set_team_module_scope(session, str(body.get("scope") or ""))
+    try:
+        scope = await team_svc.set_team_module_scope(session, str(body.get("scope") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await audit.log(session, user, "team.module_scope", "setting", None,
                     "团队模块可见范围", {"scope": scope})
     return {"ok": True, "scope": scope}
@@ -1860,7 +1899,13 @@ async def put_alert_config(
     # Webhook URLs permit message injection if leaked; audit only whether a URL is configured.
     await audit.log(session, user, "alert.config", "setting", None, "告警通道",
                     {"configured": bool(current_row and current_row.value)})
-    return {"ok": True, "configured": bool(current_row and current_row.value)}
+    configured = (current_row.value if current_row else "") or ""
+    # Plain-HTTP webhooks leak alert contents on the wire; surface the risk so the
+    # UI can warn instead of silently accepting an insecure channel.
+    insecure = bool(configured) and configured.startswith("http://")
+    return {"ok": True, "configured": bool(configured),
+            "insecureHttp": insecure,
+            "warning": "告警地址是明文 HTTP，告警内容可能在网络中泄露，建议改用 HTTPS" if insecure else ""}
 
 
 @router.post("/alert-config/test")
