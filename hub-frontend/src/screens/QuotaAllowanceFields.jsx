@@ -16,7 +16,8 @@ export function TotalLimitField({ value, onChange, trial = false }) {
     </label>
     {value !== null && <label className="qm-field" htmlFor={id + '-limit'}><span>{tx('Token 数量')}</span>
       <input id={id + '-limit'} className="f-in" aria-label={tx('Token 数量')} type="number" min={trial ? 1 : 0} max={MAX_TOKENS} step="1"
-        value={value} onChange={event => onChange(event.target.value)} />
+        value={value} onChange={event => onChange(event.target.value)}
+        onBlur={event => { const n = Number(event.target.value); if (event.target.value !== '' && Number.isFinite(n)) onChange(String(Math.max(trial ? 1 : 0, Math.min(MAX_TOKENS, Math.round(n))))) }} />
     </label>}
   </div>
 }
@@ -50,7 +51,8 @@ export default function QuotaAllowanceFields({ value, onChange, choices, trial =
         </label>
         <label className="qm-field" htmlFor={id + '-cap-' + index}><span>{tx('模型 Token 上限')}</span>
           <input className="f-in" id={id + '-cap-' + index} type="number" min="0" max={MAX_TOKENS} step="1"
-            value={row.limit} onChange={event => updateModel(index, { limit: event.target.value })} />
+            value={row.limit} onChange={event => updateModel(index, { limit: event.target.value })}
+            onBlur={event => { const n = Number(event.target.value); if (event.target.value !== '' && Number.isFinite(n)) updateModel(index, { limit: String(Math.max(0, Math.min(MAX_TOKENS, Math.round(n)))) }) }} />
         </label>
         <button type="button" className="btn btn-ghost qm-remove" aria-label={tx('移除模型 {0}', [index + 1])}
           onClick={() => onChange({ ...value, models: value.models.filter((_, i) => i !== index) })}><Icon name="trash" /></button>
