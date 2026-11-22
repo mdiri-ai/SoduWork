@@ -2,6 +2,7 @@
 import os
 import unittest
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
 os.environ["CLUSTER_REDIS_URL"] = ""
@@ -33,7 +34,7 @@ class UsageAccountKeyTests(unittest.IsolatedAsyncioTestCase):
 
     async def report(self, user, tokens):
         row = await usage_ledger.from_client(self.session, SimpleNamespace(id="shared-device", user_ref=user), {
-            "sourceId": "same-conversation", "usage": {"totalTokens": tokens}})
+            "sourceId": "same-conversation", "occurredAt": datetime.now(timezone.utc).isoformat(), "usage": {"totalTokens": tokens}})
         await self.session.commit()
         return row
 
@@ -52,7 +53,8 @@ class UsageAccountKeyTests(unittest.IsolatedAsyncioTestCase):
     async def test_legacy_key_updates_only_its_proven_original_account(self):
         legacy = await usage_ledger.upsert_cumulative(self.session, "client:shared-device:same-conversation", {
             "client_id": "shared-device", "billing_user_id": "first", "actor_user_id": "first",
-            "org_id": "first-org", "source_id": "same-conversation", "total_tokens": 5})
+            "org_id": "first-org", "source_id": "same-conversation", "total_tokens": 5,
+            "occurred_at": datetime.now(timezone.utc)})
         await self.session.commit()
         original = await self.report("first", 10)
         self.assertEqual(original.id, legacy.id)
