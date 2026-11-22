@@ -78,7 +78,7 @@ class TokenQuotaTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
-    async def report(self, total, *, headers=None, key="conversation"):
+    async def report(self, total, *, headers=None, key="aaaa1111-0001-cccc-dddd-eeeeffff0001"):
         return await self.http.post("/api/v1/usage/events", headers=headers or self.headers,
             json={"sourceId": key, "usage": {"input": total}})
 
@@ -322,7 +322,7 @@ class TokenQuotaTests(unittest.IsolatedAsyncioTestCase):
                 writer.add(models.AppSetting(key=client_access.POLICY_KEY,
                     value=json.dumps({"tokenLimitEnabled": True, "monthlyTokenLimit": 10})))
                 await usage_ledger.from_client(writer, self.devices[0],
-                    {"sourceId": "fresh-policy", "usage": {"input": 10}})
+                    {"sourceId": "aaaa1111-0003-cccc-dddd-eeeeffff0003", "usage": {"input": 10}})
                 await writer.commit()
             self.assertTrue((await client_access.quota_status(reader, self.user.id))["exceeded"])
 
@@ -344,7 +344,7 @@ class TokenQuotaTests(unittest.IsolatedAsyncioTestCase):
         next_month = (start.replace(day=28) + timedelta(days=4)).replace(day=1)
         async with self.sessions() as session:
             for total, at in ((40, start - timedelta(seconds=1)), (70, start), (90, next_month)):
-                await usage_ledger.from_client(session, self.devices[0], {"sourceId": "boundary",
+                await usage_ledger.from_client(session, self.devices[0], {"sourceId": "aaaa1111-0004-cccc-dddd-eeeeffff0004",
                     "usage": {"input": total}, "occurredAt": at.isoformat()})
             await session.commit()
             self.assertEqual(await client_access.monthly_tokens(session, self.user.id), 30)
