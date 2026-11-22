@@ -35,6 +35,7 @@ function fmtSize(bytes) {
   const n = Number(bytes) || 0
   if (!n) return '—'
   if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+  if (n < 0.05 * 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
   return (n / 1024 / 1024).toFixed(1) + ' MB'
 }
 
@@ -222,7 +223,7 @@ export default function ClientReleases() {
                 </span>
                 <span className="cr-time">{fmtTime(row.createdAt)}</span>
                 <span className="cr-actions">
-                  {manage && <button className="admin-text-action" disabled={!!downloading}
+                  {manage && <button className="admin-text-action" disabled={downloading === row.id}
                     onClick={async () => {
                       setDownloading(row.id)
                       try { await api.downloadClientRelease(row.id, row.artifactName) }
