@@ -707,13 +707,14 @@ async def _generate_media(
         # Save-time validation: an upstream 200 that is neither JSON nor a real media file
         # would otherwise be persisted as a corrupted deliverable. Surface the raw body instead.
         ctype = (response.headers.get("content-type") or "").lower()
-        if response.status == 200 and raw and "json" not in ctype and "text" not in ctype:
+        resp_status = getattr(response, "status", None)
+        if resp_status == 200 and raw and "json" not in ctype and "text" not in ctype:
             magic_ok = (raw.startswith(b"\x89PNG") or raw.startswith(b"\xff\xd8\xff")
                         or raw[:4] == b"GIF8" or (raw[:4] == b"RIFF" and raw[8:12] == b"WEBP"))
             if not magic_ok:
                 return _err(502, f"服务商返回了 {len(raw)} 字节但不是合法的{('图片' if modality == 'image' else '视频')}文件"
                                 f"（content-type: {ctype or '未知'}）；原始响应开头：{raw[:160]!r}")
-        if response.status == 200 and not raw:
+        if resp_status == 200 and not raw:
             return _err(502, "服务商返回了空响应，请核对生成接口路径与请求参数")
         return Response(content=raw, media_type=response.headers.get("content-type", "application/json"))
     except model_errors.UpstreamError as exc:
