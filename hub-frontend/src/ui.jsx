@@ -58,7 +58,7 @@ export function useEscClose(onClose) {
   useEffect(() => registerDialogLayer({ onClose: () => close.current?.() }), [])
 }
 
-export function Modal({ title, icon, onClose, children, foot, footer, wide, size, scope = '', className = '' }) {
+export function Modal({ title, icon, onClose, children, foot, footer, wide, size, scope = '', className = '', busy = false }) {
   const uiLocale = useLocale();
   const dialog = useRef(null)
   const titleId = useId()
@@ -68,7 +68,10 @@ export function Modal({ title, icon, onClose, children, foot, footer, wide, size
   const dialogSize = size || (wide ? 'wide' : '')
   const actions = foot !== undefined ? foot : footer
   const maskDown = useRef(false)
-  close.current = onClose
+  // While busy (e.g. a submit is in flight), every dismissal path is blocked so
+  // the dialog cannot disappear out from under the running action.
+  const guardedClose = React.useCallback(() => { if (!busy) onClose?.() }, [busy, onClose])
+  close.current = guardedClose
   useEffect(() => registerDialogLayer({ id: titleId, ancestors, root: dialog.current, onClose: () => close.current?.(), returnFocus: trigger.current }), [])
   const content = (
     <DialogAncestors.Provider value={[...ancestors, titleId]}>
@@ -86,7 +89,7 @@ export function Modal({ title, icon, onClose, children, foot, footer, wide, size
         role="dialog" aria-modal={true} aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal-head">
           {icon && <span className="int-ico" style={{ width: 26, height: 26 }}><Icon name={icon} /></span>}
-          <span id={titleId} className="modal-title">{title}</span><button type="button" className="mx" aria-label={tx("关闭")} onClick={onClose}>✕</button>
+          <span id={titleId} className="modal-title">{title}</span><button type="button" className="mx" aria-label={tx("关闭")} disabled={busy} onClick={guardedClose}>✕</button>
         </div>
         <div className="modal-body">{children}</div>
         {actions && <div className="modal-foot">{actions}</div>}
@@ -114,8 +117,11 @@ export function Confirm({ title, text, danger, confirmText = tx("确定"), onCon
 }
 export function Icon({ name, ...rest }) {
   const uiLocale = useLocale();
+  // Unknown icon names must not render a blank SVG: fall back to a visible
+  // placeholder dot so callers notice the missing icon instead of an empty box.
+  const path = P[name]
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: P[name] || '' }} {...rest} />
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{ __html: path || '<circle cx="12" cy="12" r="4" stroke-dasharray="2 3" />' }} {...rest} />
   )
 }
 
@@ -124,7 +130,7 @@ export function Icon({ name, ...rest }) {
  * Controlled dropdown preserves select value/onChange semantics while rendering options
  * in-page for consistent styling.
  */
-export function SelectMenu({ value, onChange, children, className = '', disabled = false, autoFocus = false, style, id, 'aria-label': ariaLabel, 'aria-labelledby': ariaLabelledBy, 'aria-describedby': ariaDescribedBy, required = false, placeholder = tx("请选择"), clearable = false, resetValue = '', clearLabel, searchable = false, searchPlaceholder = tx("搜索部门名称或路径") }) {
+export function SelectMenu({ value, onChange, children, className = '', disabled = false, autoFocus = false, style, id, 'aria-label': ariaLabel, 'aria-labelledby': ariaLabelledBy, 'aria-describedby': ariaDescribedBy, required = false, placeholder = tx("请选择"), clearable = false, resetValue = '', clearLabel, searchable = false, searchPlaceholder = tx("搜索部门名称或路径"), emptyText = tx("没有匹配的部门") }) {
   const uiLocale = useLocale();
   const listboxId = React.useId()
   const [open, setOpen] = useState(false)
@@ -280,7 +286,7 @@ export function SelectMenu({ value, onChange, children, className = '', disabled
           {query.trim() && option.path && <small>{option.path}</small>}
         </button>)}
       </div>
-      {searchable && !visibleOptions.length && <div className="select-menu-empty" role="status">{tx("没有匹配的部门")}</div>}
+      {searchable && !visibleOptions.length && <div className="select-menu-empty" role="status">{emptyText}</div>}
     </div>}
 
   </div>
