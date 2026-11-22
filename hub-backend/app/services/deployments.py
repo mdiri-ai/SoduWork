@@ -558,10 +558,14 @@ async def _spec(session: AsyncSession, run: am.DeploymentRun,
                 env: am.Environment, target: am.DeploymentTarget, repo: models.Repo,
                 task: models.Task) -> dict:
     descriptors = []
+    task_org = await environment_service.task_org_id(session, task)
     for env_name, ref_id in dict(target.secret_refs or {}).items():
         ref = await session.get(am.SecretReference, str(ref_id))
         if ref is None or not ref.enabled:
             raise ValueError(f"密钥引用不可用：{ref_id}")
+        if ref.org_id is not None and task_org is not None \
+                and str(ref.org_id) != str(task_org):
+            raise ValueError(f"密钥引用不属于这个任务的组织：{ref_id}")
         descriptors.append({"env": str(env_name), "provider": ref.provider, "locator": ref.locator})
     cfg = dict(target.config or {})
     checks = [*list(env.health_checks or []), *list(target.health_checks or [])]
@@ -606,11 +610,21 @@ async def _spec(session: AsyncSession, run: am.DeploymentRun,
     }
 
 
+_RUNNER_STATES = {"queued", "running", *_TERMINAL}
+
+
 def _apply_runner_status(run: am.DeploymentRun, res: dict, fallback_state: str = "") -> None:
     """Persist one Runner snapshot, including terminal snapshots returned by idempotent start."""
-    run.state = str(res.get("state") or fallback_state or run.state)
+    state = str(res.get("state") or fallback_state or run.state)
+    unknown = state not in _RUNNER_STATES
+    if unknown:
+        # Runner-reported states must be a known enum value; unknown values are
+        # recorded but never used to advance the run.
+        state = fallback_state or run.state
+    run.state = state
     run.logs = str(res.get("log") or "")[-12000:]
-    run.error = str(res.get("error") or "")[:1000]
+    run.error = (f"Runner 上报了未知部署状态：{res.get('state')}；已保持 {run.state}"
+                 if unknown else str(res.get("error") or ""))[:1000]
     current = dict(run.result or {})
     sticky = {key: current[key] for key in ("clientRelease",) if key in current}
     run.result = {**dict(res.get("result") or {}), **sticky,
