@@ -58,7 +58,7 @@ class AttachmentOwnershipCompatibilityTests(unittest.IsolatedAsyncioTestCase):
                                   scalar=AsyncMock(return_value=None))
         with patch.object(usage_ledger, "upsert_cumulative", new=AsyncMock(return_value="saved")) as upsert:
             await usage_ledger.from_client(session, client, {
-                "sourceType": "task", "sourceId": "private-session", "taskId": "old-task",
+                "sourceType": "task", "sourceId": "aaaa1111-0007-cccc-dddd-eeeeffff0007", "taskId": "old-task",
                 "workflowRunId": "old-workflow", "nodeRunId": "old-node", "usage": {"totalTokens": 4}})
             values = upsert.await_args.args[2]
             self.assertEqual(values["task_id"], "")
