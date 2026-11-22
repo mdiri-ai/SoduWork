@@ -192,11 +192,14 @@ async def detail(request_id: str, client: Client = Depends(current_client),
     ).limit(1))).scalar_one_or_none()
     allowed, why = await release_control.can_decide(session, task, request, user)
     if not allowed and my_decision is None:
-        # Return the actual access-denial reason and current approvers instead of a generic incomplete-load result.
-        # ensure_assignments is idempotent; use existing assignments to explain who can act.
-        names = [a.user_name for a in await approval_routing.ensure_assignments(
-            session, task, request) if a.user_name]
-        suffix = f"（当前验收人：{'、'.join(names)}）" if names else ""
+        # Read-only GET: reuse existing assignments to explain who can act. The
+        # repair (DELETE+INSERT + events) belongs to creation/status changes, not
+        # detail reads; a missing assignment set is reported instead of rebuilt.
+        rows = list((await session.execute(select(am.ApprovalAssignment).where(
+            am.ApprovalAssignment.request_id == request.id
+        ).order_by(am.ApprovalAssignment.created_at))).scalars().all())
+        names = [a.user_name for a in rows if a.user_name]
+        suffix = f"（当前验收人：{'、'.join(names)}）" if names else "（验收人分配待修复，请稍后重试）"
         raise HTTPException(status_code=403, detail=f"{why}{suffix}")
     item = await _item(session, request, task, artifact, user.id, my_decision)
 
