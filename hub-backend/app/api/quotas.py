@@ -168,7 +168,7 @@ async def preview_plan(body: PlanPreview, user: User = Depends(require_perm("quo
 
 @router.get("/members")
 async def members(q: str = Query(default="", max_length=100),
-                  offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=100),
+                  offset: int = Query(default=0, ge=0, le=1000000), limit: int = Query(default=50, ge=1, le=100),
                   user: User = Depends(require_perm("quota.manage")),
                   session: AsyncSession = Depends(get_session)):
     scope = await rbac.scope_org_ids(session, user)

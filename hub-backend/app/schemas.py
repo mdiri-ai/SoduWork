@@ -299,14 +299,14 @@ class OrgCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: AdminName
     parentId: Optional[str] = None
-    sort: int = 0
+    sort: int = Field(default=0, ge=-100000, le=100000)
 
 
 class OrgUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: Optional[AdminName] = None
     parentId: Optional[str] = None
-    sort: Optional[int] = None
+    sort: Optional[int] = Field(default=None, ge=-100000, le=100000)
 
 
 class RoleCreate(BaseModel):

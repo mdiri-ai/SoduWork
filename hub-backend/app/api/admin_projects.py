@@ -105,6 +105,10 @@ async def create_project(body: dict = Body(default_factory=dict),
     unknown = sorted(set(body) - {"name", "desc", "group", "repoUrl", "ownerUserId"})
     if unknown:
         raise HTTPException(status_code=422, detail="未知字段：" + ", ".join(unknown))
+    for _key in ("name", "desc", "group", "repoUrl"):
+        _val = body.get(_key)
+        if _val is not None and not isinstance(_val, str):
+            raise HTTPException(status_code=422, detail=_key + " 须为字符串")
     name = (body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="请填工程名")
