@@ -478,7 +478,7 @@ async def review(session: AsyncSession, row: am.PluginEvaluationRun, decision: s
         raise ValueError("评测结论只能是通过或不通过")
     if row.state != "completed":
         raise ValueError("只有执行完成的评测才能给出结论")
-    if row.verdict:
+    if row.verdict != "pending":
         raise ValueError(
             f"评测结论已定为 {row.verdict}，不能重复 review 覆盖；如需改判请重新执行评测")
     contract = dict(dict(row.result or {}).get("contract") or {})
