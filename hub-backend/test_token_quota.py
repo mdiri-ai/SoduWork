@@ -80,7 +80,7 @@ class TokenQuotaTests(unittest.IsolatedAsyncioTestCase):
 
     async def report(self, total, *, headers=None, key="conversation"):
         return await self.http.post("/api/v1/usage/events", headers=headers or self.headers,
-            json={"sourceId": key, "usage": {"input": total}})
+            json={"sourceId": key, "occurredAt": datetime.now(timezone.utc).isoformat(), "usage": {"input": total}})
 
     async def test_existing_proxy_tickets_cannot_bypass_quota(self):
         ticket = device_auth.issue_proxy_ticket(self.devices[0])[0]
