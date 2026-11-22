@@ -148,6 +148,15 @@ async def _assert_org_in_scope(session: AsyncSession, user: User, org_id: str | 
         raise HTTPException(status_code=403, detail="只能在自己管辖的部门内操作")
 
 
+def _assert_within_granter(user: User, granted: set[str]) -> None:
+    """Granted permission keys must be a subset of the granter's own (superadmins exempt)."""
+    if user.is_super or not granted:
+        return
+    own = getattr(user, "_perms", set())
+    if not granted.issubset(own):
+        raise HTTPException(status_code=403, detail="不能授予超出自身权限的角色")
+
+
 async def _require_existing_org(session: AsyncSession, org_id: str):
     if org_id and await session.get(models.OrgUnit, org_id) is None:
         raise HTTPException(status_code=400, detail="部门不存在")
@@ -255,6 +264,9 @@ async def list_roles(user: User = Depends(current_user), session: AsyncSession =
 async def create_role(body: RoleCreate,
                       user: User = Depends(require_perm("role.manage")),
                       session: AsyncSession = Depends(get_session)):
+    # A role.manage holder must not mint permissions it does not hold itself;
+    # otherwise creating a role and self-assigning it is a one-step escalation.
+    _assert_within_granter(user, set(body.permissions or []))
     try:
         result = await rbac.create_role(session, body.name, body.permissions)
     except DuplicateName as exc:
@@ -318,8 +330,11 @@ async def create_user(
     if not body.orgId:
         raise HTTPException(status_code=400, detail="请为用户指定所属部门")
     await _assert_org_in_scope(session, user, body.orgId)
-    if body.roleId and await rbac.lock_role_reference(session, body.roleId) is None:
-        raise HTTPException(status_code=400, detail="角色不存在")
+    if body.roleId:
+        role_ref = await rbac.lock_role_reference(session, body.roleId)
+        if role_ref is None:
+            raise HTTPException(status_code=400, detail="角色不存在")
+        _assert_within_granter(user, set(role_ref.permissions or []))
     if body.domains:
         domain_ids = {str(value) for value in body.domains}
         found = set((await session.scalars(select(models.Domain.id).where(
@@ -364,8 +379,11 @@ async def update_user(
         await _require_existing_org(session, body.orgId)
     # An empty roleId is the legacy form used by clients to clear a role.
     # Validate non-empty assignments while preserving that clearing behavior.
-    if body.roleId and await rbac.lock_role_reference(session, body.roleId) is None:
-        raise HTTPException(status_code=400, detail="角色不存在")
+    if body.roleId:
+        role_ref = await rbac.lock_role_reference(session, body.roleId)
+        if role_ref is None:
+            raise HTTPException(status_code=400, detail="角色不存在")
+        _assert_within_granter(user, set(role_ref.permissions or []))
     if body.domains is not None:
         domain_ids = {str(value) for value in body.domains}
         found = set((await session.scalars(select(models.Domain.id).where(
