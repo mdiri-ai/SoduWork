@@ -194,8 +194,10 @@ async def detail(request_id: str, client: Client = Depends(current_client),
     if not allowed and my_decision is None:
         # Return the actual access-denial reason and current approvers instead of a generic incomplete-load result.
         # ensure_assignments is idempotent; use existing assignments to explain who can act.
-        names = [a.user_name for a in await approval_routing.ensure_assignments(
-            session, task, request) if a.user_name]
+        existing = list((await session.execute(select(am.ApprovalAssignment).where(
+            am.ApprovalAssignment.request_id == request.id
+        ).order_by(am.ApprovalAssignment.created_at))).scalars().all())
+        names = [a.user_name for a in existing if a.user_name]
         suffix = f"（当前验收人：{'、'.join(names)}）" if names else ""
         raise HTTPException(status_code=403, detail=f"{why}{suffix}")
     item = await _item(session, request, task, artifact, user.id, my_decision)
