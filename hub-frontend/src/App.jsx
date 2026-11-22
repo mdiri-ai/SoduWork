@@ -106,6 +106,10 @@ export default function App() {
   const [locale, setLocaleState] = useState(getLocale())
   const [active, setActive] = useState(() => {
     try {
+      // Deep links first (#807): "#/users" style hashes restore the screen
+      // directly, so URLs can be shared and the browser back button works.
+      const fromHash = window.location.hash.replace(/^#/, '')
+      if (fromHash) return normalizeScreen(fromHash)
       const saved = sessionStorage.getItem('soduwork-hub-screen') || 'overview'
       return normalizeScreen(saved)
     } catch (_e) { return 'overview' }
@@ -194,8 +198,32 @@ export default function App() {
 
   useEffect(() => {
     try { sessionStorage.setItem('soduwork-hub-screen', active) } catch (_e) {}
+    // Keep the URL in sync with the active screen (#807): pushState avoids
+    // re-triggering popstate while still giving every screen a stable hash.
+    try {
+      if (window.location.hash.replace(/^#/, '') !== active) {
+        window.history.pushState({}, '', `#${active}`)
+      }
+    } catch (_e) { /* old embedded browser without history API */ }
     window.scrollTo(0, 0)
   }, [active])
+
+  useEffect(() => {
+    // Browser back/forward must restore the previous screen (#807).
+    const onPop = () => {
+      const id = normalizeScreen(window.location.hash.replace(/^#/, '') || 'overview')
+      setActive((prev) => (prev === id ? prev : id))
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
+  useEffect(() => {
+    // Each admin page gets its own readable tab title (#807).
+    if (!authed) return
+    const target = NAV.find((n) => n.id === active) || NAV[0]
+    document.title = (target && target.label) ? `${target.label} · SoduWork 管理端` : 'SoduWork 管理端'
+  }, [authed, active])
 
   useEffect(() => {
     if (!profileOpen) return undefined
