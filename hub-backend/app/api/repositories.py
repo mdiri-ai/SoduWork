@@ -54,6 +54,18 @@ async def _catalog(session: AsyncSession, user: User,
     return row
 
 
+async def _integration_in_scope(session: AsyncSession, user: User, integration_id: str) -> None:
+    """All integration_id path-param endpoints share this scope guard."""
+    integration = await session.get(am.Integration, integration_id)
+    if integration is None:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    scope = await _scope(session, user)
+    if scope is not None:
+        int_org = str((integration.config or {}).get("orgId") or "")
+        if int_org not in scope:
+            raise HTTPException(status_code=403, detail="Integration is outside your organization scope")
+
+
 async def _client_in_scope(session: AsyncSession, user: User, client_id: str) -> None:
     if not client_id or user.is_super:
         return
@@ -78,9 +90,13 @@ async def list_repository_catalog(
         include_inactive=includeInactive)}
 
 
-@router.get("/integrations/{integration_id}/repositories/sync",
-            dependencies=[Depends(require_perm("integration.manage"))])
-async def repository_sync_status(integration_id: str, session: AsyncSession = Depends(get_session)):
+@router.get("/integrations/{integration_id}/repositories/sync")
+async def repository_sync_status(
+    integration_id: str,
+    user: User = Depends(require_perm("integration.manage")),
+    session: AsyncSession = Depends(get_session),
+):
+    await _integration_in_scope(session, user, integration_id)
     return {"stage": await catalog.sync_stage(session, integration_id)}
 
 
@@ -92,6 +108,14 @@ async def sync_repositories(
 ):
     client_id = str(body.get("clientId") or "")
     await _client_in_scope(session, user, client_id)
+    integration = await session.get(am.Integration, integration_id)
+    if integration is None:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    scope = await _scope(session, user)
+    if scope is not None:
+        int_org = str((integration.config or {}).get("orgId") or "")
+        if int_org not in scope:
+            raise HTTPException(status_code=403, detail="Integration is outside your organization scope")
     try:
         result = await catalog.sync_integration(session, integration_id,
                                                 client_id=client_id)
@@ -111,6 +135,15 @@ async def save_pull_account(
     session: AsyncSession = Depends(get_session),
 ):
     """Store the source's backend pull credentials: username and password or token."""
+    integration = await session.get(am.Integration, integration_id)
+    if integration is None:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    scope = await _scope(session, user)
+    if scope is not None:
+        int_org = str((integration.config or {}).get("orgId") or "")
+        requested_org = str(body.get("orgId") or "")
+        if int_org not in scope or (requested_org and requested_org not in scope):
+            raise HTTPException(status_code=403, detail="Integration is outside your organization scope")
     try:
         await catalog.set_pull_account(
             session, integration_id,
@@ -132,6 +165,7 @@ async def test_pull_account(
     session: AsyncSession = Depends(get_session),
 ):
     """Test the pending account edits, retaining stored fields omitted by the form."""
+    await _integration_in_scope(session, user, integration_id)
     override = {key: body[key] for key in ("user", "secret", "kind") if key in body} or None
     try:
         return await catalog.verify_pull_account(session, integration_id, override=override)
