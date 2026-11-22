@@ -50,7 +50,13 @@ export default function Login({ onLogin, onBack, initialError = '' }) {
       const result = await api.login(user.trim(), pass)
       setToken(result.token); setUser(result.user); onLogin()
     } catch (error) {
-      setErr(error?.status === 401 || error?.status === 403 || error?.message === tx('登录已失效，请重新登录') ? tx('账号或密码不正确') : (error?.message || tx('登录失败，请稍后重试')))
+      if (error?.status === 401 || error?.message === tx('登录已失效，请重新登录')) {
+        setErr(tx('账号或密码不正确'))
+      } else if (error?.status === 403) {
+        setErr(tx('账号已被停用或无登录权限，请联系管理员'))
+      } else {
+        setErr(error?.message || tx('登录失败，请稍后重试'))
+      }
     } finally { setBusy(false) }
   }
   return <div className="public-login public-theme workbench-login">
