@@ -411,6 +411,14 @@ def create_bundle(*, database_url: str, sources: Iterable[str], output: str | Pa
     return {"backup": str(destination), "manifest": str(sidecar_path), **sidecar}
 
 
+def _manifest_size(value) -> int:
+    # A corrupted/tampered size must surface as a backup error, not a bare ValueError traceback.
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        raise FullBackupError("Bundle manifest is invalid") from None
+
+
 def _load_sidecar(bundle: Path) -> dict[str, Any]:
     path = bundle.with_name(bundle.name + SIDECAR_SUFFIX)
     try:
@@ -419,7 +427,11 @@ def _load_sidecar(bundle: Path) -> dict[str, Any]:
         raise FullBackupError(f"Backup envelope manifest cannot be read: {exc}") from exc
     if payload.get("filename") != bundle.name:
         raise FullBackupError("Backup envelope filename does not match")
-    if int(payload.get("size") or -1) != bundle.stat().st_size:
+    try:
+        declared_size = int(payload.get("size") or -1)
+    except (TypeError, ValueError):
+        raise FullBackupError("Backup envelope manifest is invalid") from None
+    if declared_size != bundle.stat().st_size:
         raise FullBackupError("Backup envelope size does not match")
     if payload.get("sha256") != _sha256(bundle):
         raise FullBackupError("Backup envelope checksum does not match")
@@ -447,7 +459,7 @@ def _validate_tar(archive: tarfile.TarFile) -> tuple[dict[str, Any], dict[str, t
         raise FullBackupError("Bundle manifest is invalid") from exc
     if manifest.get("formatVersion") != FORMAT_VERSION or manifest.get("kind") != "full-backup":
         raise FullBackupError("Unsupported full backup format")
-    declared = {str(item.get("sha256")): int(item["size"]) if "size" in item else -1
+    declared = {str(item.get("sha256")): _manifest_size(item["size"]) if "size" in item else -1
                 for item in manifest.get("blobs") or []}
     referenced: set[str] = set()
     logical_paths: set[tuple[str, str]] = set()
@@ -465,7 +477,7 @@ def _validate_tar(archive: tarfile.TarFile) -> tuple[dict[str, Any], dict[str, t
             _safe_symlink_target(str(entry["path"]), str(entry.get("target") or ""))
         elif kind == "file":
             checksum = str(entry.get("blob") or "")
-            entry_size = int(entry["size"]) if "size" in entry else -1
+            entry_size = _manifest_size(entry["size"]) if "size" in entry else -1
             if checksum not in declared or entry_size != declared[checksum]:
                 raise FullBackupError("Bundle entry does not match its declared blob")
             referenced.add(checksum)

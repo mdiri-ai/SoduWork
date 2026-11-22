@@ -193,7 +193,11 @@ def verify_backup(backup_path: str | Path, *, allow_missing_manifest: bool = Fal
             raise BackupError(f"Backup manifest cannot be read: {exc}") from exc
         if payload.get("filename") != backup.name:
             raise BackupError("Manifest filename does not match backup")
-        if int(payload.get("size") or -1) != backup.stat().st_size:
+        try:
+            declared_size = int(payload.get("size") or -1)
+        except (TypeError, ValueError):
+            raise BackupError("Backup manifest is invalid") from None
+        if declared_size != backup.stat().st_size:
             raise BackupError("Backup size does not match manifest")
         if payload.get("sha256") != _sha256(backup):
             raise BackupError("Backup checksum does not match manifest")
