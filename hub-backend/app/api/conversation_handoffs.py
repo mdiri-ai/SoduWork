@@ -34,6 +34,15 @@ async def prepare(transfer_id: str, file: UploadFile = File(...), options: str =
 
 @router.get("/{transfer_id}")
 async def status(transfer_id: str, client=Depends(current_client), session=Depends(get_session)):
+    # Read-only: probing/advancement may start network work and mutate the record,
+    # so it only happens from the explicit refresh endpoint below.
+    row = await svc.get(session, client, transfer_id)
+    return svc.public(row)
+
+
+@router.post("/{transfer_id}/refresh")
+async def refresh_status(transfer_id: str, client=Depends(current_client), session=Depends(get_session)):
+    """Explicit refresh: probe the executor and advance the committing phase."""
     row = await svc.get(session, client, transfer_id)
     return svc.public(await svc.refresh(session, row))
 
