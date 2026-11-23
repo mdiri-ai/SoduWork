@@ -147,6 +147,9 @@ class DomainSortMigrationTests(unittest.TestCase):
                     AuditLog.__table__.create(connection)
                     connection.exec_driver_sql("CREATE TABLE task (id VARCHAR(36) PRIMARY KEY)")
                     connection.exec_driver_sql("CREATE TABLE app_user (id TEXT PRIMARY KEY)")
+                    # 0093_schedule_session_mode adds its columns onto ai_schedule
+                    # during this upgrade, so the fixture needs the bare table.
+                    connection.exec_driver_sql("CREATE TABLE ai_schedule (id VARCHAR(36) PRIMARY KEY)")
                     connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(64) PRIMARY KEY)")
                     connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0090_requirement_creator')")
                     self.insert_domain(connection, "valid", 9)
