@@ -92,7 +92,7 @@ async def sync_repositories(
 ):
     client_id = str(body.get("clientId") or "")
     await _client_in_scope(session, user, client_id)
-    integration = await session.get(am.Integration, integration_id)
+    integration = await session.get(models.Integration, integration_id)
     if integration is None:
         raise HTTPException(status_code=404, detail="Integration not found")
     scope = await _scope(session, user)
