@@ -1022,8 +1022,8 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
       await check();
       const agent = String(agentId || '').trim() || 'pi';
       const request = require('node:crypto').randomUUID();
-      const response = await fetch(identity, endpoint(identity, '/account-conversations/' +
-        encodeURIComponent(target.id) + '/branches/' + encodeURIComponent(request)), {
+      const response = await fetch(identity, endpoint(identity, '/account-conversations/branches/' +
+        encodeURIComponent(request)), {
         method: 'POST', redirect: 'error', signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30000)]),
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ accountConversationId: target.id, expectedRevision: Number(target.revision || 0),
