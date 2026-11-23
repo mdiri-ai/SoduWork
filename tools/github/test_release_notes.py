@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import redirect_stdout
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from unittest.mock import patch
 
@@ -49,6 +51,9 @@ class NotesTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         self.ctx = context()
         self.record = example_record()
+        self.logged = io.StringIO()
+        self.enterContext(redirect_stdout(self.logged))
+        self.enterContext(patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(self.root / 'summary.md')}))
 
     def save(self, path, data):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,10 +302,238 @@ class NotesTests(unittest.TestCase):
         evidence = json.loads(sent['messages'][1]['content'])
         self.assertEqual([c['commit'] for c in evidence['commits']], ['c1', 'c2'])
         self.assertEqual(sent['max_tokens'], 32768)
+        self.assertEqual(opener.open.call_args.kwargs['timeout'], 300)
         self.assertTrue(all(set(c) == {'commit', 'title'} for c in evidence['commits']))
         self.assertTrue(all(c['title'] == 'Fixture title' for c in evidence['commits']))
         self.assertNotIn('Long body', sent['messages'][1]['content'])
         self.assertNotIn('client/example.js', sent['messages'][1]['content'])
+        opener.open.assert_called_once()
+        self.assertNotIn('release_notes_usage', self.logged.getvalue())
+
+    def test_optional_usage_logs_only_valid_counters_without_changing_notes(self):
+        result = {key: copy.deepcopy(self.record[key]) for key in ['locales', 'sources']}
+        result['sources'][0]['commits'] = ['c1']
+        changes = [{'commit': sha, 'message': 'Fixture title'} for sha in self.record['commits']]
+        private = 'do-not-log-provider-details'
+        cases = [
+            (None, {}), ([], {}), (private, {}), ({}, {}),
+            ({'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150,
+              'completion_tokens_details': {'reasoning_tokens': 20, 'debug': private},
+              'provider_metadata': private},
+             {'prompt_tokens': 100, 'completion_tokens': 50, 'total_tokens': 150,
+              'reasoning_tokens': 20}),
+            ({'prompt_tokens': 0, 'completion_tokens_details': {'reasoning_tokens': 0}},
+             {'prompt_tokens': 0, 'reasoning_tokens': 0}),
+            ({'prompt_tokens': True, 'completion_tokens': -1, 'total_tokens': private,
+              'completion_tokens_details': {'reasoning_tokens': 1.5}}, {}),
+            ({'prompt_tokens': '100', 'completion_tokens': None, 'total_tokens': {},
+              'completion_tokens_details': {'reasoning_tokens': False}}, {}),
+            ({'completion_tokens': 50, 'completion_tokens_details': [private]},
+             {'completion_tokens': 50}),
+            ({'completion_tokens_details': private}, {}),
+            ({'completion_tokens_details': None}, {}),
+        ]
+        for usage, expected in cases:
+            with self.subTest(usage=usage):
+                self.logged.seek(0); self.logged.truncate()
+                response = {'choices': [{'finish_reason': 'stop', 'message': {
+                    'content': json.dumps(result)}}], 'usage': usage}
+                opener = unittest.mock.Mock()
+                opener.open.return_value = io.BytesIO(json.dumps(response).encode())
+                with patch.dict(os.environ, {'RELEASE_NOTES_API_KEY': 'fixture-model-key',
+                                             'RELEASE_NOTES_MODEL': 'fixture-model'}, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+                    generated = notes.model_notes(self.ctx, 'v1.2.2', changes)
+                self.assertEqual(generated['locales'], self.record['locales'])
+                self.assertEqual(generated['sources'], self.record['sources'])
+                opener.open.assert_called_once()
+                events = [json.loads(line) for line in self.logged.getvalue().splitlines()]
+                usage_events = [e for e in events if e['event'] == 'release_notes_usage']
+                self.assertEqual(usage_events, [{
+                    'event': 'release_notes_usage', 'model': 'fixture-model', **expected
+                }] if expected else [])
+                self.assertNotIn(private, self.logged.getvalue())
+
+    def test_usage_remains_visible_when_model_output_is_truncated(self):
+        response = {'choices': [{'finish_reason': 'length', 'message': {
+            'content': 'incomplete provider output'}}],
+            'usage': {'completion_tokens': 100, 'completion_tokens_details': {'reasoning_tokens': 90}}}
+        opener = unittest.mock.Mock()
+        opener.open.return_value = io.BytesIO(json.dumps(response).encode())
+        with patch.dict(os.environ, {'RELEASE_NOTES_API_KEY': 'fixture-model-key',
+                                     'RELEASE_NOTES_MODEL': 'fixture-model'}), \
+                patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+            record = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+        self.assert_blank_record(record)
+        events = [json.loads(line) for line in self.logged.getvalue().splitlines() if line.startswith('{')]
+        self.assertEqual([e for e in events if e['event'] == 'release_notes_usage'], [{
+            'event': 'release_notes_usage', 'model': 'fixture-model',
+            'completion_tokens': 100, 'reasoning_tokens': 90}])
+        self.assertIn('"reason": "invalid_output"', self.logged.getvalue())
+        self.assertNotIn('incomplete provider output', self.logged.getvalue())
+        opener.open.assert_called_once()
+
+    def test_model_request_uses_configured_limits_and_empty_defaults(self):
+        result = {key: copy.deepcopy(self.record[key]) for key in ['locales', 'sources']}
+        result['sources'][0]['commits'] = ['c1']
+        response = {'choices': [{'finish_reason': 'stop', 'message': {'content': json.dumps(result)}}]}
+        changes = [{'commit': sha, 'message': 'Fixture title'} for sha in self.record['commits']]
+        for timeout, budget, expected_timeout, expected_budget in [
+                ('', '', 300, 32768), ('  ', '  ', 300, 32768),
+                (' 120 ', ' 8192 ', 120, 8192), ('600', '131072', 600, 131072), ('1', '1', 1, 1)]:
+            with self.subTest(timeout=timeout, budget=budget):
+                opener = unittest.mock.Mock()
+                opener.open.return_value = io.BytesIO(json.dumps(response).encode())
+                env = {'RELEASE_NOTES_API_KEY': 'fixture-model-key', 'RELEASE_NOTES_MODEL': 'fixture-model',
+                       'RELEASE_NOTES_API_URL': 'https://model.example.test/v1/chat/completions',
+                       'RELEASE_NOTES_API_KEY_SECRET': 'MODEL_TEST_KEY',
+                       'RELEASE_NOTES_TIMEOUT_SECONDS': timeout, 'RELEASE_NOTES_MAX_TOKENS': budget}
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+                    generated = notes.model_notes(self.ctx, 'v1.2.2', changes)
+                self.assertEqual(generated['sources'], self.record['sources'])
+                request = opener.open.call_args.args[0]
+                self.assertEqual(request.full_url, env['RELEASE_NOTES_API_URL'])
+                self.assertEqual(json.loads(request.data)['max_tokens'], expected_budget)
+                self.assertNotIn('provider', json.loads(request.data))
+                self.assertEqual(opener.open.call_args.kwargs['timeout'], expected_timeout)
+
+    def test_invalid_model_configuration_leaves_notes_blank_without_network(self):
+        cases = [{name: value} for name, maximum in [('RELEASE_NOTES_TIMEOUT_SECONDS', 600),
+                                                    ('RELEASE_NOTES_MAX_TOKENS', 131072)]
+                 for value in ['invalid', '1.5', 'nan', '0', '-1', str(maximum + 1)]]
+        cases += [{'RELEASE_NOTES_API_KEY': ''},
+                  {'RELEASE_NOTES_API_KEY_SECRET': 'MODEL_TEST_KEY', 'RELEASE_NOTES_API_URL': ''}]
+        for updates in cases:
+            with self.subTest(updates=updates):
+                env = {'RELEASE_NOTES_API_KEY': 'fixture-model-key', 'RELEASE_NOTES_MODEL': 'fixture-model',
+                       'RELEASE_NOTES_API_URL': 'https://model.example.test/v1/chat/completions', **updates}
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener') as network:
+                    result = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+                self.assert_blank_record(result)
+                network.assert_not_called()
+                (self.root / notes.NAME).unlink()
+
+    def test_reviewed_notes_ignore_invalid_model_configuration(self):
+        self.save(self.root / 'docs/releases/1.2.3.json', self.record)
+        with patch.dict(os.environ, {'RELEASE_NOTES_MAX_TOKENS': 'invalid',
+                                     'RELEASE_NOTES_TIMEOUT_SECONDS': '-1'}, clear=True), \
+                patch.object(notes.urllib.request, 'build_opener') as network:
+            result = self.generate_with_fixture_evidence(side_effect=AssertionError('Must not call model'))
+        self.assertEqual(result['locales'], self.record['locales'])
+        network.assert_not_called()
+
+    def openrouter_fixture(self, rows, model='fixture/model:free', response=None):
+        env = {'RELEASE_NOTES_API_KEY': 'fixture-private-key', 'RELEASE_NOTES_MODEL': model,
+               'RELEASE_NOTES_API_URL': 'https://openrouter.ai/api/v1/chat/completions',
+               'GITHUB_STEP_SUMMARY': str(self.root / 'summary.md')}
+        opener = unittest.mock.Mock()
+        catalog = io.BytesIO(json.dumps({'data': rows}).encode())
+        if response is None:
+            result = {key: copy.deepcopy(self.record[key]) for key in ['locales', 'sources']}
+            result['sources'][0]['commits'] = ['c1']
+            response = io.BytesIO(json.dumps({'choices': [{'finish_reason': 'stop',
+                'message': {'content': json.dumps(result)}}]}).encode())
+        opener.open.side_effect = [catalog, response]
+        return env, opener
+
+    def test_openrouter_free_alias_verification_has_no_key_and_enforces_zero_price_routing(self):
+        rows = [{'id': 'fixture/model', 'canonical_slug': 'fixture/model-dated',
+                 'pricing': {'prompt': '1', 'completion': '1'}},
+                {'id': 'fixture/model:free', 'canonical_slug': 'fixture/model-dated',
+                 'pricing': {'prompt': '0', 'completion': '0', 'request': '0', 'overrides': []}}]
+        env, opener = self.openrouter_fixture(rows, model='fixture/model-dated:free')
+        with patch.dict(os.environ, env, clear=True), \
+                patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+            record = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+        self.assertEqual(record['locales'], self.record['locales'])
+        catalog, inference = [call.args[0] for call in opener.open.call_args_list]
+        self.assertEqual(catalog.get_method(), 'GET')
+        self.assertEqual(catalog.full_url, 'https://openrouter.ai/api/v1/models')
+        self.assertIsNone(catalog.get_header('Authorization'))
+        self.assertEqual(inference.get_method(), 'POST')
+        body = json.loads(inference.data)
+        self.assertEqual(body['provider']['max_price'], {'prompt': 0, 'completion': 0, 'request': 0})
+        self.assertIn('release_notes_free_model_verified', self.logged.getvalue())
+        self.assertIn('"status": "generated"', self.logged.getvalue())
+        self.assertNotIn('::warning', self.logged.getvalue())
+
+    def test_openrouter_missing_paid_or_unknown_prices_never_send_inference(self):
+        prices = [{'prompt': '0', 'completion': '0.01'}, {'prompt': '0'},
+                  {'prompt': '0', 'completion': '0', 'request': '1e-1000'},
+                  {'prompt': 'NaN', 'completion': '0'}, {'prompt': '-1', 'completion': '0'},
+                  {'prompt': '0', 'completion': '0', 'overrides': [{}]},
+                  {'prompt': '0', 'completion': '0', 'overrides': {}},
+                  {'prompt': 'Infinity', 'completion': '0'}]
+        cases = [[]] + [[{'id': 'fixture/model:free', 'pricing': price}] for price in prices]
+        for rows in cases:
+            with self.subTest(rows=rows):
+                env, opener = self.openrouter_fixture(rows)
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+                    record = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+                self.assert_blank_record(record)
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(opener.open.call_args.args[0].get_method(), 'GET')
+                (self.root / notes.NAME).unlink()
+        self.assertIn('::warning title=Release notes unavailable::', self.logged.getvalue())
+        summary = (self.root / 'summary.md').read_text()
+        self.assertIn('allow a replacement free model in OpenRouter', summary)
+        self.assertIn('RELEASE_NOTES_MODEL', summary)
+
+    def test_openrouter_catalog_failure_and_paid_model_leave_notes_empty(self):
+        for model, failure in [('fixture/model:free', TimeoutError('fixture-private-error')),
+                               ('fixture/model:free', io.BytesIO(b'not-json fixture-private-error')),
+                               ('fixture/paid-model', AssertionError('No network expected'))]:
+            with self.subTest(model=model, failure=type(failure).__name__):
+                env, opener = self.openrouter_fixture([], model=model)
+                opener.open.side_effect = [failure]
+                with patch.dict(os.environ, env, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+                    record = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+                self.assert_blank_record(record)
+                self.assertEqual(opener.open.call_count, int(model.endswith(':free')))
+                (self.root / notes.NAME).unlink()
+        self.assertNotIn('fixture-private-error', self.logged.getvalue())
+
+    def test_provider_warning_is_actionable_and_does_not_log_private_response(self):
+        rows = [{'id': 'fixture/model:free', 'pricing': {'prompt': '0', 'completion': '0'}}]
+        for status, expected in [(403, 'access_denied'), (404, 'model_unavailable'),
+                                 (429, 'upstream_rate_limited'), (503, 'provider_error')]:
+            with self.subTest(status=status):
+                error = urllib.error.HTTPError('https://openrouter.ai/api/v1/chat/completions', status,
+                    'fixture-private-error', {}, io.BytesIO(b'temporarily rate-limited upstream fixture-private-key'))
+                env, opener = self.openrouter_fixture(rows, response=error)
+                with error, patch.dict(os.environ, env, clear=True), \
+                        patch.object(notes.urllib.request, 'build_opener', return_value=opener):
+                    record = self.generate_with_fixture_evidence(wraps=notes.model_notes)
+                self.assert_blank_record(record)
+                self.assertIn('"reason": "' + expected + '"', self.logged.getvalue())
+                (self.root / notes.NAME).unlink()
+        output = self.logged.getvalue() + (self.root / 'summary.md').read_text()
+        self.assertIn('HTTP 429', output)
+        self.assertIn('RELEASE_NOTES_MODEL', output)
+        self.assertNotIn('fixture-private-key', output)
+        self.assertNotIn('fixture-private-error', output)
+
+    def test_model_name_logging_is_safe_and_summary_failure_does_not_block(self):
+        for model in ['fixture-private-key', 'model\n::error::injected', 'https://private.example.test/path']:
+            with patch.dict(os.environ, {'RELEASE_NOTES_MODEL': model,
+                                         'RELEASE_NOTES_API_KEY': 'fixture-private-key'}, clear=True):
+                notes.provider.log_event('started')
+        self.assertNotIn('fixture-private-key', self.logged.getvalue())
+        self.assertNotIn('::error::injected', self.logged.getvalue())
+        self.assertNotIn('private.example.test', self.logged.getvalue())
+        with patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(self.root)}, clear=True):
+            notes.provider.report_result({'status': 'unavailable'}, 0, notes.provider.ModelUnavailable('configuration'))
+        self.assertIn('Release notes summary unavailable', self.logged.getvalue())
+
+    def test_daily_provider_limit_is_not_reported_as_account_free_quota(self):
+        for body, expected in [(b'provider daily capacity reached', 'rate_limited'),
+                               (b'free-models-per-day quota reached', 'daily_rate_limited')]:
+            with urllib.error.HTTPError('https://model.example.test', 429, 'rate limit', {}, io.BytesIO(body)) as error:
+                self.assertEqual(notes.provider.classify_http(error).reason, expected)
 
     def test_generated_notes_over_five_highlights_are_left_blank(self):
         result = {key: copy.deepcopy(self.record[key]) for key in ['locales', 'sources', 'omitted']}

@@ -58,7 +58,16 @@ export function useEscClose(onClose) {
   useEffect(() => registerDialogLayer({ onClose: () => close.current?.() }), [])
 }
 
-export function Modal({ title, icon, onClose, children, foot, footer, wide, size, scope = '', className = '' }) {
+function draftSnapshot(value) {
+  // Restoring a removed field may change key insertion order, but not the
+  // saved form. Preserve array order for editors that save ordered steps.
+  return JSON.stringify(value, (_, field) => {
+    if (!field || typeof field !== 'object' || Array.isArray(field)) return field
+    return Object.fromEntries(Object.keys(field).sort().map(key => [key, field[key]]))
+  })
+}
+
+export function Modal({ title, icon, onClose, children, foot, footer, wide, size, scope = '', className = '', draft, dirty = false }) {
   const uiLocale = useLocale();
   const dialog = useRef(null)
   const titleId = useId()
@@ -68,7 +77,16 @@ export function Modal({ title, icon, onClose, children, foot, footer, wide, size
   const dialogSize = size || (wide ? 'wide' : '')
   const actions = foot !== undefined ? foot : footer
   const maskDown = useRef(false)
-  close.current = onClose
+  // Editors pass only their saved fields. Asynchronously loaded or independently
+  // saved forms can compare with their current server baseline via dirty instead.
+  const [initialDraft] = useState(() => draftSnapshot(draft))
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  function dismiss() {
+    if (!onClose) return
+    if (dirty || (draft !== undefined && draftSnapshot(draft) !== initialDraft)) setConfirmDiscard(true)
+    else onClose()
+  }
+  close.current = dismiss
   useEffect(() => registerDialogLayer({ id: titleId, ancestors, root: dialog.current, onClose: () => close.current?.(), returnFocus: trigger.current }), [])
   const content = (
     <DialogAncestors.Provider value={[...ancestors, titleId]}>
@@ -80,32 +98,35 @@ export function Modal({ title, icon, onClose, children, foot, footer, wide, size
       onMouseDown={(e) => { maskDown.current = e.target === e.currentTarget }}
       onClick={(e) => {
         e.stopPropagation()
-        if (e.target === e.currentTarget && maskDown.current) onClose()
+        if (e.target === e.currentTarget && maskDown.current) dismiss()
       }}>
       <div ref={dialog} className={['modal', dialogSize && `modal-${dialogSize}`, scope, className].filter(Boolean).join(' ')}
         role="dialog" aria-modal={true} aria-labelledby={titleId} tabIndex={-1}>
         <div className="modal-head">
           {icon && <span className="int-ico" style={{ width: 26, height: 26 }}><Icon name={icon} /></span>}
-          <span id={titleId} className="modal-title">{title}</span><button type="button" className="mx" aria-label={tx("关闭")} onClick={onClose}>✕</button>
+          <span id={titleId} className="modal-title">{title}</span><button type="button" className="mx" aria-label={tx("关闭")} onClick={dismiss}>✕</button>
         </div>
         <div className="modal-body">{children}</div>
-        {actions && <div className="modal-foot">{actions}</div>}
+        {actions && <div className="modal-foot">{typeof actions === 'function' ? actions(dismiss) : actions}</div>}
       </div>
     </div>
+    {confirmDiscard && <Confirm title={tx("放弃未保存的改动")} text={tx("关闭后，此次未保存的改动将丢失。")}
+      cancelText={tx("继续编辑")} confirmText={tx("放弃改动")} focusCancel danger
+      onClose={() => setConfirmDiscard(false)} onConfirm={() => { setConfirmDiscard(false); onClose?.() }} />}
     </DialogAncestors.Provider>
   )
   return typeof document !== 'undefined' && document.body ? createPortal(content, document.body) : content
 }
 
 /* Application confirmation dialog supports asynchronous onConfirm. */
-export function Confirm({ title, text, danger, confirmText = tx("确定"), onConfirm, onClose }) {
+export function Confirm({ title, text, danger, confirmText = tx("确定"), cancelText = tx("取消"), focusCancel, onConfirm, onClose }) {
   const uiLocale = useLocale();
   const [busy, setBusy] = useState(false)
   async function go() { setBusy(true); try { await onConfirm() } catch (e) { toast(tx("失败：") + (e.message || e)) } finally { setBusy(false) } }
   return (
     <Modal size="compact" title={title || tx("确认操作")} icon="alert" onClose={onClose}
       foot={<>
-        <button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button>
+        <button className="btn btn-ghost" data-dialog-autofocus={focusCancel || undefined} onClick={onClose}>{cancelText}</button>
         <button className={'btn ' + (danger ? 'btn-danger' : 'btn-primary')} disabled={busy} onClick={go}>{busy ? tx("处理中…") : confirmText}</button>
       </>}>
       <div className="modal-confirm-copy">{text}</div>

@@ -597,6 +597,37 @@ def runner_info_sync(cfg: dict, ref: str) -> dict:
     return d
 
 
+async def read_session(ref: str, since: int = 0, limit: int = 400, *, runner_id: str = "") -> dict:
+    """Read only the authorized execution endpoint; keep all RPCs cancellable."""
+    runner = runner_hub.get(runner_id) if runner_id else await runner_of_ref_async(ref)
+    if runner is None:
+        return {"ok": False, "items": [], "error": "这条活所在的执行机不在线"}
+    packet = {
+        "ref": ref, "since": max(0, int(since or 0)),
+        "limit": min(1000, max(1, int(limit or 400))),
+    }
+    # A durable owner is authoritative. Only legacy records without one retain
+    # rolling-upgrade discovery when an old Runner lacks job.session support.
+    candidates = [runner] if runner_id else [runner] + [r for r in runner_hub.online() if r.id != runner.id]
+    error = "远程会话拿不到"
+    for index, candidate in enumerate(candidates):
+        if index:
+            found = await candidate.call("job.has", {"ref": ref}, timeout=15)
+            owner = found.get("data") or {}
+            if not found.get("ok") or not (owner.get("has") or owner.get("found")):
+                continue
+        result = await candidate.call("job.session", packet, timeout=30)
+        if not result.get("ok"):
+            error = result.get("error") or error
+            continue
+        data = dict(result.get("data") or {})
+        data.setdefault("ok", True)
+        data.update(runnerId=candidate.id, host=candidate.host)
+        remember(ref, candidate.id)
+        return data
+    return {"ok": False, "items": [], "error": error}
+
+
 def session_sync(cfg: dict, ref: str, since: int = 0, limit: int = 400) -> dict:
     """Read incremental remote session activity using the shared local execution format. since
     identifies the last observed sequence number for reconnect-safe continuation.

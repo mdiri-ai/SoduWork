@@ -121,6 +121,56 @@ function otherOutputs(t, documentOnly = false) {
   return { root, api, context: { ref: 'fixture', api } };
 }
 
+test('website sharing counts each directory once and keeps same-name ZIPs independently selectable', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-website-directories-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const sites = ['one/site', 'two/site', 'third'];
+  for (const site of sites) {
+    fs.mkdirSync(path.join(root, site), { recursive: true });
+    fs.writeFileSync(path.join(root, site, 'index.html'), site);
+  }
+  fs.writeFileSync(path.join(root, sites[0], 'guide.html'), 'Guide');
+  const sample = crypto.randomBytes(13 * 1024 * 1024);
+  fs.writeFileSync(path.join(root, sites[0], 'sample.bin'), sample);
+  fs.writeFileSync(path.join(root, 'report.csv'), 'name,value\ncomplete,42\n');
+  const caseAlias = 'ONE/SITE/guide.html';
+  const guide = fs.existsSync(path.join(root, caseAlias)) ? caseAlias : sites[0] + '/./guide.html';
+  const pages = [...sites.map(site => site + '/index.html'), guide];
+  fs.mkdirSync(path.join(root, '.soduwork'));
+  fs.writeFileSync(path.join(root, '.soduwork/delivery.json'), JSON.stringify({ schemaVersion: 1,
+    deliverables: [...pages.map(entry => ({ path: entry, kind: 'website' })), { path: 'report.csv', kind: 'document' }] }));
+
+  const session = { cwd: root, outputSnapshot: () => outputs.scan(root, 0, 0) };
+  const packaged = [];
+  const context = { ref: 'fixture', api: {
+    outputs: async () => ({ artifacts: await artifacts.decorateForSharing('fixture', session.outputSnapshot().delivery) }),
+    artifactAction: (ref, id, action) => {
+      if (action === 'share-related') packaged.push(id);
+      return artifacts.action(session, ref, id, action, {});
+    },
+  } };
+  const rows = await mate.conversationOutputs(context);
+  assert.equal(packaged.length, 3);
+  const payload = await mate.outputPayload(context, rows, 'within-limit');
+  assert.deepEqual(payload.files.map(file => file.name).sort(), ['report.csv', 'site.zip', 'site.zip', 'third.zip']);
+  assert.equal(Buffer.from(payload.files.find(file => file.name === 'report.csv').data, 'base64').toString(), 'name,value\ncomplete,42\n');
+  const selected = new Set();
+  for (const row of rows.filter(row => row.name === 'site.zip')) {
+    const { files } = await mate.outputPayload(context, [row], 'select-one');
+    assert.equal(files.length, 1);
+    const zip = entries(Buffer.from(files[0].data, 'base64'));
+    const site = zip.get('index.html').toString();
+    selected.add(site);
+    if (site === sites[0]) {
+      assert.equal(zip.get('guide.html').toString(), 'Guide');
+      assert.ok(zip.get('sample.bin').equals(sample));
+    }
+  }
+  assert.deepEqual(selected, new Set(sites.slice(0, 2)));
+  fs.writeFileSync(path.join(root, sites[1], 'sample.bin'), sample);
+  await assert.rejects(mate.outputPayload(context, await mate.conversationOutputs(context), 'over-limit'), /24 MB/);
+});
+
 for (const failedPosition of [3, 4]) {
   test('default teammate send excludes a failed website at position ' + failedPosition + ' and delivers every healthy file', async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-multiple-websites-'));

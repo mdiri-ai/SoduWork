@@ -3,6 +3,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..pagination import PageQuery, list_result, select_rows
 from ..db import get_session
 from ..deps import current_client, identity_only
 from ..models import Client
@@ -31,16 +32,15 @@ async def _my_sch(session: AsyncSession, sid: str, client: Client, *, lock: bool
 
 @router.get("/schedules")
 async def my_schedules(client: Client = Depends(current_client),
-                       session: AsyncSession = Depends(get_session)):
+                       session: AsyncSession = Depends(get_session), window: PageQuery = None):
     from .tasks import _my_sch_api
 
     from sqlalchemy import select as _sel
 
     from ..models import AiSchedule
-    rows = (await session.execute(
-        _sel(AiSchedule).where(schedule_access.owner_clause(client))
-        .order_by(AiSchedule.created_at))).scalars().all()
-    return [_my_sch_api(s) for s in rows]
+    query = _sel(AiSchedule).where(schedule_access.owner_clause(client)).order_by(AiSchedule.created_at, AiSchedule.id)
+    rows, total = await select_rows(session, query, window)
+    return list_result([_my_sch_api(s) for s in rows], total)
 
 
 @router.get("/schedules/templates")

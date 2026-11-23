@@ -8,6 +8,7 @@ export const CAPABILITY_STATES = localeMap(() => ({ unknown: '未确认', suppor
 const SOURCES = localeMap(() => ({ configured: '手动配置', 'legacy-native': '已有配置', verified: '实际检测', unknown: '未确认' }))
 const STATUS = localeMap(() => ({ passed: '检测通过', failed: '检测失败', unsupported: '不支持', inconclusive: '未能确认', cancelled: '已取消', skipped: '未执行' }))
 const DIAGNOSTICS = localeMap(() => ({
+  request_rejected: '服务拒绝了检测请求，原因尚未确认',
   timeout: '服务响应超时，可稍后重试', temporarily_unavailable: '服务暂时不可用，可稍后重试',
   credentials_or_access: '请检查凭据及模型访问权限', model_or_endpoint_missing: '请检查模型 ID 和接口地址',
   capability_not_supported: '服务明确返回不支持此能力', request_not_accepted: '服务未接受检测请求，请检查协议配置',

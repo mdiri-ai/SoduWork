@@ -128,7 +128,6 @@ const _applicationMenu = require('./main/app-menu-info.cjs').install({ app, ipcM
 const _workspaceTitlebar = require('./main/workspace-titlebar.cjs').create({ app, ipcMain, BrowserWindow, Menu,
   getRendererRoot: rendererRoot, fallbackCommand: _applicationMenu.nativeCommand,
   getWorkspace: () => { openDeskWindow({ panel: 'workspace' }, null); return _workWindows.get('workspace'); } });
-_runnerRuntime.install({ app, ipcMain, identityOf: _deviceAuth.identity });
 require('./main/agent-runtime/custom-runtimes.cjs').install({ app, ipcMain, session: _piSessions,
   runner: _runnerRuntime, BrowserWindow, dialog, changed: _catalogChanges.changed });
 async function _sessionIdentity(appRef, hub = '', clientId = '') {
@@ -284,6 +283,14 @@ ipcMain.handle('open-external', (e, url) => {
 
 
 
+const _firstChatLinks = require('./main/first-chat-links.cjs');
+let pendingSetupLink = _firstChatLinks.fromArgs(process.argv);
+let desktopStarted = false;
+function openFirstChatSettings(link) {
+  if (!desktopStarted) pendingSetupLink = link;
+  else openDeskWindow({ panel: 'workspace', view: _firstChatLinks.view(link) }, null);
+}
+
 /* panel -> BrowserWindow. Standard application entries route to workspace; console and multi remain separate. */
 const _workWindows = new Map();
 const _fileOpenModule = require('./main/file-open.cjs');
@@ -296,6 +303,8 @@ const _fileOpen = _fileOpenModule.create({
   },
   identityOf: () => _sessionIdentity(app),
   ownerOf: require('./main/platform-connections/runtime.cjs').connectionScope,
+  // macOS can send files before ready, before the quit state below is initialized.
+  deferLaunch: files => app.isReady() && _quitRelaunch.deferLaunch(files),
 });
 
 
@@ -328,7 +337,10 @@ function openDeskWindow(payload, sourceWin) {
        page and the process-local navigation record is used on a later reopen.
        Explicit view/task/chat targets still navigate the existing window. */
     const hasTarget = Object.keys(requested).some((key) => key !== 'panel');
-    if (hasTarget) existing.webContents.send('desk-open', p);
+    if (hasTarget) {
+      if (existing._deskContentReady === false) existing._pendingDeskTarget = p;
+      else existing.webContents.send('desk-open', p);
+    }
     return;
   }
   /* Restore saved bounds only when they still intersect an available display. */
@@ -592,10 +604,19 @@ function _trayMenu() {
   ];
 }
 
+const _quitRelaunch = require('./main/quit-relaunch.cjs').create(app);
+
 function _quitSoduWork(reason) {
+  _quitRelaunch.markQuitting();
   if (tray) { tray.destroy(); tray = null; }
   _lifecycleDiagnostics.setExitReason(reason);
   app.quit();
+  if (reason === 'tray') {
+    // Background cleanup can defer quit. Let windows run their normal close handlers now.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.close();
+    }
+  }
 }
 
 function createTray() {
@@ -630,10 +651,22 @@ if (!gotTheLock) {
   _lifecycleDiagnostics.setExitReason('second-instance');
   app.quit();
 } else {
+  app.on('open-url', (event, url) => {
+    if (!_firstChatLinks.view(url)) return;
+    event.preventDefault();
+    if (!_quitRelaunch.deferLaunch([], url)) openFirstChatSettings(url);
+  });
   app.on('second-instance', (_event, argv, workingDirectory, additionalData) => {
-    if (_linuxStartup.focusRecovery(app)) return;
-    if (_fileOpen.enqueue(_fileOpenModule.instanceFiles(
-      argv, workingDirectory, app.isPackaged, additionalData))) return;
+    const setupLink = _firstChatLinks.fromArgs(argv);
+    if (!_quitRelaunch.quitting && _linuxStartup.focusRecovery(app)) {
+      if (setupLink) pendingSetupLink = setupLink;
+      return;
+    }
+    const files = _fileOpenModule.instanceFiles(argv, workingDirectory, app.isPackaged, additionalData);
+    // A window opened now would close with this exiting process.
+    if (_quitRelaunch.deferLaunch(files, setupLink)) return;
+    if (_fileOpen.enqueue(files)) return;
+    if (setupLink) { openFirstChatSettings(setupLink); return; }
     /*
      * Reopening the application always targets its workspace. The desktop overlay
      * can have every entry hidden or be recovering independently; neither state
@@ -649,7 +682,9 @@ if (!gotTheLock) {
   });
 
   function startDesktop(credentials) {
-    _deviceAuth.install({ app, ipcMain, safeStorage, credentials });
+    _deviceAuth.install({ app, ipcMain, safeStorage, credentials, onAuthUnavailable: _runnerRuntime.pauseForHubChange });
+    _runnerRuntime.install({ app, ipcMain, identityOf: _deviceAuth.identity, sessionOf: _deviceAuth.session,
+      canConnect: _deviceAuth.canConnect });
     /*
      * Adopt the Runner-managed office engine so client probes and child processes use the same
      * installation. Missing engines must not block startup.
@@ -692,7 +727,9 @@ if (!gotTheLock) {
     ensureAutostartDefault();   // Enable login startup by default on first launch; the tray menu can disable it.
     _desktopOverlay.createWindow();
     /* Open the main workspace on startup. The overlay starts separately and follows saved pet and dock preferences. */
-    openDeskWindow({ panel: 'workspace' }, null);
+    desktopStarted = true;
+    if (pendingSetupLink) { openFirstChatSettings(pendingSetupLink); pendingSetupLink = ''; }
+    else openDeskWindow({ panel: 'workspace' }, null);
     _fileOpen.signal();
     /*
      * Use cached tray visibility before renderer startup to avoid flashing an explicitly
@@ -712,6 +749,7 @@ if (!gotTheLock) {
     app.on('activate', () => {
       /* Apply this activation behavior only on macOS. */
       if (process.platform === 'darwin') {
+        if (_quitRelaunch.deferLaunch()) return;
         if (BrowserWindow.getAllWindows().length === 0) _desktopOverlay.createWindow();
 
 
@@ -793,6 +831,10 @@ ipcMain.on('desk-content-ready', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (!win || win.isDestroyed() || typeof win._revealDesk !== 'function') return;
   win._deskContentReady = true;
+  if (win._pendingDeskTarget) {
+    win.webContents.send('desk-open', win._pendingDeskTarget);
+    win._pendingDeskTarget = null;
+  }
   win._revealDesk(false);
 });
 

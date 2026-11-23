@@ -38,6 +38,8 @@
     '选择后自动保存，重启后继续使用所选目录。': 'Your selection is saved automatically and used again after restarting.',
     '工作目录已保存': 'Work directory saved',
     '无法保存工作目录，请重试': 'Could not save the work directory. Try again.',
+    '所选工作位置不是文件夹': 'The selected location is not a folder.',
+    '工作目录不可用，请选择可读写的文件夹': 'This folder is unavailable. Choose a folder you can read and write to.',
     '展开最近需求': 'Expand recent issues',
     '收起最近需求': 'Collapse recent issues',
     '无法切换服务': 'Could not switch services',

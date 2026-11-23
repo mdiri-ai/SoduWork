@@ -16,7 +16,9 @@ Update both the Hub and desktop client and apply the database migration for this
 
 ## What a connection test proves
 
-**Save and test connection** first reads the provider’s model list. A successful list request verifies only that endpoint: it does not prove that chat generation is authorized, that a billing balance is available, or that the selected Agent supports the protocol. If discovery is unavailable, the test can send a minimal chat request, which may incur usage. The result states which probe succeeded.
+In the web admin console, open **Model catalog → Connect a service** to set up an organization model service. **Test connection** reads the provider’s model list using the form values before you save. A successful response can contain zero models. After saving, choose **Add first model** on the configured service card to add a model by ID. For daily summaries and legacy execution, open **Expand overview → Catalog configuration → Organization defaults (legacy)**.
+
+On the desktop, **Save and test connection** first reads the provider’s model list. A successful list request verifies only that endpoint: it does not prove that chat generation is authorized, that a billing balance is available, or that the selected Agent supports the protocol. If discovery is unavailable, the test can send a minimal chat request, which may incur usage. The result states which probe succeeded.
 
 The current managed chat gateway uses OpenAI-compatible endpoints. An Anthropic provider can remain configured for an Agent that supports it, but a successful Anthropic connection test does not make it compatible with this gateway. The model editor and managed model picker show this boundary before execution. Changing only the protocol selector does not convert a provider endpoint; use the corresponding address and key supplied by the provider.
 

@@ -747,6 +747,8 @@
     '结束日期无效，请重新选择': 'End date is invalid. Choose another date.',
     '开始日期不能晚于结束日期': 'Start date cannot be later than end date.',
     '请选择小时（00–23）': 'Choose an hour (00–23)',
+    "请补充下午的具体执行时间，例如下午三点": "Please specify the afternoon time, for example 3 PM",
+    "请选择有效的时区": "Choose a valid time zone",
     '请选择分钟（00–59）': 'Choose a minute (00–59)',
     '请选择至少一个星期': 'Select at least one weekday',
     '请选择至少一个月度日期': 'Select at least one day of the month',

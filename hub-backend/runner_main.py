@@ -604,7 +604,13 @@ class Runner:
             self._telemetry_task = asyncio.create_task(self._capture_loop())
         # Admission reclaims native archives before launching any durable queue
         # item, so a surviving child process cannot race a replacement launch.
+        reconnect = runner_connection_status.ReconnectPolicy(base=RETRY_S)
+        self._retry_event = asyncio.Event()
         while not self._shutdown_event.is_set():
+            online_at = None
+            failure_code = "CONNECTION_FAILED"
+            closed_code = None
+            error_type = "ConnectionClosed"
             try:
                 runner_connection_status.report(self, "connecting")
                 headers = {}
@@ -622,6 +628,8 @@ class Runner:
                                               **websocket_options(self.url)) as ws:
                     self.ws = ws
                     prefetched = await self._hello()
+                    self._retry_event.clear()
+                    online_at = time.monotonic()
                     # Open the control channel before scanning local CLIs/Skills. A large
                     # or temporarily locked skill root must not make this Runner look offline.
                     initial = asyncio.create_task(self._report_beat())
@@ -630,11 +638,13 @@ class Runner:
                     push = asyncio.create_task(self._push_loop())
                     try:
                         await self._pump(prefetched)
+                        closed_code = getattr(ws, "close_code", None)
                     finally:
                         for job in (initial, beat, push):
                             job.cancel()
                         await asyncio.gather(initial, beat, push, return_exceptions=True)
             except RunnerIdentityConflict:
+                failure_code = "IDENTITY_CONFLICT"
                 runner_connection_status.report(self, "error", "IDENTITY_CONFLICT")
                 scope = getattr(self, "desktop_identity_scope", None)
                 if scope:
@@ -652,17 +662,21 @@ class Runner:
                     return
                 log.warning("执行机身份冲突，请检查独立执行机的登记配置")
             except Exception as e:  # noqa: BLE001
-                runner_connection_status.report(self, "error", runner_connection_status.error_code(e))
-                log.warning("连不上后台（%s: %s），%d 秒后重试",
-                            type(e).__name__, str(e)[:100], RETRY_S)
+                error_type = type(e).__name__
+                failure_code = runner_connection_status.error_code(e)
+                closed_code = runner_connection_status.close_code(e)
             self.ws = None
             if self._shutdown_event.is_set():
                 break
+            online_seconds = time.monotonic() - online_at if online_at is not None else 0
+            retry_seconds = reconnect.delay(failure_code, online_seconds)
+            runner_connection_status.report(self, "error", failure_code)
+            log.warning("Runner reconnect code=%s errorClass=%s closeCode=%s onlineSeconds=%.1f retrySeconds=%.1f",
+                        failure_code, error_type, closed_code, online_seconds, retry_seconds)
             # Keep terminals alive across connection loss for later reattachment.
-            try:
-                await asyncio.wait_for(self._shutdown_event.wait(), RETRY_S)
-            except asyncio.TimeoutError:
-                pass
+            if await runner_connection_status.wait_to_retry(
+                    self._shutdown_event, self._retry_event, retry_seconds):
+                reconnect.failures = 0
 
     async def _local_rpc_loop(self) -> None:
         """Serve one-line JSON RPC from the parent Electron process only."""
@@ -738,6 +752,13 @@ class Runner:
             # refresh performs discovery later and reports it to the Hub.
             self._agent_inventory_at = 0
             return {"ok": True, "data": result}
+        if op == "runtime.reconnect":
+            # Trusted desktop pipe only. This never interrupts live work or a
+            # healthy socket; it wakes a disconnected Runner after login.
+            retry = getattr(self, "_retry_event", None)
+            if self.ws is None and retry is not None:
+                retry.set()
+            return {"ok": True}
         if op == "runtime.ping":
             return {"ok": True, "data": {"version": RUNNER_VERSION, "pid": os.getpid()}}
         if op == "runtime.detect":

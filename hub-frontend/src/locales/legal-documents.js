@@ -7,6 +7,8 @@ const rows = {
   '文档': ['Document', '文書', '문서'],
   '请设置默认原文': ['Choose the default document language', '既定の原文言語を設定してください', '기본 원문 언어를 설정하세요'],
   '取消定时发布会重新加载页面，未保存的改动将丢失。历史快照仍会保留。': ['Canceling this scheduled publication reloads the page and discards unsaved changes. Its historical snapshot will be retained.', '公開予定を取り消すとページが再読み込みされ、未保存の変更は失われます。履歴のスナップショットは保持されます。', '예약 게시를 취소하면 페이지가 다시 로드되고 저장하지 않은 변경 사항은 사라집니다. 이력 스냅샷은 유지됩니다.'],
+  '继续编辑': ['Keep editing', '編集を続ける', '계속 편집'],
+  '关闭后，此次未保存的改动将丢失。': ['Closing will discard your unsaved changes.', '閉じると、保存していない変更が失われます。', '닫으면 저장하지 않은 변경 사항이 사라집니다.'],
   '放弃未保存的改动': ['Discard unsaved changes', '未保存の変更を破棄', '저장하지 않은 변경 사항 버리기'],
   '未保存的内容将丢失，已保存的草稿和已发布版本不受影响。': ['Unsaved content will be lost. Saved drafts and published versions will remain unchanged.', '未保存の内容は失われます。保存済みの下書きと公開済みのバージョンには影響しません。', '저장하지 않은 내용은 사라집니다. 저장된 초안과 게시된 버전에는 영향이 없습니다.'],
   '放弃并继续': ['Discard and continue', '破棄して続ける', '버리고 계속'],

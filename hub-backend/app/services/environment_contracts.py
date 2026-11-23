@@ -36,22 +36,27 @@ def _contains_secret(value, path: str = "") -> str:
     return ""
 
 
+class InvalidRunnerSelector(ValueError):
+    """A selector contains an invalid field or an unknown Runner tag."""
+
+
 def _selector(value) -> dict:
-    raw = dict(value or {}) if isinstance(value, dict) else {}
-    tags = []
-    for item in raw.get("tags") or []:
-        tag = _text(item, 40).lower()
-        if tag and tag not in tags:
-            tags.append(tag)
-    runner_ids = []
-    for item in raw.get("runnerIds") or []:
-        runner_id = _text(item, 80)
-        if runner_id and runner_id not in runner_ids:
-            runner_ids.append(runner_id)
-    out = {"tags": tags[:20]}
-    if runner_ids:
-        out["runnerIds"] = runner_ids[:20]
-    return out
+    if value is not None and not isinstance(value, dict):
+        raise InvalidRunnerSelector("runnerSelector 必须是对象")
+    raw = value or {}
+    selector = {"tags": []}
+    for key, limit in (("tags", 40), ("runnerIds", 80)):
+        items = raw.get(key, [])
+        if not isinstance(items, list) or any(
+            not isinstance(item, str) or not 1 <= len(item.strip()) <= limit for item in items
+        ):
+            raise InvalidRunnerSelector(f"runnerSelector.{key} 必须是非空字符串组成的数组")
+        values = list(dict.fromkeys(item.strip().lower() if key == "tags" else item.strip() for item in items))
+        if len(values) > 20:
+            raise InvalidRunnerSelector(f"runnerSelector.{key} 最多允许 20 项")
+        if values:
+            selector[key] = values
+    return selector
 
 
 def promotion_policy(value) -> dict:

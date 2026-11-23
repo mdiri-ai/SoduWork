@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import ast
+import errno
 import io
 import json
-from contextlib import closing, nullcontext, redirect_stdout
+from contextlib import closing, nullcontext, redirect_stderr, redirect_stdout
 import os
 from pathlib import Path
 import socket
@@ -14,9 +16,10 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tools.dev import local_environment as build
+from tools.dev import local_path_check as path_check
 from tools.dev import start_local as start
 from tools.dev import verify_local_start as verify
 from tools.dev import verify_desktop_fixture as desktop_fixture
@@ -48,6 +51,27 @@ class LocalStartupTests(unittest.TestCase):
             start.launch_desktop(self.state, self.state / 'application/client', env,
                                  'http://127.0.0.1:18991', io.BytesIO())
             self.assertEqual(popen.call_args.kwargs['env'].get('SODUWORK_REQUIREMENT_DIAGNOSTICS_DIR'), destination)
+
+    def test_bind_failure_reports_unavailable_address_not_port_conflict(self):
+        with patch.object(start.socket, 'socket') as socket_factory:
+            probe = socket_factory.return_value.__enter__.return_value
+            probe.bind.side_effect = OSError(errno.EADDRNOTAVAIL, 'address unavailable')
+            with self.assertRaises(start.StartupError) as caught:
+                start.assert_available('192.0.2.1', 18989)
+        message = str(caught.exception)
+        self.assertIn('192.0.2.1:18989', message)
+        self.assertIn('address unavailable', message)
+        self.assertNotIn('already in use', message)
+
+    def test_bind_failure_reports_name_resolution_error(self):
+        with patch.object(start.socket, 'socket') as socket_factory:
+            probe = socket_factory.return_value.__enter__.return_value
+            probe.bind.side_effect = socket.gaierror(socket.EAI_NONAME, 'unknown host')
+            with self.assertRaises(start.StartupError) as caught:
+                start.assert_available('invalid.example', 18989)
+        self.assertIn('invalid.example:18989', str(caught.exception))
+        self.assertIn('unknown host', str(caught.exception))
+        self.assertNotIn('already in use', str(caught.exception))
 
     def test_linux_root_desktop_fails_before_initialization_password_or_downloads(self):
         for options in ([], ['--prepare-only'], ['--check']):
@@ -1413,23 +1437,44 @@ class LocalStartupTests(unittest.TestCase):
     def test_prepare_passes_isolated_caches_to_every_install_command(self):
         state = Path(self.temp.name) / 'prepare-state'
         state.mkdir()
-        with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+        settings = {'PYTHONHOME': '/host/python', 'PYTHONPATH': '/host/site-packages',
+                    'PIP_NO_INDEX': '1', 'PIP_FIND_LINKS': str(state / 'wheels')}
+        with patch.dict(os.environ, settings), \
+                patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'sync_source'), patch.object(build, 'shutil'), \
                 patch.object(build, 'source_files', return_value=[]), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value=None), \
                 patch.object(build, 'run', side_effect=self.fake_venv_run(state)) as run:
+            cache_env = build.prepare_environment(state)
             build.prepare(state, state / 'startup.log')
         installs = run.call_args_list
         self.assertEqual(len(installs), 5)  # venv, pip, Runner probe, npm ci, build
         self.assertTrue(any('pip' in call.args[0] for call in installs))
         for call in installs:
-            self.assertTrue(call.kwargs.get('env') == build.prepare_environment(state),
-                            'Every preparation child must receive the isolated environment')
+            command = call.args[0]
+            expected = cache_env.copy()
+            if command[0] != 'npm':
+                self.assertEqual(command[1], '-I', command)
+                expected.pop('PYTHONHOME', None)
+                expected.pop('PYTHONPATH', None)
+                for key in ('PIP_FIND_LINKS', 'PIP_NO_INDEX'):
+                    self.assertEqual(call.kwargs['env'].get(key), settings[key])
+            self.assertTrue(call.kwargs['env'] == expected, 'Unexpected environment for ' + str(command[:3]))
+
+    def test_isolated_runner_readiness_imports_native_tls_dependency(self):
+        with patch.object(build, 'run') as run:
+            build.verify_runner_environment(Path(sys.executable), self.state, self.state / 'startup.log', env={})
+        command = run.call_args.args[0]
+        self.assertEqual(command[1:3], ['-I', '-c'])
+        imports = {module.name for statement in ast.parse(command[3]).body
+                   if isinstance(statement, ast.Import) for module in statement.names}
+        self.assertIn('truststore', imports)
 
     def test_cached_runner_disk_full_is_not_retried_as_a_dependency_repair(self):
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'sync_source'), patch.object(build, 'shutil'), \
+                patch.object(build, 'source_copy_targets', return_value=()), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value='digest'), \
                 patch.object(build, 'verify_runner_environment', side_effect=build.DiskFullError('Disk full')), \
@@ -1445,6 +1490,7 @@ class LocalStartupTests(unittest.TestCase):
         log = state / 'startup.log'
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'sync_source'), patch.object(build, 'shutil'), \
+                patch.object(build, 'source_copy_targets', return_value=()), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value='digest'), \
                 patch.object(build, 'run') as run:
@@ -1467,6 +1513,7 @@ class LocalStartupTests(unittest.TestCase):
         state.mkdir()
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'sync_source'), patch.object(build, 'shutil'), \
+                patch.object(build, 'source_copy_targets', return_value=()), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value='digest'), \
                 patch.object(build, 'run'):
@@ -1492,6 +1539,7 @@ class LocalStartupTests(unittest.TestCase):
 
         with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
                 patch.object(build, 'sync_source'), patch.object(build, 'shutil'), \
+                patch.object(build, 'source_copy_targets', return_value=()), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value='digest'), \
                 patch.object(build, 'run', side_effect=run):
@@ -1654,7 +1702,7 @@ class LocalStartupTests(unittest.TestCase):
         for name in build.BACKEND_FILES:
             put("hub-backend/" + name)
         for name in ("hub-backend/app/api.py", "tools/dev/local_server.py", "skills/example/SKILL.md",
-                     "client/core/connector-brand.js", "client/components/panels/connector-config.js",
+                     "client/core/connector-brand.js", "client/core/locales/builtin-skills.js", "client/components/panels/connector-config.js",
                      "client/components/client-auth/legal-html.js", "client/components/client-auth/legal-html.css",
                      "client/assets/connector-brands/fixture.svg", "third-party/manifest.json", "LICENSE",
                      "hub-frontend/src/index.jsx", "hub-frontend/package.json", "hub-frontend/package-lock.json",
@@ -1677,6 +1725,7 @@ class LocalStartupTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True); target.write_text("fixture")
         self.state.mkdir()
         with patch.object(build, "ROOT", source), patch.object(build, "check_dependencies", return_value=("node", "npm")), \
+                patch.object(build, 'checkout_files', return_value=None), \
                 patch.object(build, "run", side_effect=run):
             build.prepare(self.state, self.state / "startup.log")
             install = next(command for command in commands if 'pip' in command)
@@ -1699,17 +1748,18 @@ class LocalStartupTests(unittest.TestCase):
             self.assertEqual((self.state / "application/client/assets/connector-brands/fixture.svg").read_text(), "updated artwork")
             for file in generated:
                 self.assertEqual(file.read_bytes(), b'generated runtime fixture')
-            for relative in ('client/components/client-auth/legal-html.js',
+            for relative in ('client/core/locales/builtin-skills.js',
+                             'client/components/client-auth/legal-html.js',
                              'client/components/client-auth/legal-html.css'):
                 with self.subTest(shared_frontend_source=relative):
                     calls.clear()
-                    put(relative, 'updated shared legal document resource')
+                    put(relative, 'updated shared frontend resource')
                     build.prepare(self.state, self.state / 'startup.log')
                     self.assertEqual(calls, [
                         '[Runner] 检查本地运行环境 / Checking the local Runner environment',
                         '[4/4] 构建管理页面 / Building the management UI'])
                     self.assertEqual((self.state / 'application' / relative).read_text(),
-                                     'updated shared legal document resource')
+                                     'updated shared frontend resource')
             calls.clear()
             build.prepare(self.state, self.state / 'startup.log')
             self.assertEqual(calls, ['[Runner] 检查本地运行环境 / Checking the local Runner environment'])
@@ -1762,6 +1812,310 @@ class LocalStartupTests(unittest.TestCase):
                                                         else {'return_value': failure})), redirect_stdout(output):
                 start.open_management_page('http://127.0.0.1:18990')
             self.assertIn('http://127.0.0.1:18990', output.getvalue())
+
+
+class WindowsPathPreflightTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='soduwork-path-unit-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.state = self.root / 'service'
+        self.state.mkdir()
+
+    def relative_target(self, units):
+        """Make a destination of an exact UTF-16 length with ordinary components."""
+        parent = self.state / 'application'
+        while units - len(str(parent).encode('utf-16-le')) // 2 - 1 > 100:
+            parent /= 'segment-' + 'x' * 60
+        remaining = units - len(str(parent).encode('utf-16-le')) // 2 - 1
+        return (parent / ('x' * remaining)).relative_to(self.state)
+
+    def test_windows_path_length_counts_utf16_units(self):
+        for text in ('C:/short/path.py', 'C:/含 空格/文件.py', 'C:/\U0001f600/\U0001f680.py'):
+            with self.subTest(path=text):
+                self.assertEqual(path_check.windows_path_units(Path(text)),
+                                 len(str(Path(text)).encode('utf-16-le')) // 2)
+
+    def test_registry_diagnostic_only_reads_and_handles_unavailable_settings(self):
+        registry = MagicMock()
+        with patch.dict(sys.modules, {'winreg': registry}):
+            for value, expected in ((0, False), (1, True)):
+                with self.subTest(value=value):
+                    registry.QueryValueEx.return_value = (value, 4)
+                    self.assertIs(path_check.windows_long_paths_enabled(), expected)
+            registry.OpenKey.side_effect = PermissionError('registry access unavailable')
+            self.assertIsNone(path_check.windows_long_paths_enabled())
+        registry.CreateKey.assert_not_called()
+        registry.SetValue.assert_not_called()
+        registry.SetValueEx.assert_not_called()
+        registry.DeleteValue.assert_not_called()
+
+    def test_probe_matches_target_utf16_length_without_random_name_overhead(self):
+        self.state = self.state / '含 空格 \U0001f600'
+        self.state.mkdir()
+        existing = {'local-service.json': b'{"adminUser":"fixture"}',
+                    'soduwork.db': b'SQLite format 3\x00historical fixture bytes'}
+        for name, content in existing.items():
+            (self.state / name).write_bytes(content)
+        original_write, original_read = Path.write_bytes, Path.read_bytes
+        written = {}
+
+        def write(path, data):
+            if len(str(path).encode('utf-16-le')) // 2 >= 260:
+                written[path] = data
+                return len(data)
+            return original_write(path, data)
+
+        def read(path):
+            return written[path] if path in written else original_read(path)
+
+        # Simulate a capable process even if its diagnostic registry value is 0.
+        for length in (260, 265, 320):
+            with self.subTest(length=length), patch.object(sys, 'platform', 'win32'), \
+                    patch.object(path_check, 'windows_long_paths_enabled', return_value=False), \
+                    patch.object(Path, 'write_bytes', write), patch.object(Path, 'read_bytes', read):
+                written.clear()
+                path_check.check_windows_source_paths(self.state, [self.relative_target(length)], probe=True)
+            self.assertEqual(len(written), 1)
+            self.assertEqual(len(str(next(iter(written))).encode('utf-16-le')) // 2, length)
+            self.assertEqual({file.name: file.read_bytes() for file in self.state.iterdir()}, existing)
+
+    def test_short_targets_do_not_need_registry_or_write_probes(self):
+        for length in (200, 259):
+            with self.subTest(length=length), patch.object(sys, 'platform', 'win32'), \
+                    patch.object(path_check, 'windows_long_paths_enabled') as registry, \
+                    patch.object(path_check.tempfile, 'TemporaryDirectory') as temporary:
+                path_check.check_windows_source_paths(self.state, [self.relative_target(length)], probe=True)
+            registry.assert_not_called()
+            temporary.assert_not_called()
+
+    def test_long_path_errors_get_actionable_diagnostics_and_keep_existing_data(self):
+        existing = {
+            'local-service.json': b'{"adminUser":"fixture","authSecret":"synthetic-test"}',
+            'soduwork.db': b'SQLite format 3\x00historical fixture bytes',
+        }
+        for name, content in existing.items():
+            (self.state / name).write_bytes(content)
+        original_write = Path.write_bytes
+        for number, winerror in ((errno.ENOENT, None), (errno.ENAMETOOLONG, None),
+                                 (errno.EINVAL, 3), (errno.EINVAL, 206)):
+            failure = OSError(number, 'simulated path failure')
+            if winerror is not None:
+                failure.winerror = winerror
+
+            def write(path, data):
+                if len(str(path).encode('utf-16-le')) // 2 >= 260:
+                    raise failure
+                return original_write(path, data)
+
+            with self.subTest(errno=number, winerror=winerror), \
+                    patch.object(sys, 'platform', 'win32'), patch.object(Path, 'write_bytes', write):
+                target = self.relative_target(265)
+                with self.assertRaises(path_check.WindowsPathError) as raised:
+                    path_check.check_windows_source_paths(self.state, [target], probe=True)
+            message = str(raised.exception)
+            for required in ('265', str(self.state / target), '--data-dir', 'existing data', 'Windows', '长路径'):
+                self.assertIn(required, message)
+            self.assertIs(raised.exception.__cause__, failure)
+            self.assertEqual({file.name: file.read_bytes() for file in self.state.iterdir()}, existing)
+
+    def test_probe_permission_and_disk_errors_are_not_misreported_as_long_paths(self):
+        original_write = Path.write_bytes
+        for number in (errno.EACCES, errno.EPERM, errno.ENOSPC):
+            failure = OSError(number, 'simulated storage failure')
+
+            def write(path, data):
+                if len(str(path).encode('utf-16-le')) // 2 >= 260:
+                    raise failure
+                return original_write(path, data)
+
+            with self.subTest(errno=number), patch.object(sys, 'platform', 'win32'), \
+                    patch.object(Path, 'write_bytes', write):
+                with self.assertRaises(OSError) as raised:
+                    path_check.check_windows_source_paths(self.state, [self.relative_target(265)], probe=True)
+            self.assertIs(raised.exception, failure)
+            self.assertNotIsInstance(raised.exception, path_check.WindowsPathError)
+            self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_missing_short_control_path_is_not_reported_as_a_long_path_failure(self):
+        failure = FileNotFoundError(errno.ENOENT, 'control directory disappeared')
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(Path, 'write_bytes', side_effect=failure):
+            with self.assertRaises(FileNotFoundError) as raised:
+                path_check.check_windows_source_paths(self.state, [self.relative_target(265)], probe=True)
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_long_directory_creation_error_is_classified_before_file_write(self):
+        original_mkdir = Path.mkdir
+        failure = FileNotFoundError(errno.ENOENT, 'simulated directory length limit')
+        failure.winerror = 3
+
+        def mkdir(path, *args, **kwargs):
+            if len(str(path).encode('utf-16-le')) // 2 >= 248:
+                raise failure
+            return original_mkdir(path, *args, **kwargs)
+
+        with patch.object(sys, 'platform', 'win32'), patch.object(Path, 'mkdir', mkdir):
+            with self.assertRaises(path_check.WindowsPathError) as raised:
+                path_check.check_windows_source_paths(self.state, [self.relative_target(380)], probe=True)
+        self.assertIs(raised.exception.__cause__, failure)
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_check_reports_long_path_risk_without_creating_a_new_directory(self):
+        self.state = self.root / 'new-service'
+        output = io.StringIO()
+        with patch.object(sys, 'platform', 'win32'), \
+                patch.object(start, 'check_source_checkout'), patch.object(start, 'dependency_report'), \
+                patch.object(start, 'source_copy_targets', return_value=[self.relative_target(265)]), \
+                patch.object(path_check, 'windows_long_paths_enabled', return_value=False), \
+                patch.object(Path, 'mkdir') as mkdir, patch.object(Path, 'open') as opened, \
+                patch.object(start, 'initialize') as initialize, redirect_stdout(output):
+            self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
+        self.assertIn('265', output.getvalue())
+        self.assertIn('read-only', output.getvalue())
+        self.assertIn('LongPathsEnabled: 0', output.getvalue())
+        for operation in (mkdir, opened, initialize):
+            operation.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_nonwindows_does_not_read_registry_consume_paths_or_write(self):
+        def unexpected_paths():
+            raise AssertionError('Windows path inventory was inspected on another OS')
+            yield
+
+        for platform in ('linux', 'darwin'):
+            for probe in (False, True):
+                with self.subTest(platform=platform, probe=probe), \
+                        patch.object(sys, 'platform', platform), \
+                        patch.object(path_check, 'windows_long_paths_enabled') as registry, \
+                        patch.object(Path, 'mkdir') as mkdir, patch.object(Path, 'open') as opened:
+                    path_check.check_windows_source_paths(self.state, unexpected_paths(), probe=probe)
+                registry.assert_not_called()
+                mkdir.assert_not_called()
+                opened.assert_not_called()
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_windows_check_preserves_output_encoding_and_handles_unicode_paths(self):
+        for encoding in ('utf-8', 'gbk', 'cp1252', 'ascii'):
+            for name in ('new-service', '中文 路径', '新实例 \U0001f680'):
+                self.state = self.root / name
+                raw_output, raw_errors = io.BytesIO(), io.BytesIO()
+                with self.subTest(encoding=encoding, path=name), \
+                        io.TextIOWrapper(raw_output, encoding=encoding) as output, \
+                        io.TextIOWrapper(raw_errors, encoding=encoding) as errors:
+                    with patch.object(sys, 'platform', 'win32'), \
+                            patch.object(start, 'check_source_checkout'), \
+                            patch.object(start, 'dependency_report'), \
+                            patch.object(start, 'source_copy_targets', return_value=[self.relative_target(265)]), \
+                            patch.object(path_check, 'windows_long_paths_enabled', return_value=False), \
+                            patch.object(start, 'initialize') as initialize, \
+                            redirect_stdout(output), redirect_stderr(errors):
+                        result = start.main(['--check', '--data-dir', str(self.state)])
+                    output.flush()
+                    errors.flush()
+                    message = raw_output.getvalue().decode(encoding)
+                    self.assertEqual(result, 0)
+                    self.assertIn('read-only', message)
+                    self.assertIn('Windows long-path limits', message)
+                    self.assertIn(str(self.state).encode(encoding, errors='backslashreplace').decode(encoding), message)
+                    if encoding == 'utf-8':
+                        self.assertIn('源文件最长目标路径', message)
+                        self.assertIn(str(self.state), message)
+                    for stream in (output, errors):
+                        self.assertEqual(stream.encoding, encoding)
+                        self.assertEqual(stream.errors, 'backslashreplace')
+                    self.assertEqual(raw_errors.getvalue(), b'')
+                    initialize.assert_not_called()
+                    self.assertFalse(self.state.exists())
+
+    def test_windows_error_diagnostic_remains_readable_in_legacy_encodings(self):
+        self.state = self.root / '中文 路径 \U0001f680'
+        failure = path_check.WindowsPathError(f'长路径不可用 / Long paths unavailable: {self.state}')
+        for encoding in ('utf-8', 'gbk', 'cp1252', 'ascii'):
+            raw_output, raw_errors = io.BytesIO(), io.BytesIO()
+            with self.subTest(encoding=encoding), \
+                    io.TextIOWrapper(raw_output, encoding=encoding) as output, \
+                    io.TextIOWrapper(raw_errors, encoding=encoding) as errors:
+                with patch.object(sys, 'platform', 'win32'), \
+                        patch.object(start, 'check_source_checkout'), patch.object(start, 'dependency_report'), \
+                        patch.object(start, 'source_copy_targets', return_value=()), \
+                        patch.object(start, 'check_windows_source_paths', side_effect=failure), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    result = start.main(['--check', '--data-dir', str(self.state)])
+                errors.flush()
+                message = raw_errors.getvalue().decode(encoding)
+                self.assertEqual(result, 1)
+                self.assertIn('SoduWork could not start', message)
+                self.assertIn(str(failure).encode(encoding, errors='backslashreplace').decode(encoding), message)
+                self.assertEqual(errors.encoding, encoding)
+                self.assertEqual(errors.errors, 'backslashreplace')
+                self.assertFalse(self.state.exists())
+
+    def test_nonwindows_check_preserves_stream_encoding_and_error_policy(self):
+        for platform in ('linux', 'darwin'):
+            with self.subTest(platform=platform), \
+                    io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict') as output, \
+                    io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict') as errors:
+                with patch.object(sys, 'platform', platform), \
+                        patch.object(start, 'check_source_checkout'), patch.object(start, 'dependency_report'), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    self.assertEqual(start.main(['--check', '--data-dir', str(self.state)]), 0)
+                for stream in (output, errors):
+                    self.assertEqual(stream.encoding, 'cp1252')
+                    self.assertEqual(stream.errors, 'strict')
+
+    def test_prepare_checks_paths_before_copy_caches_venv_or_downloads(self):
+        failure = path_check.WindowsPathError('path preflight failed')
+        with patch.object(build, 'check_windows_source_paths', side_effect=failure) as check, \
+                patch.object(build, 'check_dependencies') as dependencies, \
+                patch.object(build, 'prepare_environment') as caches, \
+                patch.object(build, 'sync_source') as sync, \
+                patch.object(build.shutil, 'copyfile') as copy, patch.object(build, 'run') as run:
+            with self.assertRaises(path_check.WindowsPathError) as raised:
+                build.prepare(self.state, self.state / 'startup.log')
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(check.call_args.args[0], self.state)
+        self.assertTrue(check.call_args.kwargs['probe'])
+        for operation in (dependencies, caches, sync, copy, run):
+            operation.assert_not_called()
+        self.assertEqual(list(self.state.iterdir()), [])
+
+    def test_projection_matches_copied_source_and_ignores_missing_or_excluded_files(self):
+        source = self.root / 'checkout'
+        copied = (
+            'hub-backend/app/main.py', 'hub-backend/migrations/versions/0002_example.py',
+            'hub-backend/requirements.txt', 'client/core/model.js', 'skills/example/SKILL.md',
+            'third-party/manifest.json', 'hub-frontend/src/main.jsx', 'hub-frontend/index.html',
+            'LICENSE',
+        )
+        excluded = (
+            'hub-backend/tests/test_unrelated.py', 'client/node_modules/example/index.js',
+            'client/.env', 'client/private.db', 'client/__pycache__/cached.pyc',
+            'hub-frontend/node_modules/vite/index.js',
+        )
+        for name in (*copied, *excluded, 'tools/dev/local_server.py'):
+            file = source / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_bytes(b'public test fixture')
+        with patch.object(build, 'ROOT', source), patch.object(build, 'checkout_files', return_value=None):
+            projected = set(build.source_copy_targets())
+        expected = {Path('application') / name for name in copied}
+        expected.add(Path('application/hub-backend/_soduwork_source_server.py'))
+        self.assertEqual(projected, expected)
+
+    def test_missing_source_keeps_original_copy_error_without_starting_installs(self):
+        source = self.root / 'missing-checkout'
+        source.mkdir()
+        with patch.object(sys, 'platform', 'win32'), patch.object(build, 'ROOT', source), \
+                patch.object(build, 'checkout_files', return_value=None), \
+                patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+                patch.object(build, 'run') as run:
+            with self.assertRaises(FileNotFoundError) as raised:
+                build.prepare(self.state, self.state / 'startup.log')
+        self.assertEqual(Path(raised.exception.filename), source / 'hub-backend' / build.BACKEND_FILES[0])
+        self.assertNotIsInstance(raised.exception, path_check.WindowsPathError)
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -44,13 +44,13 @@ const rows = [
 ]
 const plugins = rows.map(([id, name, description, kind, ready], index) => {
   const version = {
-    manifest: {},
+    manifest: {}, reviewedEvaluations: { passed: 2, total: 3 },
     id: id + '-v1', version: '1.2.0', trustState: ready ? 'approved' : 'quarantined', enabled: ready,
     visibility: 'org', createdAt: 1788314400000, provenance: { signatureState: id === 'contracts' ? 'unknown-key' : 'verified', publisherName: index % 2 ? '产品团队' : 'SoduWork 团队' },
-    capabilities: { hasWorkflow: kind === 'workflow', executionMode: kind === 'workflow' ? 'workflow' : 'direct', skills: kind === 'connector' ? [] : ['frontend-design', 'delivery-check'], mcpServers: kind === 'connector' ? ['hr-service'] : [], runtime: ['files'], agentKinds: ['local:codex'], entrypoints: { conversation: true, task: true, automation: kind === 'workflow' } },
+    capabilities: { permissionSummary: { runtime: ['files'] }, hasWorkflow: kind === 'workflow', executionMode: kind === 'workflow' ? 'workflow' : 'direct', skills: kind === 'connector' ? [] : ['frontend-design', 'delivery-check'], mcpServers: kind === 'connector' ? ['hr-service'] : [], runtime: ['files'], agentKinds: ['local:codex'], entrypoints: { conversation: true, task: true, automation: kind === 'workflow' } },
     workflow: { nodes: kind === 'workflow' ? [{ key: 'understand', name: '明确需求', type: 'ai' }, { key: 'deliver', name: '完成交付', type: 'ai' }, { key: 'verify', name: '检查成果', type: 'ai_review' }] : [] },
   }
-  return { id, key: id, qualifiedKey: 'soduwork/' + id, name, description, orgId: index % 3 ? 'fixture-org' : null, sourceKind: index % 3 ? 'soduwork' : 'builtin', enabled: ready, updatedAt: 1788314400000 - index, latestVersion: version, versions: [version], bindings: [], catalogPolicy: { installation: 'available' } }
+  return { id, activeInstallCount: 7, key: id, qualifiedKey: 'soduwork/' + id, name, description, orgId: index % 3 ? 'fixture-org' : null, sourceKind: index % 3 ? 'soduwork' : 'builtin', enabled: ready, updatedAt: 1788314400000 - index, latestVersion: version, versions: [version], bindings: [], catalogPolicy: { installation: 'available' } }
 })
 plugins.find((item) => item.id === 'contracts').latestVersion.manifest.setup = {
   title: '合同审核的安装偏好', description: '所选插件版本的配置定义。', preferences: [
@@ -184,6 +184,10 @@ try {
   await until(() => all('.plugin-card').length === plugins.length - 1)
   check(!q('.plugin-catalog-hero') && !q('.plugin-governance-overview'), 'directory has no overview or stats hero')
   check(calls.length === 0, 'directory does not fetch invisible detail/evaluation')
+  const evidence = q('.plugin-card-evidence').textContent
+  for (const fact of [tx('本地文件读写'), tx('评测通过：{0}/{1}', [2, 3]), tx('当前安装：{0}', [7])]) {
+    check(evidence.includes(fact), 'catalog shows version evidence before opening details: ' + fact)
+  }
   const catalogWidth = q('.plugin-catalog').getBoundingClientRect().width
   const columns = getComputedStyle(q('.plugin-card-grid')).gridTemplateColumns.split(' ').length
   check(catalogWidth < 900 || columns === (catalogWidth >= 1240 ? 4 : 3), 'catalog columns adapt to the actual container width')

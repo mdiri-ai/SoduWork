@@ -1,7 +1,9 @@
 """Read-only usage APIs for Runner load, tokens, duration, and task accounting. Administrators
 follow visibility scope; clients see only their own tasks.
 """
-from fastapi import APIRouter, Body, Depends, HTTPException
+from typing import Annotated, Literal
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import get_session
@@ -40,7 +42,7 @@ async def report_usage(
 
 @router.get("/usage/me")
 async def my_usage(
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
     client: Client = Depends(current_client),
     session: AsyncSession = Depends(get_session),
 ):
@@ -51,10 +53,13 @@ async def my_usage(
 
 @router.get("/admin/usage/overview")
 async def admin_usage_overview(
-    days: int = 30,
+    days: Annotated[int, Query(ge=1, le=365)] = 30,
     user_id: str = "",
     source: str = "",
     agent: str = "",
+    detail: Literal["all", "anomalous", "unpriced"] = "all",
+    page: Annotated[int, Query(ge=1)] = 1,
+    exclude_anomalies: bool = False,
     user: User = Depends(require_perm("client.view")),
     session: AsyncSession = Depends(get_session),
 ):
@@ -64,7 +69,8 @@ async def admin_usage_overview(
         raise HTTPException(status_code=404, detail="用户不在可见范围")
     return await usage_analytics.consistent_overview(
         session, days=days, user_ids=visible_users, user_id=user_id,
-        source_type=str(source or ""), agent_key=str(agent or ""))
+        source_type=str(source or ""), agent_key=str(agent or ""), detail=detail,
+        page=page, exclude_anomalies=exclude_anomalies)
 
 
 @router.get("/admin/usage/runners")

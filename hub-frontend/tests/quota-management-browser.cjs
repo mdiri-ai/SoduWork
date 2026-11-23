@@ -32,7 +32,11 @@ async function point(code) {
   win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...position })
   await sleep(60)
 }
-const click = text => point(`[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(text)})`)
+async function click(text) {
+  const button = `[...document.querySelectorAll('button')].find(e=>e.textContent.trim()===${JSON.stringify(text)} && !e.disabled)`
+  await waitFor(`!!(${button})`, 'enabled button ' + text)
+  await point(button)
+}
 const findField = label => `[...document.querySelectorAll('.qm-editor label')].find(e=>e.querySelector('span')?.textContent===${JSON.stringify(label)})?.querySelector('input')`
 async function input(code, value) {
   await point(code)
@@ -57,12 +61,45 @@ async function shot(name) {
 const respond = (res, status, data) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)) }
 function readBody(req) { return new Promise(resolve => { let body = ''; req.on('data', part => { body += part }); req.on('end', () => resolve(body ? JSON.parse(body) : {})) }) }
 
+function validAssignmentRevision(body) {
+  const usesCatalog = body.mode === 'inherit' || (body.mode === 'plan' && body.planId !== 'trial')
+  return body.revision === member.assignment.revision && (!usesCatalog || body.catalogRevision === catalog.revision)
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, 'http://localhost')
   if (url.pathname.startsWith('/api/') || url.pathname === '/healthz') {
     requests.push({ method: req.method, path: url.pathname, query: url.search })
     if (url.pathname === '/healthz') return respond(res, 200, { ok: true, version: 'fixture-only' })
     if (url.pathname === '/api/v1/admin/me') return respond(res, 200, user)
+    if (url.pathname === '/api/v1/admin/quotas/plans/preview') {
+      assert.equal(req.method, 'POST')
+      const { revision, plan } = await readBody(req)
+      if (revision !== catalog.revision) return respond(res, 409, { detail: 'Fixture revision conflict' })
+      const previous = catalog.plans.find(row => row.id === plan.id)
+      const assigned = plan.id !== 'trial' && member.assignment.planId === plan.id
+      const used = assigned ? member.quota.used : 0
+      return respond(res, 200, {
+        previousLimit: previous?.totalLimit ?? null, newLimit: plan.totalLimit, affectedMembers: Number(assigned),
+        used, remaining: plan.totalLimit === null ? null : Math.max(0, (assigned || plan.id === 'trial' ? plan.totalLimit : 0) - used),
+        pausedMembers: Number(assigned && plan.totalLimit !== null && used >= plan.totalLimit), scopeLimited: false,
+        models: plan.models.map(row => ({ ...row, used: 0, remaining: row.limit, exceeded: row.limit === 0 })),
+        reason: '', restrictModels: plan.restrictModels, period: plan.period,
+      })
+    }
+    if (url.pathname === '/api/v1/admin/quotas/members/' + member.id + '/preview') {
+      assert.equal(req.method, 'POST')
+      const body = await readBody(req)
+      if (!validAssignmentRevision(body)) return respond(res, 409, { detail: 'Fixture assignment conflict' })
+      const newLimit = body.mode === 'plan' ? catalog.plans.find(row => row.id === body.planId).totalLimit
+        : body.mode === 'custom' ? body.custom.totalLimit : catalog.defaultLimit
+      const used = member.quota.used, paused = newLimit !== null && used >= newLimit
+      return respond(res, 200, {
+        previousLimit: member.quota.totalLimited ? member.quota.limit : null, newLimit, affectedMembers: 1,
+        used, remaining: newLimit === null ? null : Math.max(0, newLimit - used), pausedMembers: Number(paused),
+        scopeLimited: false, models: [], reason: paused ? 'total_exhausted' : '', restrictModels: false, period: member.quota.period,
+      })
+    }
     if (url.pathname === '/api/v1/admin/quotas') {
       if (req.method === 'GET') return respond(res, 200, catalog)
       const body = await readBody(req)
@@ -82,7 +119,7 @@ async function handle(req, res) {
     if (url.pathname === '/api/v1/admin/quotas/members/' + member.id) {
       if (req.method === 'GET') return respond(res, 200, member)
       const body = await readBody(req)
-      if (body.revision !== member.assignment.revision) return respond(res, 409, { detail: 'Fixture assignment conflict' })
+      if (!validAssignmentRevision(body)) return respond(res, 409, { detail: 'Fixture assignment conflict' })
       saves.push(body)
       member = { ...member, assignment: { ...member.assignment, ...body, revision: body.revision + 1 }, quota: { ...member.quota, ...(body.mode === 'custom' ? { limit: body.custom.totalLimit ?? 0, totalLimited: body.custom.totalLimit !== null, models: body.custom.models } : {}) } }
       return respond(res, 200, { ok: true, revision: member.assignment.revision })
@@ -126,6 +163,7 @@ app.whenReady().then(async () => {
   await point('document.querySelector(".nav-item[aria-current=page]")')
   assert.equal(await js('document.querySelectorAll(".qm-plan-card").length'), 3)
   assert.ok(await js('document.querySelector(".qm-trial").textContent.includes("100,000")'))
+  assert.ok(await js('[...document.querySelectorAll(".qm-plan-card")].every(card => card.textContent.includes("总 Token 额度") && card.textContent.includes("模型额度 · 未启用"))'))
   await shot('plans-zh')
   checks.push('Dedicated permission-gated module renders trial, Standard and Pro from one catalog request')
 
@@ -138,10 +176,14 @@ app.whenReady().then(async () => {
   await click('添加模型额度'); await select('[aria-label="模型 2"]', 'Model B · Secondary')
   await input('document.querySelectorAll(".qm-model-row input[type=number]")[1]', '50000')
   await point('document.querySelector(".qm-checkbox input")')
+  await waitFor('document.querySelector(".qm-impact dl")?.textContent.includes("120,000")', 'trial preview for the final draft')
+  assert.ok(await js('document.querySelector(".qm-impact").textContent.includes("现有受影响成员0")'))
+  assert.ok(await js('document.querySelector(".qm-impact").textContent.includes("新用户领取时可用（Tokens）120,000")'))
   await shot('model-allowances')
   await click('保存套餐'); await waitFor('!document.querySelector(".qm-editor")', 'trial saved')
   assert.equal(catalog.plans[0].durationDays, 10); assert.equal(catalog.plans[0].totalLimit, 120000)
   assert.equal(catalog.plans[0].models.length, 2); assert.equal(catalog.plans[0].restrictModels, true)
+  assert.ok(await js('["模型额度 · 已启用 2 项", "70,000", "50,000", "仅限所列模型"].every(label=>document.querySelector(".qm-trial").textContent.includes(label))'))
   checks.push('Trial duration, total cap, two model limits and allowed-model-only mode persist through real controls')
 
   await click('新建套餐'); await input(findField('套餐名称'), 'Research')
@@ -151,6 +193,7 @@ app.whenReady().then(async () => {
 
   await point('document.querySelector(' + JSON.stringify('button[aria-label="编辑套餐：Standard"]') + ')')
   await input(findField('套餐名称'), 'Preserved draft')
+  await waitFor('!document.querySelector(".qm-editor .modal-foot .btn-primary").disabled', 'preview before competing edit')
   catalog = { ...catalog, revision: catalog.revision + 1, plans: catalog.plans.map(plan => plan.id === 'pro' ? { ...plan, name: 'Colleague change' } : plan) }
   await click('保存套餐'); await waitFor('document.body.textContent.includes("保留草稿，载入最新版本")', 'conflict feedback')
   assert.equal(await js(`[...document.querySelectorAll('.qm-editor .modal-foot button')].at(-1).disabled`), true)
@@ -169,13 +212,34 @@ app.whenReady().then(async () => {
   await click('分配额度'); await select('[aria-label="额度规则"]', '使用套餐')
   await point('document.querySelector("[aria-label=选择套餐]")')
   assert.equal(await js(`[...document.querySelectorAll('[role=option]')].some(e=>e.textContent==='Trial')`), false)
-  await point(`[...document.querySelectorAll('[role=option]')].find(e=>e.textContent==='Preserved draft')`)
+  await point(`[...document.querySelectorAll('[role=option]')].find(e=>e.textContent==='Colleague change')`)
+  await waitFor('document.querySelector(".qm-impact dl")?.textContent.includes("5,000,000")', 'selected plan preview')
+  catalog = { ...catalog, revision: catalog.revision + 1, plans: catalog.plans.map(plan => plan.id === 'pro' ? { ...plan, totalLimit: 13160932 } : plan) }
+  await click('保存分配')
+  await click('保留草稿，载入最新版本')
+  await waitFor('document.querySelector(".qm-impact dl")?.textContent.includes("13,160,932")', 'refreshed selected plan preview')
+  assert.equal(member.assignment.planId, 'standard')
+  assert.ok(await js('document.querySelector(".qm-impact").textContent.includes("调整后剩余合计（Tokens）123")'))
+  await click('取消'); await waitFor('!document.querySelector(".qm-editor")', 'cancelled assignment after concurrent catalog change')
+  await click('分配额度')
   await select('[aria-label="额度规则"]', '个人自定义')
+  const beforeMemberSave = saves.length
+  await input('document.querySelector(".qm-total-fields input")', '13160810')
+  await waitFor('!document.querySelector(".qm-editor .modal-foot .btn-primary").disabled', 'updated personal preview')
+  const preview = () => js('[...document.querySelectorAll(".qm-impact dl dd")].map(e => e.textContent)')
+  assert.deepEqual(await preview(), ['1', '1,000,000 → 13,160,810', '13,160,809', '1', '0'])
+  assert.equal(saves.length, beforeMemberSave)
+  await click('取消'); await waitFor('!document.querySelector(".qm-editor")', 'cancelled personal draft')
+  assert.equal(member.assignment.mode, 'plan')
+  await click('分配额度'); await select('[aria-label="额度规则"]', '个人自定义')
   await input('document.querySelector(".qm-total-fields input")', '0')
+  await waitFor('!document.querySelector(".qm-editor .modal-foot .btn-primary").disabled', 'zero pause preview')
+  assert.deepEqual(await preview(), ['1', '1,000,000 → 0', '13,160,809', '0', '1'])
+  assert.equal(saves.length, beforeMemberSave)
   await click('保存分配'); await waitFor('!document.querySelector(".qm-editor")', 'member saved')
   assert.equal(member.assignment.custom.totalLimit, 0); assert.equal(member.quota.used, 13160809)
   await shot('member-allowances')
-  checks.push('Member pagination, exact overage totals, no trial for an old account and an explicit personal zero pause')
+  checks.push('Member pagination, concurrent assigned-plan edits, live draft cap vs retained ledger usage, cancellation and an explicit personal zero pause')
 
   await click('原有账号默认规则'); await click('调整默认额度')
   await select('[aria-label="总额度规则"]', '不限额')

@@ -200,7 +200,8 @@ historyRow(existingSnapshot) {
         collaboration: Boolean((ctx.handle.taskIds || []).length || ctx.handle.taskRef),
         at: ctx.updatedAt, count: (snap.messages || []).length,
         state: ctx.failedLastTurn || ctx.qualityPhase === 'blocked' ? 'failed' :
-          ((ctx.inFlight || ctx.turnQueue.size()) && snap.status !== 'waiting-user' ? 'running' : _presenceState(snap.status)),
+          ((ctx.inFlight || ctx.turnQueue.size()) && snap.status !== 'waiting-user' ? 'running' :
+            require('./turn-outcome').historyState(snap) || _presenceState(snap.status)),
         status: snap.status, live: true,
       };
     },
@@ -319,8 +320,11 @@ disableGoal() {
       ctx._emit({ kind: 'goal-disabled' });
       return { ok: true, snapshot: ctx._snapshot() };
     },
-cancel() {
+cancel(options = {}) {
       if (stopPromise) return stopPromise;
+      if (options.userInitiated === true && !ctx.turnQueue.active()?.options.controlled) {
+        require('./turn-outcome').userStopped(ctx);
+      }
       ctx.resourceActivation.cancel();
       ctx.immediate.cancel();
       ctx.liveAccess.cancel();

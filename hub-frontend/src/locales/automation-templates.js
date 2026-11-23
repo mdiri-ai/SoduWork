@@ -1,4 +1,7 @@
 const rows = [
+  ["使用日报示例", "Use daily report example", "日報サンプルを使用", "일일 보고 예시 사용"],
+  ["汇总今天完成的工作、遇到的阻碍和明天的计划。", "Summarize completed work, blockers and plans for tomorrow.", "今日の成果、課題、明日の予定をまとめてください。", "오늘 완료한 일, 어려웠던 점, 내일 계획을 요약하세요."],
+  ["调度与执行设置", "Schedule and execution settings", "スケジュールと実行設定", "일정 및 실행 설정"],
   ["默认生效日期", "Default effective dates", "既定の有効期間", "기본 유효 기간"],
   ["长期有效", "No date limits", "期間制限なし", "기간 제한 없음"],
   ["开始日期", "Start date", "開始日", "시작일"],

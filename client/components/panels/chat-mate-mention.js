@@ -66,7 +66,14 @@
     if (!context || !context.ref) return [];
     const result = await context.api.outputs(context.ref);
     if (!result || result.ok === false) throw Error('\u65e0\u6cd5\u8bfb\u53d6\u5f53\u524d\u4f1a\u8bdd\u6210\u679c\uff0c\u8bf7\u91cd\u8bd5');
-    let files = (result.artifacts || []).map(file => ({
+    const websiteDirectories = new Set();
+    let files = (result.artifacts || []).filter(file => {
+      if (!websiteOutput(file) || (!file.websiteDirectoryId && !file.relative)) return true;
+      const directory = file.websiteDirectoryId || String(file.relative).replace(/[^/]+$/, '');
+      if (websiteDirectories.has(directory)) return false;
+      websiteDirectories.add(directory);
+      return true;
+    }).map(file => ({
       key: 'local:' + file.artifactId, artifactId: file.artifactId,
       name: file.name, size: file.size, at: file.at, relative: file.relative, kind: file.kind,
     }));
@@ -79,7 +86,8 @@
         const bundled = await context.api.artifactAction(context.ref, website.artifactId, 'share-related');
         if (!bundled || !bundled.ok || typeof bundled.data !== 'string') throw Error(uiText(bundled?.reason || '文件夹打包失败'));
         const parent = String(website.relative || website.name || '').replace(/[^/]+$/, '');
-        files = files.filter(file => file !== website && (!parent || !String(file.relative || '').startsWith(parent)));
+        files = files.filter(file => file !== website &&
+          (websiteOutput(file) || !parent || !String(file.relative || '').startsWith(parent)));
         // Check every website before selecting files, while retaining at most
         // three ZIP payloads. Later selected websites are packaged again at send.
         files.unshift({ key: 'bundle:' + website.artifactId, name: bundled.name, size: bundled.size,

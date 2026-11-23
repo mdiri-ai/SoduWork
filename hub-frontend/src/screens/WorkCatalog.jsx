@@ -313,8 +313,8 @@ function ProfessionEditor({ row, orgId, onClose, onDone }) {
   }
 
   return (
-    <Modal title={row ? tx("编辑职业画像") : tx("新建职业画像")} icon="users" onClose={onClose} wide
-      foot={<><button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button>
+    <Modal draft={{ name, category, description, competencies }} title={row ? tx("编辑职业画像") : tx("新建职业画像")} icon="users" onClose={onClose} wide
+      foot={dismiss => <><button className="btn btn-ghost" onClick={dismiss}>{tx("取消")}</button>
         <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? tx("保存中…") : tx("保存职业")}</button></>}>
       <div className="wc-form-note">{tx("职业画像回答“这个员工长期擅长什么”，不改变他的系统权限。一个员工可以选择多个职业。")}</div>
       <div className="wc-form-two">
@@ -390,9 +390,10 @@ function ScenarioEditor({ row, copy, orgId, professions, workflows, onClose, onD
   }
 
   return (
-    <Modal title={copy ? tx("按企业调整场景") : (editing ? tx("编辑工作场景") : tx("新建工作场景"))}
+    <Modal draft={{ name, category, description, positionIds: [...positionIds].sort(), hints, capabilities,
+        pluginKey, kind, summary, deliverables, acceptance, enabled }} title={copy ? tx("按企业调整场景") : (editing ? tx("编辑工作场景") : tx("新建工作场景"))}
       icon="sitemap" onClose={onClose} wide
-      foot={<><button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button>
+      foot={dismiss => <><button className="btn btn-ghost" onClick={dismiss}>{tx("取消")}</button>
         <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? tx("保存中…") : tx("保存场景")}</button></>}>
       <div className="wc-form-note">{tx("场景描述“一类工作怎样才算交付”。需求创建时会自动匹配，人仍可在确认卡中改选。")}</div>
       <div className="wc-form-two">

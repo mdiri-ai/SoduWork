@@ -55,11 +55,15 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
   const set = (key, next) => onChange({ ...value, [key]: next })
   const toggleCap = (key) => set('requiredCapabilities', value.requiredCapabilities.includes(key)
     ? value.requiredCapabilities.filter((x) => x !== key) : [...value.requiredCapabilities, key])
-  return <Modal wide className="at-dialog" icon="activity" title={value.updatedAt ? tx("编辑自动化模板") : tx("新建自动化模板")} onClose={onCancel}
-    foot={<><label className="at-enabled modal-foot-note"><input type="checkbox" checked={value.enabled} onChange={(e) => set('enabled', e.target.checked)} />{tx("发布给员工使用")}</label>
-      <button type="button" className="btn btn-ghost" onClick={onCancel}>{tx("取消")}</button><button type="submit" form={formId} className="btn btn-primary" disabled={busy || conflict}>{busy ? tx("保存中…") : tx("保存模板")}</button></>}>
+  return <Modal draft={{ ...value, requiredCapabilities: [...value.requiredCapabilities].sort() }} wide className="at-dialog" icon="activity" title={value.updatedAt ? tx("编辑自动化模板") : tx("新建自动化模板")} onClose={onCancel}
+    foot={dismiss => <><label className="at-enabled modal-foot-note"><input type="checkbox" checked={value.enabled} onChange={(e) => set('enabled', e.target.checked)} />{tx("发布给员工使用")}</label>
+      <button type="button" className="btn btn-ghost" onClick={dismiss}>{tx("取消")}</button><button type="submit" form={formId} className="btn btn-primary" disabled={busy || conflict}>{busy ? tx("保存中…") : tx("保存模板")}</button></>}>
     {conflict && <div role="alert"><p>{tx("模板已被其他管理员修改。草稿已保留，请加载最新目录并核对后再保存。")}</p><button type="button" className="btn btn-ghost" onClick={onReload}>{tx("加载最新目录，保留草稿")}</button></div>}
-    <form id={formId} className="at-editor" onInvalidCapture={() => setTouched({ id: true, name: true, startDate: true, endDate: true })}
+    <form id={formId} className="at-editor" onInvalidCapture={event => {
+      const section = event.target.closest?.('details')
+      if (section) section.open = true
+      setTouched({ id: true, name: true, startDate: true, endDate: true })
+    }}
       onSubmit={(event) => {
         event.preventDefault()
         if (Object.keys(errors).length) {
@@ -69,6 +73,9 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
         }
         onSave()
       }}>
+    {!value.updatedAt && !value.id && !value.name && !value.note && <button type="button" className="btn btn-ghost"
+      onClick={() => onChange({ ...value, id: 'daily-report', name: tx("团队日报"), note: tx("汇总今天完成的工作、遇到的阻碍和明天的计划。") })}>
+      {tx("使用日报示例")}</button>}
     <div className="at-editor-grid">
       <label><span>{tx("模板标识")}</span><input ref={idRef} name="id" required value={value.id}
         disabled={Boolean(value.updatedAt)} onChange={(e) => { set('id', e.target.value); touch('id') }} onBlur={() => touch('id')}
@@ -96,6 +103,7 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
         { key: 'descriptionLocales', label: tx("一句话说明"), maxLength: 240, wide: true },
         { key: 'noteLocales', label: tx("交给 AI 的工作说明"), maxLength: 8000, textarea: true, rows: 3 },
       ]} />
+    <details className="loc-block"><summary>{tx("调度与执行设置")}</summary>
     <div className="at-section"><b>{tx("默认节奏")}</b><div className="at-rhythm">
       {Object.entries(rhythm).map(([key, label]) => <button type="button" key={key}
         className={value.every === key ? 'on' : ''} onClick={() => set('every', key)}>{label}</button>)}
@@ -130,6 +138,7 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
       <label><span>{tx("失败重试")}</span><input className="small" type="number" min="0" max="10" value={value.retryLimit} onChange={(e) => set('retryLimit', Number(e.target.value))} />{tx(" 次")}</label>
       <label><span>{tx("间隔")}</span><input className="small" type="number" min="1" max="1440" value={value.retryDelayMinutes} onChange={(e) => set('retryDelayMinutes', Number(e.target.value))} />{tx(" 分钟")}</label>
     </div></div>
+    </details>
     </form>
   </Modal>
 }

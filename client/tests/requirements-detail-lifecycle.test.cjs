@@ -70,6 +70,46 @@ function fixture(overrides = {}) {
     content: () => active().querySelector('.rq-detail-content')};
 }
 
+test('notification detail loads pending approvals without requiring the board to have opened', async () => {
+ const f=fixture({getTask:async id=>({...task(id),status:'doing',canReview:true})});
+ let loaded=false;
+ f.context.TaskApprovalInbox={refresh:async()=>{loaded=true;}};
+ f.context.RequirementsBoard.context=()=>({approvals:new Map(loaded ? [['a',
+  {id:'review-a',taskId:'a',action:'review',status:'pending'}]] : [])});
+ f.context.TaskTraceApproval={html:rows=>'current-review:'+rows[0].id,bind(){}};
+ await f.api.open('a');
+ assert.equal(loaded,true);
+ assert.match(f.content().innerHTML,/current-review:review-a/);
+});
+
+test('closing a notification drawer while approvals load prevents late resurrection', async () => {
+ const f=fixture(), pending=deferred();
+ f.context.TaskApprovalInbox={refresh:()=>pending.promise};
+ const opening=f.api.open('a');
+ f.api.close(true);
+ pending.resolve();await opening;
+ assert.equal(f.active(),undefined);
+});
+
+test('notification approval read failure remains visible alongside requirement facts', async () => {
+ const f=fixture();
+ f.context.TaskApprovalInbox={refresh:async()=>{throw Error('offline');}};
+ await f.api.open('a');
+ assert.match(f.content().innerHTML,/Requirement a/);
+ assert.match(f.active().querySelector('[data-rq-error]').textContent,/验收状态暂时无法读取/);
+});
+
+test('the existing task-update bridge refreshes a notification drawer without changing its approval id', async () => {
+ let value={...task('a'),status:'doing'};
+ const f=fixture({getTask:async()=>value});
+ await f.api.open('a');
+ value={...value,workRouting:{executionSubmissionMode:'manual',conversationTurn:{state:'completed'}}};
+ f.context.document.querySelector=()=>f.active();
+ vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../components/panels/panels-detail.js'),'utf8'),f.context);
+ await f.context.refreshOpenDetail('a');
+ assert.match(f.content().innerHTML,/待提交验收/);
+});
+
 test('acceptance summary export uses the displayed requirement version and reports native results beside its action', async () => {
   const f = fixture({ getTask: async id => ({ ...task(id), requirementVersion: 4 }) });
   const pending = deferred(), calls = [];
@@ -90,6 +130,18 @@ test('acceptance summary cannot be exported from a requirement-only view', async
   await f.api.open('restricted');
   assert.doesNotMatch(f.content().innerHTML, /data-rq-export-summary/);
   f.click('[data-rq-export-summary]');
+});
+
+test('an assigned review-only reader sees the pending approval without requesting execution materials', async () => {
+  let materialReads = 0;
+  const f = fixture({getTask:async id=>({...task(id),status:'doing',requirementStage:'reviewing',canViewExecution:false,canReview:true}),
+    listAttachments:async()=>{materialReads++;return [];}});
+  f.context.RequirementsBoard.context=()=>({approvals:new Map([['restricted',{id:'gate',action:'review',status:'pending'}]])});
+  f.context.TaskTraceApproval={html:rows=>'Assigned approval '+rows[0].id, bind(){}};
+  await f.api.open('restricted');
+  assert.match(f.content().innerHTML, /Assigned approval gate/);
+  assert.doesNotMatch(f.content().innerHTML, /rq-detail-materials|data-rq-execution|data-rq-export-summary/);
+  assert.equal(materialReads, 0);
 });
 
 test('summary export pins the visible approval and suppresses receipts after a same-task version refresh', async () => {
@@ -298,6 +350,27 @@ function submitReviewClick(f, button = {disabled: false, isConnected: true}) {
     selector.split(',').includes('[data-rq-submit-review]') ? button : null}});
   return button;
 }
+
+test('review preflight names the recipient and blocks submission until Hub finds one', async () => {
+  let submits = 0;
+  const row = {...task('unassigned'), status:'doing', canSubmitReview:true,
+    reviewSubmission:{ok:false, candidates:[], reason:'创建人 <Ada> 已停用，请联系管理员。', canAssign:false}};
+  const f = fixture({getTask:async()=>row, submitTaskReview:async()=>{submits++; return {ok:true};}});
+  await f.api.open(row.id);
+  assert.match(f.content().innerHTML, /创建人 &lt;Ada&gt; 已停用/);
+  assert.doesNotMatch(f.content().innerHTML, /data-rq-review-picker/);
+  assert.match(f.active().querySelector('.rq-detail-footer').innerHTML, /data-rq-submit-review[^>]*disabled/);
+  submitReviewClick(f);
+  await new Promise(setImmediate);
+  assert.equal(submits, 0);
+  row.reviewSubmission = {ok:true, candidates:[{userId:'bob', userName:'<Bob>'}], reason:'', canAssign:true};
+  await f.api.refresh(row.id);
+  assert.match(f.content().innerHTML, /&lt;Bob&gt;/);
+  assert.match(f.content().innerHTML, /data-rq-review-picker/);
+  submitReviewClick(f);
+  await new Promise(setImmediate);
+  assert.equal(submits, 1);
+});
 
 for (const already of [false, true]) test(`manual review ${already ? 'retry receipt' : 'success'} closes its drawer before board refresh`, async () => {
   const receipt = deferred(), refreshed = deferred(), submissions = [], reads = [];
@@ -1561,4 +1634,15 @@ test('automatic bundle library actions use the same pinned files without deletin
   f.click('[data-rq-bundle-library]',{rqBundleIds:'["old"]'});
   await new Promise(setImmediate);
   assert.equal(saved.length,1);
+});
+
+test('the automatic ZIP download is available without inflating the file count', async () => {
+  const f = fixture({listAttachments: async () => ['a.csv', 'b.md', 'check.py'].map(filename => ({
+    id: filename, filename, role: 'output', sourceRef: 'conversation:current',
+  }))});
+  await f.api.open('file-count');
+  const html = f.active().querySelector('#rqAttachments').innerHTML;
+  assert.match(html, /交付物 · 3 份/);
+  assert.match(html, /data-rq-bundle-download/);
+  assert.match(html, /data-rq-download="check\.py"/);
 });

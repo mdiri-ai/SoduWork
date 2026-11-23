@@ -600,8 +600,8 @@ function BulkImportModal({ data, busy, onClose, onConfirm }) {
   const [rightsConfirmed, setRightsConfirmed] = useState(false)
   const files = data.files || []
   const result = data.result
-  return <Modal scope="plugin-page" title={tx("批量导入插件包")} icon="box" onClose={onClose} foot={<>
-    <button className="btn btn-ghost" onClick={onClose}>{result ? tx("关闭") : tx("取消")}</button>
+  return <Modal draft={result ? undefined : { sourceLabel, rightsConfirmed }} scope="plugin-page" title={tx("批量导入插件包")} icon="box" onClose={onClose} foot={dismiss => <>
+    <button className="btn btn-ghost" onClick={dismiss}>{result ? tx("关闭") : tx("取消")}</button>
     {!result && <button className="btn btn-primary" disabled={busy || !files.length}
       onClick={() => onConfirm({ sourceLabel, rightsConfirmed })}>
       {busy ? tx("正在校验并导入…") : tx("提交 {0} 个包审核", [files.length])}

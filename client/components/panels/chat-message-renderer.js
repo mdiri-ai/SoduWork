@@ -538,8 +538,8 @@
     // Length truncation resumes within the same send; suppress premature error banners while execution is still active.
     const quotaBlocked = Boolean(global.SoduWorkQuota?.detail(ctx._snap));
     const outputIncomplete = st === 'incomplete' && !execution.running && !quotaBlocked;
-    const failed = !quotaBlocked && (st === 'unreachable' || st === 'no-output' || outputIncomplete ||
-      budgetStopped || quality.phase === 'blocked');
+    const runtimeFailed = st === 'failed' || st === 'unreachable' || st === 'no-output' || outputIncomplete;
+    const failed = !quotaBlocked && (runtimeFailed || budgetStopped || quality.phase === 'blocked');
     const finalReplies = _finalReplyIndexes(allMessages, allTools, !ctx._pending && !execution.running && !qualityBusy && !paused && !failed &&
       !ctx._snap.pendingUi && (!st || st === 'idle'));
     // Before the new user message is echoed, the previous completed answer
@@ -551,6 +551,14 @@
         if (match && allMessages[Number(match[1])]?.role === 'assistant' &&
             node.dataset.messageOwner === _messageOwner(Number(match[1]))) finalReplies.add(Number(match[1]));
       });
+    }
+    // A terminal marker belongs to its original turn even after a later reply.
+    // Partial output must not become a completed delivery when history reopens.
+    for (const index of finalReplies) {
+      const absolute = ctx._snap.history?.messageIndices?.[index] ??
+        ((Number(ctx._snap.history?.messageStart) || 0) + index);
+      if ((ctx._snap.turnMetrics || []).some(row => row.outcome &&
+          absolute >= row.fromMessage && absolute <= row.toMessage)) finalReplies.delete(index);
     }
     const summaryTurns = turnSummary?.prepare(ctx._snap, finalReplies) || new Map();
     const shownSummaries = new Set();
@@ -816,9 +824,10 @@
         '。请新建会话并开启对应能力后再使用这个插件' : '';
     const sessionOpenFailure = !ctx._ref && Boolean(ctx._sessionId) &&
       Boolean(ctx._snap?.openBlocked || ctx._snap?.sessionOpenCode || ctx._snap?.sessionNotFound);
-    const runtimeNotice = budgetStopped ? execution.reason : (pluginStatus || ctx._snap.statusText || '');
+    const runtimeNotice = budgetStopped ? execution.reason : (pluginStatus || ctx._snap.statusText ||
+      (runtimeFailed ? execution.reason || '本轮执行失败，请检查工作目录和执行底座后重试。' : ''));
     parts.push('<div data-chat-node="runtime-error" class="nbad' +
-      (!quotaBlocked && (st === 'unreachable' || st === 'no-output' || outputIncomplete || budgetStopped) ? ' show' : '') + '">' +
+      (!quotaBlocked && (runtimeFailed || budgetStopped) ? ' show' : '') + '">' +
       '<span class="nbad-copy" translate="no" data-runtime-notice="' + ctx.esc(runtimeNotice || '') + '">' +
       ctx.esc((global.ChatStatus?.notice || uiText)(runtimeNotice)) + '</span>' +
       (sessionOpenFailure ?

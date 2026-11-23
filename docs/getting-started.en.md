@@ -113,7 +113,9 @@ To check prerequisites without installing anything:
 .\start.cmd --check --desktop
 ```
 
-After the check passes, run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+`--check` is read-only: it reports prerequisites and path risks without creating test files. Passing it does not guarantee that every installation step will succeed. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+
+Path diagnostics use Chinese and English. Redirected output keeps its current encoding; characters it cannot represent are escaped so they do not interrupt startup, while the English guidance remains readable.
 
 `sh start.sh --desktop` in Git Bash is not inherently invalid, but it finds Python through `PATH`, unlike the Windows entry point. When the Python launcher `py` is available, `start.cmd` first tries Python 3.12, then `py -3`; it uses `python` from `PATH` only when `py` is absent. Having a supported version such as Python 3.13 installed does not mean both terminals select the same interpreter.
 
@@ -123,6 +125,10 @@ If Python is missing or too old, check `python --version` in the original termin
 & 'C:\Path\To\Python\python.exe' .\start.py --check --desktop
 & 'C:\Path\To\Python\python.exe' .\start.py --desktop
 ```
+
+Microsoft Store Python is a valid interpreter. Windows may redirect its data directory to a deeper physical path. When long paths are needed, startup tests actual file operations before copying source, creating the virtual environment, or installing dependencies. The Windows legacy 260-character path limit does not apply to macOS or Linux.
+
+If startup reports that long paths are unavailable, enable **Win32 long paths** in Windows and reopen the launcher so it uses a new process. The launcher does not change this system setting. Keep existing data in its original directory. A short `--data-dir` is an option for a **new, separate instance**; it does not migrate existing accounts or data.
 
 ### macOS launcher permissions
 
@@ -143,7 +149,7 @@ Hidden input is normal: no characters or asterisks appear. Press Enter when done
 
 An uninitialized instance needs an administrator password. By default, Python must recognize standard input as an interactive terminal (TTY). A visible Git Bash window does not guarantee that native Windows Python recognizes it as a TTY; pipes, redirection, or some integrated terminals can also trigger this check. This is different from hidden password input.
 
-First try the Windows entry point from the source directory in an interactive native PowerShell or CMD window, without a pipe or input redirection. For automation or intentional non-interactive input, explicitly add `--password-stdin` and supply the initial password through protected standard input. This flag does not generate a password or reset an existing one. Do not put passwords in command arguments, scripts, or logs. Keep the existing data directory; deleting the database is unnecessary.
+First try the Windows entry point from the source directory in an interactive native PowerShell or CMD window, without a pipe or input redirection. For automation or intentional non-interactive input, explicitly add `--password-stdin` and supply the initial password through protected standard input. This flag does not generate a password or reset an existing one. Do not put passwords in command arguments, scripts, or logs. Keep the existing data directory; deleting the database is unnecessary. For initial setup where dependency downloads take several minutes, automation scripts should preferably run `--prepare-only` first, then start with `--password-stdin` using the same data directory and desktop options to prevent piped input from timing out during downloads.
 
 ### Downloads are slow or setup fails
 
@@ -194,6 +200,8 @@ sh start.sh --desktop
 When `HTTP_PROXY` or `HTTPS_PROXY` is present, the launcher automatically enables `ELECTRON_GET_USE_PROXY` for the Electron install subprocess. An existing explicit setting is preserved; `0`, `false`, `no`, `off`, or an empty value disables automatic proxy activation for Electron. Node download scripts read the proxy settings and `NO_PROXY` per request and work with the required Node.js 22.19+ without raising the minimum version. `ELECTRON_GET_USE_PROXY` controls Electron only, not PortableGit downloads.
 
 #### Windows PortableGit mirrors and offline archives
+
+A slow first download can take more than five minutes. Each additional 64 KiB of the expected archive renews the five-minute timeout. If the server sends no data for 60 seconds, the transfer times out. You can check the byte count in `startup.log`.
 
 PortableGit downloads from the official Git for Windows release by default. To use a mirror, set `SODUWORK_PORTABLE_GIT_MIRROR` to its root URL. It must serve `<mirrorRoot>/v2.55.0.windows.4/<original-official-filename>`. The x64 filename is `PortableGit-2.55.0.4-64-bit.7z.exe`; arm64 uses `PortableGit-2.55.0.4-arm64.7z.exe`. Confirm that your mirror provides the pinned version and target architecture; no default PortableGit mirror is configured.
 

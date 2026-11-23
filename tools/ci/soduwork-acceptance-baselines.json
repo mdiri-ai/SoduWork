@@ -1,46 +1,45 @@
 {
   "windows-x64-exe": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "62a6e55f25cab4e53fdebd1d87cc89ab83d9601690a60352d0471e1779058123",
-    "size": 397999309,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-Setup.exe"
+    "version": "1.13.18",
+    "sha256": "54e0b4ea80a96e7a7d74d9e75a449460a7a72c9d214ea2118d720da338a96e2f",
+    "size": 398106022,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-Setup.exe"
   },
   "linux-x64-deb": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "29f8f4761d24733d23e6041e8941cf033e65cd73c1c35fcfb882a5d1b3e75761",
-    "size": 242831428,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-linux.deb"
+    "version": "1.13.18",
+    "sha256": "000456d7e047ae7676de34840fb7a19df999a7c1e8a34c2dd9c450fd5d72e65b",
+    "size": 243168512,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-linux.deb"
   },
   "linux-x64-rpm": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "c05c13dbaa20207d6d0164ae901f266dba8dae14be4f2fa2b83f80995adb1ac3",
-    "size": 216887177,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-linux.rpm",
-    "rpmSignature": "legacy-unsigned"
+    "version": "1.13.18",
+    "sha256": "c066acb9918c1fb8f267858cd25402291501ad0146bf7ddade4efb23abbf1850",
+    "size": 217219905,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-linux.rpm"
   },
   "linux-x64-tar.gz": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "e460a9d6bcecddff6f7cf23523babad0869a9be7c961b6458384dbc81431fb31",
-    "size": 297709418,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-linux.tar.gz"
+    "version": "1.13.18",
+    "sha256": "9886759fd57c24f2783ae159fc4b3069e263a67118cd25a44d234c5c322bbcc9",
+    "size": 297992112,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-linux.tar.gz"
   },
   "macos-arm64-dmg": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "004a4bf62c063d4e1bc8a116e3389c0172a09644f56a4cd06de6544c2c4875f1",
-    "size": 303352836,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-mac-arm64.dmg"
+    "version": "1.13.18",
+    "sha256": "fabfc9d20e77a4abef031081db8a47a4fc5a8013fa3b82b083e9b58b20d4268f",
+    "size": 303332401,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-mac-arm64.dmg"
   },
   "macos-x64-dmg": {
     "productName": "SoduWork",
-    "version": "1.13.17",
-    "sha256": "74e549191e535d96a312bcd646e7ac306cfc7e1e06287b12bf2a4563b7afca9d",
-    "size": 308277035,
-    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.17/SoduWork-1.13.17-mac-x64.dmg"
+    "version": "1.13.18",
+    "sha256": "bb4158c5a31ae8348896fc368e49a45edbcd11ecfd09218ec9db2b9a6c6e8b14",
+    "size": 308449624,
+    "url": "https://github.com/mdiri-ai/SoduWork/releases/download/v1.13.18/SoduWork-1.13.18-mac-x64.dmg"
   },
   "firstRelease": {
     "version": "1.13.15",

@@ -27,7 +27,7 @@ export default function QuotaAllowanceFields({ value, onChange, choices, trial =
   const updateModel = (index, next) => onChange({ ...value, models: value.models.map((row, i) => i === index ? { ...row, ...next } : row) })
   return <div className="qm-allowance-fields">
     <TotalLimitField value={value.totalLimit} trial={trial} onChange={totalLimit => onChange({ ...value, totalLimit })} />
-    <p className="qm-help">{tx('所有设备合并计量；总额度与模型额度同时生效，0 表示暂停使用。')}</p>
+    <p className="qm-help">{tx('所有设备合并计量。总额度为 0 会暂停所有模型，单个模型的额度为 0 会暂停该模型。')}</p>
     <div className="qm-model-heading"><h3>{tx('按模型设置额度')}</h3>
       <button type="button" className="btn btn-ghost" disabled={value.models.length >= 100 || !choices.length}
         onClick={() => onChange({ ...value, models: [...value.models, { provider: '', model: '', limit: '' }] })}><Icon name="plus" />{tx('添加模型额度')}</button>

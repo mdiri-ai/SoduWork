@@ -1,5 +1,5 @@
 import { translateText as tx, localeMap, useLocale } from '../i18n.js'
-import React, { useMemo, useState } from 'react'
+import React, { useState } from 'react'
 import { api } from '../api.js'
 import { Icon, Loading, Modal, Confirm, toast, useAsync, SelectMenu } from '../ui.jsx'
 import { useViewportHeight } from '../viewport-height.js'
@@ -8,7 +8,7 @@ import './identity-center.css'
 
 const defaults = () => ({
   key: 'company-oidc', name: '企业统一登录', issuer: '', clientId: '', clientSecretEnv: '',
-  redirectUri: `${window.location.origin}/api/v1/auth/oidc/company-oidc/callback`,
+  redirectUri: '',
   scopes: ['openid', 'profile', 'email'], claimMapping: { username: 'preferred_username', displayName: 'name', email: 'email' },
   allowedDomains: [], jitEnabled: false, defaultOrgId: '', defaultRoleId: '', enabled: false,
 })
@@ -108,12 +108,23 @@ function ProviderEditor({ value, orgs, roles, onClose, onDone }) {
     claimMapping: { ...defaults().claimMapping, ...(value.claimMapping || {}) } })
   const [busy, setBusy] = useState(false)
   const set = (key, val) => setForm((old) => ({ ...old, [key]: val }))
-  const callbackHint = useMemo(() => `${window.location.origin}/api/v1/auth/oidc/${form.key || 'company-oidc'}/callback`, [form.key, uiLocale])
+  const [preset, setPreset] = useState('custom')
+  const callbackHint = `${window.location.origin}/api/v1/auth/oidc/${encodeURIComponent(form.key || 'company-oidc')}/callback`
+  const issuerExamples = { custom: 'https://login.company.com/realms/staff',
+    google: 'https://accounts.google.com', keycloak: 'https://sso.example.com/realms/staff',
+    entra: 'https://login.microsoftonline.com/{tenant-id}/v2.0' }
+
+  function selectPreset(key) {
+    setPreset(key)
+    setForm(old => ({ ...old, issuer: key === 'google' ? issuerExamples.google : '',
+      scopes: ['openid', 'profile', 'email'], claimMapping: { ...defaults().claimMapping,
+        username: key === 'google' ? 'email' : 'preferred_username' } }))
+  }
 
   async function submit() {
     setBusy(true)
     try {
-      const body = { ...form, enabled: false,
+      const body = { ...form, enabled: false, redirectUri: form.redirectUri.trim() || callbackHint,
         scopes: Array.isArray(form.scopes) ? form.scopes : String(form.scopes).split(/[\s,]+/).filter(Boolean),
         allowedDomains: Array.isArray(form.allowedDomains) ? form.allowedDomains : String(form.allowedDomains).split(/[\s,]+/).filter(Boolean) }
       const saved = original ? await api.updateIdentityProvider(original.id, body) : await api.createIdentityProvider(body)
@@ -124,17 +135,26 @@ function ProviderEditor({ value, orgs, roles, onClose, onDone }) {
     setBusy(false)
   }
 
-  return <Modal title={original ? tx("配置企业身份源") : tx("接入企业身份源")} icon="key" wide onClose={onClose}
-    foot={<><button className="btn btn-ghost" onClick={onClose}>{tx("取消")}</button><button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? tx("正在保存并测试…") : tx("保存并测试")}</button></>}>
+  return <Modal draft={form} title={original ? tx("配置企业身份源") : tx("接入企业身份源")} icon="key" wide onClose={onClose}
+    foot={dismiss => <><button className="btn btn-ghost" onClick={dismiss}>{tx("取消")}</button><button className="btn btn-primary" disabled={busy} onClick={submit}>{busy ? tx("正在保存并测试…") : tx("保存并测试")}</button></>}>
     <div className="idp-form">
       <div className="idp-form-note"><Icon name="shield" /><p><b>{tx("这里不填写密钥明文。")}</b>{tx("机密客户端只填 Hub 上的环境变量名；SoduWork 测试时会验证变量是否存在。")}</p></div>
+      <ol>
+        <li>{tx("在身份平台创建 Web 应用，登记下方回调地址。")}</li>
+        <li>{tx("填写该应用的 Issuer 和 Client ID，保存并测试后再启用。")}</li>
+      </ol>
       <div className="idp-form-grid">
+        {!original && <label className="wide"><span>{tx("身份平台模板")}</span>
+          <SelectMenu value={preset} onChange={event => selectPreset(event.target.value)}>
+            <option value="custom">{tx("自定义")}</option><option value="google">Google</option>
+            <option value="entra">Microsoft Entra ID</option><option value="keycloak">Keycloak</option>
+          </SelectMenu></label>}
         <label><span>{tx("显示名称")}</span><input className="f-in" value={form.name} onChange={(e) => set('name', e.target.value)} placeholder={tx("公司统一登录")} /></label>
         <label><span>{tx("稳定标识")}</span><input className="f-in" value={form.key} disabled={!!original} onChange={(e) => set('key', e.target.value.toLowerCase())} placeholder="company-oidc" /></label>
-        <label className="wide"><span>Issuer</span><input className="f-in" value={form.issuer} onChange={(e) => set('issuer', e.target.value)} placeholder="https://login.company.com/realms/staff" /></label>
+        <label className="wide"><span>Issuer</span><input className="f-in" value={form.issuer} onChange={(e) => set('issuer', e.target.value)} placeholder={issuerExamples[preset]} /></label>
         <label><span>Client ID</span><input className="f-in" value={form.clientId} onChange={(e) => set('clientId', e.target.value)} placeholder="soduwork-console" /></label>
         <label><span>{tx("Client Secret 环境变量 ")}<small>{tx("公开客户端可留空")}</small></span><input className="f-in" value={form.clientSecretEnv} onChange={(e) => set('clientSecretEnv', e.target.value)} placeholder="SODUWORK_OIDC_CLIENT_SECRET" /></label>
-        <label className="wide"><span>{tx("回调地址")}</span><input className="f-in" value={form.redirectUri} onChange={(e) => set('redirectUri', e.target.value)} placeholder={callbackHint} /><small className="idp-field-help">{tx("身份平台中登记的地址必须与这里完全一致。建议：")}{callbackHint}</small></label>
+        <label className="wide"><span>{tx("回调地址")}</span><input className="f-in" value={form.redirectUri} onChange={(e) => set('redirectUri', e.target.value)} placeholder={callbackHint} /><small className="idp-field-help">{tx("身份平台中登记的地址必须与这里完全一致。建议：")}{form.redirectUri || callbackHint}</small></label>
         <label><span>{tx("允许的邮箱域 ")}<small>{tx("逗号分隔；空为不限制")}</small></span><input className="f-in" value={(form.allowedDomains || []).join ? form.allowedDomains.join(', ') : form.allowedDomains} onChange={(e) => set('allowedDomains', e.target.value)} placeholder="company.com" /></label>
         <label><span>Scopes</span><input className="f-in" value={(form.scopes || []).join ? form.scopes.join(' ') : form.scopes} onChange={(e) => set('scopes', e.target.value)} /></label>
       </div>

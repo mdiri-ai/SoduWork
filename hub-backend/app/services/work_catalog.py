@@ -44,6 +44,7 @@ PROFILE_DEFINITIONS = [
      "description": "处理文档、表格、汇报、会议和日常协同工作。",
      "competencies": ["文档处理", "表格分析", "汇报材料", "协作跟进"]},
 ]
+PROFILE_CATEGORIES = frozenset(item["category"] for item in PROFILE_DEFINITIONS)
 
 
 SCENARIO_DEFINITIONS = [
@@ -493,9 +494,14 @@ async def save_profession(
     """Save a professional profile without granting platform permissions."""
     from uuid import uuid4
 
-    name = str(body.get("name", current.name if current else "") or "").strip()[:48]
+    raw_name = body.get("name", current.name if current else "")
+    if raw_name is not None and not isinstance(raw_name, str):
+        raise ValueError("职位名称必须是字符串")
+    name = (raw_name or "").strip()
     if not name:
         raise ValueError("请填写职业名称")
+    if len(name) > 48:
+        raise ValueError("职位名称不能超过 48 个字符")
     query = select(models.Position).where(
         models.Position.org_id.is_(None) if org_id is None
         else models.Position.org_id == org_id,
@@ -507,15 +513,25 @@ async def save_profession(
     row = current or models.Position(
         id="pos_" + uuid4().hex[:12], org_id=org_id, is_system=False)
     row.name = name
-    row.category = str(body.get(
-        "category", current.category if current else "") or "").strip()[:40]
+    raw_category = body.get("category", current.category if current else "")
+    if raw_category is not None and not isinstance(raw_category, str):
+        raise ValueError("职位类别必须是字符串")
+    category = (raw_category or "").strip()[:40]
+    if not category:
+        category = "经营与协作"
+    if category not in PROFILE_CATEGORIES:
+        raise ValueError("职位类别不受支持")
+    row.category = category
     row.description = str(body.get(
         "description", current.description if current else "") or "").strip()[:400]
     row.competencies = _items(
         body.get("competencies", current.competencies if current else []),
         limit=30, length=80)
-    row.sort = max(0, min(int(body.get(
-        "sort", current.sort if current else 0) or 0), 9999))
+    try:
+        sort = int(body.get("sort", current.sort if current else 0) or 0)
+    except (TypeError, ValueError):
+        raise ValueError("排序必须是整数") from None
+    row.sort = max(0, min(sort, 9999))
     if current is None:
         session.add(row)
     await session.commit()
@@ -540,18 +556,18 @@ async def delete_profession(session: AsyncSession, row: models.Position) -> str:
     return ""
 
 
-async def validate_profession_ids(
-    session: AsyncSession, org_id: str | None, value
-) -> list[str]:
-    """Normalize profile IDs and reject references outside the current organization inheritance
-    scope.
-    """
+def check_profession_ids(value, visible_positions: set[str]) -> list[str]:
     position_ids = _items(value, limit=100, length=36)
-    visible_positions = {
-        row.id for row in await profession_rows(session, org_id)}
     if any(item not in visible_positions for item in position_ids):
         raise ValueError("职业画像不属于当前员工所在组织")
     return position_ids
+
+
+async def validate_profession_ids(
+    session: AsyncSession, org_id: str | None, value
+) -> list[str]:
+    visible_positions = {row.id for row in await profession_rows(session, org_id)}
+    return check_profession_ids(value, visible_positions)
 
 
 async def validate_scenario(
@@ -561,7 +577,10 @@ async def validate_scenario(
     key = str((current.key if current else body.get("key")) or "").strip().lower()
     if not _KEY_RE.fullmatch(key):
         raise ValueError("场景标识只用小写字母、数字和短横线，且以字母开头")
-    name = str(body.get("name", current.name if current else "") or "").strip()[:100]
+    raw_name = body.get("name", current.name if current else "")
+    if raw_name is not None and not isinstance(raw_name, str):
+        raise ValueError("场景名称必须是字符串")
+    name = (raw_name or "").strip()[:100]
     if not name:
         raise ValueError("请填写工作场景名称")
     enabled = bool(body.get("enabled", current.enabled if current else True))
@@ -596,9 +615,19 @@ async def validate_scenario(
             raise ValueError("默认工作流不存在，请先导入对应插件")
         if enabled and not plugin.enabled:
             raise ValueError("默认工作流尚未启用，请先启用或清空默认工作流")
+    try:
+        sort = int(body.get("sort", current.sort if current else 0) or 0)
+    except (TypeError, ValueError):
+        raise ValueError("排序必须是整数") from None
+    raw_category = body.get("category", current.category if current else "")
+    if raw_category is not None and not isinstance(raw_category, str):
+        raise ValueError("场景类别必须是字符串")
+    category = (raw_category or "").strip()[:40]
+    if category and category not in PROFILE_CATEGORIES:
+        raise ValueError("场景类别不受支持")
     return {
         "key": key, "name": name,
-        "category": str(body.get("category", current.category if current else "") or "").strip()[:40],
+        "category": category,
         "description": str(body.get(
             "description", current.description if current else "") or "").strip()[:500],
         "position_ids": position_ids,
@@ -607,8 +636,7 @@ async def validate_scenario(
         "default_plugin_key": plugin_key,
         "output_contract": contract,
         "enabled": enabled,
-        "sort": max(0, min(int(body.get(
-            "sort", current.sort if current else 0) or 0), 9999)),
+        "sort": max(0, min(sort, 9999)),
     }
 
 async def save_scenario(

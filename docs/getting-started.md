@@ -114,7 +114,9 @@ Administrator: admin
 .\start.cmd --check --desktop
 ```
 
-检查通过后，在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
+`--check` 只读检查依赖和路径风险，不创建探测文件；检查通过不代表后续所有安装步骤都一定成功。随后在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
+
+路径诊断采用中英双语。重定向输出时保留当前编码；无法表示的字符使用转义形式，避免中断启动，英文处理说明仍然可读。
 
 Git Bash 中的 `sh start.sh --desktop` 并非无效命令，但它通过 `PATH` 查找 Python，与 Windows 入口的选择方式不同。`start.cmd` 在有 Python 启动器 `py` 时先尝试 Python 3.12，再尝试 `py -3`；没有 `py` 时才使用 `PATH` 中的 `python`。安装了 Python 3.13 等受支持版本，不代表两个终端会选中同一个解释器。
 
@@ -124,6 +126,10 @@ Git Bash 中的 `sh start.sh --desktop` 并非无效命令，但它通过 `PATH`
 & 'C:\Path\To\Python\python.exe' .\start.py --check --desktop
 & 'C:\Path\To\Python\python.exe' .\start.py --desktop
 ```
+
+Microsoft Store 版 Python 是有效的解释器，但 Windows 可能将其数据目录重定向到更深的物理路径。需要长路径时，正式启动会在复制源码、创建虚拟环境和安装依赖之前，通过实际文件操作检查路径是否可用。Windows 的传统 260 字符路径限制不适用于 macOS 和 Linux。
+
+如果启动时提示无法使用长路径，请在 Windows 中启用 **Win32 长路径**，然后重新打开启动程序，使其使用新进程。启动器不会修改这个系统设置。已有数据请保留在原目录；较短的 `--data-dir` 可用于**新建独立实例**，不会迁移原有账号或数据。
 
 ### macOS 打不开启动文件
 
@@ -144,7 +150,7 @@ sh start.sh --desktop
 
 未初始化的实例需要设置管理员密码；默认方式要求 Python 将标准输入识别为交互终端（TTY）。Git Bash 窗口可见，并不保证原生 Windows Python 会将它识别为 TTY；管道、重定向或某些集成终端也可能触发此检查。这与密码输入不显示字符是两种情况。
 
-先在原生 PowerShell 或 CMD 的交互窗口中，从源码目录运行 Windows 入口，不加管道或输入重定向。自动化或确实需要非交互输入时，显式添加 `--password-stdin`，通过受保护的标准输入提供首次密码；该参数不会自动生成密码，也不用于重置已有密码。不要把密码写进命令参数、脚本或日志。保留现有数据目录，无需删除数据库重试。
+先在原生 PowerShell 或 CMD 的交互窗口中，从源码目录运行 Windows 入口，不加管道或输入重定向。自动化或确实需要非交互输入时，显式添加 `--password-stdin`，通过受保护的标准输入提供首次密码；该参数不会自动生成密码，也不用于重置已有密码。不要把密码写进命令参数、脚本或日志。保留现有数据目录，无需删除数据库重试。对于首次冷启动安装且依赖下载耗时较长的自动化场景，建议先运行 `--prepare-only` 下载依赖与构建界面，再沿用相同的数据目录和桌面选项，使用 `--password-stdin` 启动，以避免输入管道在长耗时安装过程中被环境提前关闭。
 
 ### 安装很慢、失败或提示网络错误
 
@@ -195,6 +201,8 @@ sh start.sh --desktop
 启动器检测到 `HTTP_PROXY` 或 `HTTPS_PROXY` 时，会为 Electron 安装子进程自动启用 `ELECTRON_GET_USE_PROXY`。已有的显式设置会保留；设置为 `0`、`false`、`no`、`off` 或空值可关闭 Electron 的代理自动启用。Node 下载脚本按请求读取代理和 `NO_PROXY`，适用于上面要求的 Node.js 22.19+，无需提高最低版本。`ELECTRON_GET_USE_PROXY` 只控制 Electron，不控制 PortableGit 下载。
 
 #### Windows PortableGit 镜像与离线归档
+
+首次下载较慢时可以超过五分钟。安装包每新增 64 KiB，启动器就会重新计算五分钟时限。如果服务器连续 60 秒没有发送数据，下载会超时。可在 `startup.log` 查看已接收的字节数。
 
 PortableGit 默认从官方 Git for Windows 发布地址下载。需要镜像时，设置 `SODUWORK_PORTABLE_GIT_MIRROR` 为镜像根地址，文件按 `<mirrorRoot>/v2.55.0.windows.4/<官方原文件名>` 提供。x64 文件名为 `PortableGit-2.55.0.4-64-bit.7z.exe`，arm64 为 `PortableGit-2.55.0.4-arm64.7z.exe`。请先确认镜像提供固定版本和当前架构的文件；项目不预设 PortableGit 镜像。
 

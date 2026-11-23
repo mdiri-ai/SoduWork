@@ -13,11 +13,11 @@ function remoteModel(value) {
   return name.startsWith('local:') || image?.name.startsWith('local:') ? '' : name.slice(0, 80);
 }
 
-async function capture(handle, outcome, diagnosticScope = {}, {requiresFiles = false} = {}) {
+async function capture(handle, outcome, diagnosticScope = {}, {requiresFiles = false, paths} = {}) {
   const note = captureReason => require('../requirement-diagnostics.cjs').record('native.capture',
     {...diagnosticScope,conversationId:diagnosticScope.conversationId || handle?.sessionId,outcome,captureReason});
   if (!handle) { note('no-handle'); return null; }
-  const snapshot = await artifacts.snapshotAsync(handle);
+  let snapshot = await artifacts.snapshotAsync(handle);
   const required = outcome === 'completed' && requiresFiles;
   if (required && snapshot?.delivery?.source !== 'manifest' &&
       (snapshot?.got?.truncated || snapshot?.got?.fileChanges?.truncated))
@@ -31,6 +31,13 @@ async function capture(handle, outcome, diagnosticScope = {}, {requiresFiles = f
   let items = (snapshot?.delivery?.items || snapshot?.items || []).filter(item =>
     item?.path && !item.processEvidence && item.primary !== false &&
     (!item.pluginDraft || item.skillPackage && /\.skill$/i.test(item.name || item.relative || item.path)));
+  if (outcome === 'completed' && (paths?.required.size || paths?.named.size)) {
+    const extra = await require('./task-output-paths.cjs').extraRoots(snapshot, items, paths, handle.cwd, diagnosticScope.turnId);
+    if (extra.length) {
+      snapshot = {...snapshot, items: [...extra, ...snapshot.items]};
+      items = [...items, ...extra];
+    }
+  }
   if (!items.length) return empty('no-primary');
   const options = { completedTurn: true, includeEntries: true, snapshot, turnSince: snapshot?.got?.turnSince };
   let captured;
@@ -51,6 +58,13 @@ async function capture(handle, outcome, diagnosticScope = {}, {requiresFiles = f
     if (captured.changedInTurn === false) return empty('unchanged');
   } else if (snapshot.delivery?.source !== 'manifest') {
     items = items.filter(item => item.changedInTurn === true);
+  }
+  if (outcome === 'completed' && paths?.required.size) {
+    const {pathKey} = require('./task-output-paths.cjs');
+    const names = captured?.manifest?.files.map(file => file.path) || items.map(file => file.relative || file.name);
+    const members = new Set(names.map(pathKey));
+    const missing = [...paths.required].filter(name => !members.has(name));
+    if (missing.length) throw Error('本轮未包含约定的交付文件：' + missing.join('、'));
   }
   const entries = captured?.entries?.length > 60
     ? [{name: '完整产出-' + captured.filename, bytes: captured.bytes, role: 'primary', contentType: captured.contentType}]

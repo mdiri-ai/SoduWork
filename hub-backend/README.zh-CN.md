@@ -9,6 +9,8 @@ FastAPI + SQLAlchemy(async) + PostgreSQL（本地开发可回退 SQLite）。
 
 模块职责与状态归属见[首版范围](../docs/release-scope.md)。
 
+首次对话清单根据可用模型目录和当前管理员最近一次桌面端报告显示进度。设备上报底座和模型选择是否就绪。五分钟内未收到新报告时，Hub 会将这两步显示为等待桌面端报告。
+
 ## 快速开始（本地 SQLite，零配置）
 
 ```bash
@@ -39,6 +41,16 @@ outbox 移除；Windows 载荷保留 DPAPI 保护，采集标记保持不变。�
 归属路由、重启恢复、归档写入中断和 Hub 事件保留。
 
 ## 受管 Pi 执行
+
+底座发现会检查有界的 npm 前缀、Homebrew 和 nvm 路径，包括未出现在桌面进程继承 PATH 中的安装。所选可执行文件的版本、Node 引擎要求和 DeepSeek 适配器元数据必须来自同一份安装，不能借用无关私有目录中的包信息。Windows Codex 发现会跳过被排除的 WindowsApps 候选并继续搜索。显式底座覆盖、托管运行时归属和原生依赖检查仍生效。只安装 DeepSeek 桌面应用不代表已安装 Runner 所需的 ACP 适配器。
+
+已识别的 npm JavaScript 底座在版本探测和正式执行时使用同一个经过校验的 Node 与包入口，启动脚本旁的 Node 不再覆盖该选择。Node 候选需满足所选包及宿主的最低版本；DeepSeek 启动预检及缓存也跟踪所选 Node 和入口。原生可执行文件及自定义 wrapper 保留显式命令。
+
+DeepSeek 原生包按所选 Node 的平台、架构和 Linux libc 校验，覆盖 Rosetta 与混合运行时安装；无法确认 Node 身份时拒绝启动。正式启动和版本探测的子进程继承所选 Node 目录，不修改 Runner 全局 PATH；Windows 带引号的 PATH 项仍保持原有优先级。
+
+模型能力报告 v3 验证合成工具结果后的流式续答，保留工具且不追加用户消息。已有 v2 工具成功结论需要重新检测，独立证据仍保留；请部署配套桌面更新。模型拒绝错误在 JSON、SSE 和传输日志中共享不透明的 `soduwork-trace` 编号；经过校验的上游请求编号仅用于关联，不参与错误分类。一般 403 的提示不再仅凭状态推断密钥权限。
+
+模型传输拒绝日志区分已识别的限流、计费错误和未分类的 429，不记录供应商响应正文。数字及 HTTP 日期格式的 `Retry-After` 通过既有 JSON/SSE 错误协议传递；超过一天的等待按一天传递，已超出桌面重试预算。计费错误不附带重试等待提示。Hub 不增加重试循环；配套桌面更新仅在既有单轮预算内遵守供应商等待时间。
 
 受管 Pi 执行为每条 Runner 执行记录绑定独立的配置与会话目录，目录位于 Runner 数据根目录下。启动及后续轮次使用同一个明确路径，不依赖继承的桌面 Pi 设置或操作系统主目录解析。模型文件只保存凭据的环境变量引用；模型配置缺失或文件发布失败时，会在 Pi 启动前停止执行。个人 Pi 与桌面本地模型配置保持不变。升级时，只允许将 Runner 记录中明确标识且工作目录匹配的原生会话复制到私有目录，原文件保持不变。已有执行历史的后续轮次必须找到原生会话，不会静默新建会话。
 
@@ -99,6 +111,32 @@ DeepSeek ACP 适配器 0.4.40 和 0.4.41 可能在子代理仍运行时返回完
 收到 `max_tokens` 时，经过核对的适配器只把原生状态为 pending 的工具预览标记为未执行，再清理预览。DSH 在执行前就会丢弃这些调用；真正开始执行的工具仍须等待实际结果。宿主在实时和历史工具卡片中保留这个区别，后续真实失败也不会被旧取消状态掩盖。
 
 工具活动结束后，DeepSeek Harness 可在原会话中从已保存的结果接着做，并使用更小的工具调用。自动恢复最多续跑一次，只有原生压缩成功后才能再续跑一次。持续达到上限时，会显示本轮未完成并保留进度，不再作为协议错误呈现。续跑成功会清除旧截断状态；协议错误和宿主清理失败仍优先处理。
+
+使用托管模型路由时，SoduWork 显式启用 DeepSeek 原生自动压缩并配置预算，
+在当前回合的工具步骤之间执行。
+触发阈值取模型上下文窗口的 80% 与扣除当前输出、摘要预算后剩余空间的较小值。
+摘要输出不超过模型配置的输出上限，不再沿用原生的 65,536 token 预留。
+正常输出上限保持不变；只有几乎占满上下文窗口的输出上限才会下调，为输入留出空间。
+原生压缩保留当前会话、工具结果、权限与取消归属，无需用户再次发送消息。
+这不会把模型单次输出上限误判为上下文溢出，也不会移除上述有界续跑限制。
+
+运行 `python3 -m unittest test_dsh_gateway test_context_recovery
+test_acp_error_messages test_local_turn_outcome` 可验证模型预算与恢复回归。
+配置或推断的上下文大小仍需符合实际服务限制；如果窗口连原生指令和工具定义都容纳不下，
+仅靠压缩无法解决。
+
+真实原生进程验证可运行 `python3 e2e_dsh_auto_compaction.py`，使用上述生命周期验证相同的
+`--adapter-entry`、`--runtime-root`、`--node` 和 `--output` 明确路径参数。
+合成本机模型服务使 64k 窗口在一条用户需求内反复压缩；测试与旧的仅配置模型路由的 bundle
+对照，检查持久检查点和已完成工具，并要求压缩后的原生用量回执下降。
+这不替代生产模型或桌面界面验收。
+
+托管 Kimi 和 Qwen 同样接收所选模型的上下文窗口，不再沿用更大的原生默认值。
+Kimi 接收明确配置的输出上限；Qwen 保留管理员的采样与输出参数。
+二者均使用各自原生的步骤间压缩。托管 Codex Harness 接收模型窗口和 80% 的自动压缩阈值。
+个人账号版 Codex 保留原生模型设置；OpenCode 已传入上下文与输出限制，并保留原生自动压缩。
+运行 `python3 -m unittest test_kimi_runtime test_qwen_runtime test_acp_permission_inputs
+test_codex_account_acp` 可验证这些配置与隔离边界。
 
 DeepSeek 运行时预检按归档锁定版本检查 Windows、macOS 和 Linux 的 x64/arm64
 sharp、koffi 和 ripgrep 包；macOS/Linux 还检查 libvips，Linux 区分 glibc 与 musl
@@ -220,13 +258,21 @@ python3 e2e_runner_tls.py --output /absolute/evidence/directory
   - `GET/POST /api/v1/tasks`、`GET/PATCH/DELETE /api/v1/tasks/{id}`
   - `POST /api/v1/tasks/batch-update`、`POST /api/v1/tasks/clear-done`（只清 done）
   - `POST /api/v1/tasks/{id}/agent/{run|retry|takeover}`
-  - `GET/PUT /api/v1/config`
+  - `GET /api/v1/config?withRevision=true` 返回当前设备设置、可写字段 `_configKeys` 和版本 `_configRevision`。向 `PUT /api/v1/config` 提交改动字段及读取时的版本。未知字段或无效值返回 422，版本过期返回 409，覆盖已有值但缺少版本返回 428。
   - `POST /api/v1/clients/enroll`（登记/心跳，激活后签发短期会话）
   - `WS /api/v1/ws?device=<设备ID>&session=<短期会话>`（实时推送）
 - 管理端
-  - `POST /api/v1/admin/login` `{user,pass}` → 短期登录 token
+  - `POST /api/v1/admin/login` `{user,pass}` → 短期登录 token。五分钟内同一账号登录失败 10 次或同一 IP 失败 30 次后，Hub 返回 HTTP 429，响应头 `Retry-After` 表示还需等待的秒数。多个 Hub 进程通过数据库共享计数，失败记录可在审计日志中按 `admin.login.failed` 查询。
   - `GET /api/v1/admin/clients`、`GET /api/v1/admin/tasks`（需 `Authorization: Bearer <token>`）
   - `POST /api/v1/admin/dispatch` `{title,...,targets:[设备ID]}` → 平台建任务下发（origin=dispatch）
+
+### 列表分页
+
+在 `/api/v1` 下，`admin/users`、`admin/orgs`、`admin/roles`、`admin/domains`、`tasks` 和 `schedules` 在省略分页参数时保留原有数组。传入 `limit`（1–200）或 `offset`（从 0 开始）即可获取 `{items, total}`。只传偏移量时每页默认 50 条。总数按当前身份可见的记录计算，偏移量超过末尾会返回空页。
+
+需要固定响应结构时，使用 `GET /api/v1/admin/client-inventory`。每次响应都包含 `items`、`total`、`counts`、`page`、`pageSize` 和 `offset`。可使用 `page` 和 `pageSize`（1–100，默认 25），或使用 `offset` 和 `limit`。旧的 `admin/clients` 调用仍可获取原有数组，也可通过 `paged=1` 获取对象。
+
+资料库同样支持可选的条数和偏移量，先排列文件夹，再排列文件。返回体保留独立的 `folders` 和 `items` 数组，分页时提供两者合计的 `total`。审批和交付列表接受正整数条数和从 0 开始的偏移量。
 
 ## 客户端接入
 
@@ -307,3 +353,7 @@ python3 e2e_dsh_private_probe.py \
 ```
 
 此显式检查使用生产私有探测作业和 ACP 桥接、实际安装的适配器与运行时，以及合成本机回环模型。先重现旧安装路径错误，再要求修正路径后出现真实模型请求并由 Agent 返回预期响应。检查使用可清理的用户目录、状态和临时目录，阻止 Node 连接非回环地址，并清理自身子进程；不会安装或更新依赖，也不使用真实凭据，不覆盖桌面界面、生产 Hub 或模型服务行为。由于需要已有原生安装，请在离线质量门禁之外单独运行。
+
+## 删除模型服务
+
+持有 `integration.manage` 权限时，通过 `GET /api/v1/admin/model-providers/{id}/deletion-impact` 获取服务版本、影响清单版本、子模型及可见的已保存模型选择。成员名称需要 `user.manage`，需求标题需要 `task.view`，两者均遵守部门可见范围。调用已有的 `DELETE /api/v1/admin/model-providers/{id}` 时，以 `expectedRevision`、`expectedImpact` 传入预览返回的版本，另以 `confirmId` 传入完整服务 ID。旧版请求未预览会返回 HTTP 428。遇到 HTTP 409 时，应重新获取清单并再次确认。内置服务禁止删除。

@@ -456,6 +456,11 @@ html[data-window-menu] .rq-detail{max-height:100%;}
 .rq-delivery-state.is-ready{color:var(--accent);background:var(--accent-soft);}
 .rq-delivery-state.is-active{color:var(--s-doing,var(--accent));background:color-mix(in srgb,var(--s-doing,var(--accent)) 10%,var(--bg-0));}
 .rq-delivery-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 12px;}
+.rq-review-recipient{margin:0 0 18px;overflow-wrap:anywhere}
+.rq-review-recipient h4,.rq-review-recipient p{margin:0 0 6px}
+.rq-review-recipient summary{cursor:pointer;color:var(--accent)}
+.rq-review-recipient .rq-delivery-actions{margin:8px 0}
+.rq-review-recipient select{max-width:100%}
 .rq-delivery-actions button{min-height:34px;margin:0!important;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg-0);color:var(--ink-2);font-size:13px;}
 .rq-delivery-actions button:hover{background:var(--bg-1);}
 .rq-delivery-actions .rq-primary{color:var(--accent-ink,#fff);background:var(--rq-emphasis);border-color:var(--rq-emphasis);}

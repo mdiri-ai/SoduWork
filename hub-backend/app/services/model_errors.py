@@ -18,6 +18,16 @@ def output_limit_exceeded(value) -> bool:
                 or OUTPUT_LIMIT_MESSAGE in raw)
 
 
+THINKING_DISABLED_MESSAGE = "该模型不支持关闭思考；请在模型高级设置把“思考能力”改为“始终开启”后重试"
+THINKING_DISABLED_RE = re.compile(
+    r"thinking(?:\.type| type)?[^.\n]{0,40}disabled[^.\n]{0,40}not supported", re.I)
+
+
+def thinking_disabled_unsupported(value) -> bool:
+    """Recognize a provider rejecting disabled thinking before leaking its payload."""
+    return bool(THINKING_DISABLED_RE.search(str(value or "")[:16000]))
+
+
 def billing_diagnostic(value) -> dict | None:
     """Keep only recognized billing codes, never provider text or arbitrary fields."""
     payload = value if isinstance(value, dict) else None
@@ -48,6 +58,23 @@ def billing_message(diagnostic: dict) -> str:
     # The established SDK recognizes billing failures even when it retains only message.
     return ("模型服务余额不足或计费额度不可用（billing_required" + code +
             "），请检查供应商账单、API Key 类型和接口地址；重试不会恢复额度")
+
+
+def refusal_category(status: int, body: str) -> str:
+    """Return an allowlisted log category without assuming every 429 is throttling."""
+    if billing_diagnostic(body):
+        return "billing"
+    if status != 429:
+        return "upstream_error"
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        payload = None
+    error = payload.get("error", payload) if isinstance(payload, dict) else None
+    if isinstance(error, dict) and any(error.get(field) in (
+            "rate_limit_exceeded", "rate_limit_error") for field in ("code", "type")):
+        return "rate_limit"
+    return "unclassified_429"
 
 
 def public_failure(value) -> str:
@@ -86,6 +113,8 @@ def public_failure(value) -> str:
     suffix = f"（HTTP {status}）" if status else ""
     if status in (0, 400, 422) and output_limit_exceeded(raw):
         return OUTPUT_LIMIT_MESSAGE + suffix
+    if status in (0, 400, 422) and thinking_disabled_unsupported(raw):
+        return THINKING_DISABLED_MESSAGE + suffix
     if status == 404:
         return "模型服务地址或模型不存在" + suffix + "；请切换可用模型，或联系管理员核对服务地址与模型名称。"
     if status == 403:

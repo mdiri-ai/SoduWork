@@ -68,6 +68,29 @@ function fixture() {
   };
 }
 
+test('first chat distinguishes an empty catalog, unknown Hub state and a working local or native choice', async () => {
+  const f = fixture();
+  f.start();
+  assert.equal(f.picker.modelReadiness(), 'checking');
+  f.requests[0].resolve({ usable: [] });
+  await f.picker.ready();
+  assert.equal(f.picker.modelReadiness(), 'empty');
+  assert.equal(f.picker.label(), '选择模型');
+  const offline = f.picker.refresh(true);
+  f.requests[1].resolve({ usable: [], managedCatalogUnavailable: true });
+  await offline;
+  assert.equal(f.picker.modelReadiness(), 'unknown');
+  const local = f.picker.refresh(true);
+  f.requests[2].resolve({ usable: [{ name: 'local:example', localOnly: true }], managedCatalogUnavailable: true });
+  await local;
+  assert.equal(f.picker.modelReadiness(), 'ready');
+  f.agent('codex');
+  const native = f.picker.refresh();
+  f.requests[3].resolve({ ok: true, models: [] });
+  await native;
+  assert.equal(f.picker.modelReadiness(), 'native');
+});
+
 test('cold composer redraws share the first delayed request and ready waits for that response', async () => {
   const f = fixture(); f.start();
   const original = f.picker.refresh();
@@ -94,6 +117,56 @@ test('managed picker shows protocol and warns on an incompatible selected defaul
   f.choose('openai-fixture');
   assert.equal(f.picker.value().modelName, 'openai-fixture');
   assert.match(f.nodes.cpModelPop.innerHTML, /role="note">企业模型/);
+});
+
+test('unknown alias thinking is service-controlled while explicit and canonical fixed-thinking models select legal low', async () => {
+  const map = { off: null, minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' };
+  for (const [model, expected] of [
+    [{ name: 'gateway-model', label: 'GLM 5.3', config: { thinkingMode: 'auto' } }, ''],
+    [{ name: 'local:model-' + 'b'.repeat(32), modelName: 'gateway-model', label: 'GLM 5.3', config: { thinkingMode: 'auto' } }, ''],
+    [{ name: 'gateway-model', config: { thinkingMode: 'always', thinkingFormat: 'zai', thinkingLevelMap: map } }, 'low'],
+    [{ name: 'local:model-' + 'a'.repeat(32), modelName: 'glm_5.3_flash', config: { thinkingMode: 'auto' } }, 'low'],
+    [{ name: 'glm-5.3', config: { thinkingMode: 'auto' } }, 'low'],
+    [{ name: 'ordinary-model', config: { thinkingMode: 'none' } }, ''],
+  ]) {
+    const f = fixture(); f.start();
+    f.requests[0].resolve({ usable: [model], defaultModels: { pi: model.name } });
+    await f.picker.ready(); f.choose(model.name);
+    assert.equal(f.picker.value().thinkingLevel, expected, model.name);
+    if (expected === 'low') {
+      assert.match(f.nodes.cpModelPop.innerHTML, /模型固定思考/);
+      assert.match(f.nodes.cpModelPop.innerHTML, /data-thinking-toggle disabled/);
+    } else if (model.config.thinkingMode === 'auto') {
+      assert.match(f.nodes.cpModelPop.innerHTML, /由服务决定 · 未确认/);
+      assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /不支持|已关闭|data-thinking-toggle/);
+    } else assert.match(f.nodes.cpModelPop.innerHTML, /不支持/);
+  }
+});
+
+test('declared alias protocols expose thinking controls while explicit off policies remain authoritative', async () => {
+  for (const [config, supported] of [
+    [{ thinkingMode: 'auto', thinkingFormat: 'zai' }, true],
+    [{ thinkingMode: 'none', thinkingFormat: 'zai' }, false],
+    [{ thinkingMode: 'auto', thinkingFormat: 'zai', reasoning: false }, false],
+  ]) {
+    const f = fixture(); f.start();
+    f.requests[0].resolve({ usable: [{ name: 'local:model-' + 'b'.repeat(32), modelName: 'gateway-model', config }] }); await f.picker.ready();
+    assert.equal(f.nodes.cpModelPop.innerHTML.includes('data-thinking-toggle'), supported);
+    assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /由服务决定 · 未确认/);
+  }
+});
+
+test('restored fixed-thinking selections retain valid high and max rather than resetting to low', async () => {
+  const f = fixture(); f.start();
+  f.requests[0].resolve({ usable: [{ name: 'glm-5.3', config: { thinkingMode: 'auto' } }] });
+  await f.picker.ready();
+  for (const level of ['high', 'max', 'low', 'off', 'medium', '']) {
+    assert.equal(await f.picker.restoreSelection({ adapterId: 'pi', modelName: 'glm-5.3', thinkingLevel: level }), true);
+    const expected = ['high', 'max', 'low'].includes(level) ? level : 'low';
+    assert.equal(f.picker.value().thinkingLevel, expected);
+    f.choose('glm-5.3');
+    assert.equal(f.picker.value().thinkingLevel, expected);
+  }
 });
 
 test('device-local models stay available to every local managed runtime and never enter cloud routes', async () => {

@@ -379,7 +379,8 @@ async def save_default(session, cfg: dict) -> dict:
     import json as _json
 
     from .. import models
-    merged = normalize(cfg)
+    existing = await load_default(session)
+    merged = normalize(cfg, base=existing)
     row = await session.get(models.AppSetting, SETTING_KEY)
     if row is None:
         row = models.AppSetting(key=SETTING_KEY, value="")

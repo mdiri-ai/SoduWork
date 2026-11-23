@@ -508,7 +508,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   // unreadable. Retry only resumed conversations with the current default; new
   // chats keep an explicit model failure visible so a typo is not silently changed.
   const canRecoverStaleModel = Boolean(resumedRef || opts.resumedConversation) && !modelName.startsWith('local:') &&
-    prepared?.code !== 'LOCAL_AGENT_DEFAULT_UNAVAILABLE';
+    !prepared?.providerPinned && prepared?.code !== 'LOCAL_AGENT_DEFAULT_UNAVAILABLE';
   const returnedModel = String(prepared?.model?.id || '').trim();
   const returnedDifferentModel = Boolean(prepared?.ok && modelName && returnedModel && returnedModel !== modelName);
   let resetSavedModel = false;
@@ -722,6 +722,33 @@ async function createRunnerHandle(request, defaults, initialSession) {
   }
 
   const messageStream = require('./runner-messages').create(state, redact);
+  let pendingUserEcho = null;
+  let lastConfirmedAdmissionKey = '';
+
+  function bindUserEcho(key, options) {
+    const row = turnQueue.active()?.runnerUserMessage;
+    pendingUserEcho = row && options.recordUser !== false ? { key, previousKey: lastConfirmedAdmissionKey, row } : null;
+  }
+
+  function acknowledgeUserEcho(item, text) {
+    if (!pendingUserEcho) return false;
+    const { key, previousKey, row } = pendingUserEcho;
+    const sentAt = messageTime.epoch(item.sentAt);
+    const id = String(item.submissionId || '').slice(0, 128);
+    if (id && row.submissionId && id !== row.submissionId) return false;
+    if (sentAt && sentAt !== row.sentAt) return false;
+    if (item.admissionKey !== key && !(id && id === row.submissionId)) {
+      // Older Runners omit the key or stamp a comment before advancing the
+      // admission. Require the original timestamp for a previous-key echo.
+      if (item.admissionKey && (item.admissionKey !== previousKey || !sentAt)) return false;
+      if (_text(row.text, 50000) !== text) return false;
+    }
+    pendingUserEcho = null;
+    lastConfirmedAdmissionKey = key;
+    row.runnerPersisted = true;
+    if (id && !row.submissionId) row.submissionId = id;
+    return true;
+  }
 
   function appendItem(item) {
     const kind = String(item.kind || '');
@@ -780,14 +807,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       messageStream.finish();
       state.startedAt = Math.max(state.startedAt || 0, eventAt);
       state.turnEndedAt = 0;
-      const existing = state.messages.find((row) => row.role === 'user' &&
-        row.text === rawText && !row.runnerPersisted);
-      if (existing) {
-        existing.runnerPersisted = true;
-        existing.sentAt = existing.sentAt || messageTime.epoch(item.sentAt) || messageTime.epoch(item.at);
-        if (!existing.submissionId && item.submissionId) existing.submissionId = String(item.submissionId).slice(0, 128);
-        return;
-      }
+      if (acknowledgeUserEcho(item, rawText)) return;
       const plugins = publicPluginBadges(item.plugins);
       // New user events record the effective selection, including an explicit
       // empty selection. Replaying only nonempty badges would undo a clear.
@@ -1041,6 +1061,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
         }
         return;
       }
+      if (data.admissionKey) lastConfirmedAdmissionKey = data.admissionKey;
       const recovered = state.recoveryRequired;
       state.reconnectSince = 0;
       state.reconnectAttempts = 0;
@@ -1272,16 +1293,20 @@ async function createRunnerHandle(request, defaults, initialSession) {
   function appendUser(text, attachments, plugins, sentAt, submissionId) {
     const badges = publicPluginBadges(plugins);
     if (badges.length) state.activePluginIds = _pluginIds(badges);
-    const previous = turnQueue.active()?.options[resumedUser];
+    const active = turnQueue.active();
+    const previous = active?.options[resumedUser];
     if (previous && state.messages.includes(previous)) {
+      active.runnerUserMessage = previous;
       previous.plugins = badges;
       return;
     }
     const id = String(submissionId || '').trim().slice(0, 128);
-    state.messages.push({ role: 'user', text, sentAt: messageTime.epoch(sentAt) || Date.now(),
+    const row = { role: 'user', text: redact(text), sentAt: messageTime.epoch(sentAt) || Date.now(),
       ...(id ? { submissionId: id } : {}),
       attachments: Array.isArray(attachments) ? attachments : [], plugins: badges,
-      runnerPersisted: false });
+      runnerPersisted: false };
+    state.messages.push(row);
+    if (active) active.runnerUserMessage = row;
   }
 
   function dispatch(text, attachments, turnOptions) {
@@ -1299,6 +1324,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     state.goalLimit = null;
     state.started = true;
     state.unconfirmedAdmissionKey = 'dispatch:' + state.runnerRef;
+    bindUserEcho(state.unconfirmedAdmissionKey, next);
     state.status = 'streaming';
     state.statusText = state.intent === 'goal'
       ? displayName + ' 正在理解并开始工作…' : displayName + ' 正在理解你的问题…';
@@ -1441,6 +1467,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     state.turnSerial += 1;
     const turnId = 'turn:' + state.alias + ':' + state.turnSerial + ':' + Date.now().toString(36);
     state.unconfirmedAdmissionKey = 'comment:' + turnId;
+    bindUserEcho(state.unconfirmedAdmissionKey, next);
     const taskContext = taskJournal.context();
     const dispatchedEffort = state.agentExecution?.reasoningEffort || '';
     runtime.rpc('job.comment', {
@@ -1630,6 +1657,10 @@ async function createRunnerHandle(request, defaults, initialSession) {
     // Resolve the conversation's current selection at dequeue. Every turn
     // obtains its own grant; queued or cancelled drafts cannot change it early.
     const requested = pluginTurn.requestedIds(next.options);
+    // Main-process admission can freeze an inherited selection for app/MCP
+    // isolation. Keep that snapshot rather than borrowing another queued turn.
+    const capturedInheritance = next.options.inheritedPluginSelection === true;
+    const inheritedPlugins = (!requested.length || capturedInheritance) && next.options.clearPluginSelection !== true;
     if (next.options.clearPluginSelection === true) {
       state.activePluginIds = [];
     }
@@ -1642,6 +1673,25 @@ async function createRunnerHandle(request, defaults, initialSession) {
       if (next.options.controlled) return next.options.controlled.execute(handle, next.text, next.attachments);
       const send = () => {
         if (state.disposed || state.cancelRequested || state.goalPaused || next.stopRequested) return { ok: true, cancelled: true };
+        if (inheritedPlugins && !next.options.internal && !next.options.controlled && !next.options.taskId &&
+            !handle.taskRef && !handle.taskIds?.length && !next.options.goalMode && !state.goalVisible &&
+            !state.taskGoalContract && state.intent !== 'goal' && next.options.source !== 'automation' &&
+            !handle.appPluginId && !opts.appContext) {
+          try {
+            const inheritedIds = capturedInheritance ? requested : state.activePluginIds;
+            const retained = require('../personal-plugins').pruneUnavailableInherited(app, inheritedIds);
+            if (retained.length !== inheritedIds.length) {
+              // Record even an empty selection before any later model/provider
+              // failure; replay must not revive a deleted plugin from old turns.
+              taskJournal.append(state.seq, { kind: 'plugin-selection', pluginIds: retained });
+              state.activePluginIds = retained;
+            }
+            next.options = { ...next.options, pluginIds: retained };
+          } catch (error) {
+            return { ok: false, failureKind: 'plugin-grant', retrySafe: true,
+              reason: '插件没能在发送前完成授权：' + String(error?.message || error) };
+          }
+        }
         if (state.model.historicalLocal) throw Error('原本地模型已删除或不可用，请先选择一个当前可用模型后再发送');
         const byteAttachments = (Array.isArray(next.attachments) ? next.attachments : []).some(item =>
           item && item.data != null && !path.isAbsolute(String(item.path || item.stagedPath || '')));

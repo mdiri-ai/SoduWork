@@ -102,10 +102,11 @@ class IncompleteTurnDeliveryTests(_Base):
             await self._dispose(engine, session)
 
 
-    async def test_completed_delivery_without_creator_remains_unassigned(self):
+    async def test_completed_delivery_without_independent_reviewer_remains_unassigned(self):
         engine, session, task = await self._prepared()
         try:
             task.created_by = None
+            task.requester_user_id = task.owner_user_id
             await session.commit()
             await conversation_turns.deliver_artifacts(
                 session, task, conversation_id="conv-9", turn_id="turn-9",

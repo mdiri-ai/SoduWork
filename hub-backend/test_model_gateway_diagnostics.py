@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import secrets
 import socket
+import unittest
 
 import httpx
 import uvicorn
@@ -21,6 +22,16 @@ from app.db import get_session
 from app.models import Client, ModelDef, ModelProvider, User
 from app.services import device_auth
 from test_model_runtime import IsolatedDatabase
+
+
+class RequestCorrelationTests(unittest.TestCase):
+    def test_only_bounded_opaque_noncredential_request_ids_are_accepted(self):
+        from app.services.model_transport import _upstream_request_id
+        secret = "synthetic-api-credential"
+        for value in (secret, "prefix-" + secret, "https://private.invalid", "bad\nheader", "x" * 101, ""):
+            self.assertEqual(_upstream_request_id({"x-request-id": value}, secret), "")
+        self.assertEqual(_upstream_request_id({"x-request-id": "request-183:attempt.2"}, secret), "request-183:attempt.2")
+        self.assertEqual(_upstream_request_id({"x-request-id": secret, "x-ms-request-id": "safe-183"}, secret), "safe-183")
 
 
 class GatewayDiagnosticsTests(IsolatedDatabase):
@@ -49,6 +60,10 @@ class GatewayDiagnosticsTests(IsolatedDatabase):
         @upstream.api_route("/{path:path}", methods=["GET", "POST"])
         async def provider(path: str, request: Request):
             self.calls.append((request.method, path))
+            if self.mode in ("trace-denial", "unsafe-trace-denial"):
+                request_id = "fixture-request-183" if self.mode == "trace-denial" else self.secret
+                return JSONResponse(status_code=403, headers={"x-request-id": request_id}, content={
+                    "error": {"message": f"private refusal {self.secret} https://private.invalid"}})
             if request.method == "GET" and self.mode != "probe-billing":
                 model = "personal-probe-model" if path.startswith("personal/") else "fixture-model"
                 return {"data": [{"id": model}]}
@@ -217,6 +232,27 @@ class GatewayDiagnosticsTests(IsolatedDatabase):
         self.assertEqual(process.returncode, 0, output.decode("utf-8", "replace"))
         self.assertIn(b'"retryAttempts":0', output)
         self.assertEqual(self.calls, [("POST", "v1/chat/completions")])
+
+    async def test_denial_keeps_safe_correlation_without_guessing_permission(self):
+        self.mode = "trace-denial"
+        auth = {"Authorization": "Bearer " + self.ticket}
+        for stream in (False, True):
+            response = await self.http.post("/api/v1/ai-proxy/v1/chat/completions", headers=auth,
+                json={"model": "fixture-model", "messages": [{"role": "user", "content": "hi"}], "stream": stream})
+            self.assertEqual(response.status_code, 200 if stream else 403)
+            payload = (json.loads(next(line[6:] for line in response.text.splitlines() if line.startswith("data: ")))
+                       if stream else response.json())["error"]
+            self.assertNotIn("权限", payload["message"])
+            self.assertRegex(payload["diagnosticId"], r"^[a-f0-9]{32}$")
+            self.assertIn("[soduwork-trace:" + payload["diagnosticId"] + "]", payload["message"])
+            self.assertEqual(payload["upstreamRequestId"], "fixture-request-183")
+            self.assertNotIn(self.secret, response.text)
+            self.assertNotIn("private.invalid", response.text)
+        self.mode = "unsafe-trace-denial"
+        response = await self.http.post("/api/v1/ai-proxy/v1/chat/completions", headers=auth,
+            json={"model": "fixture-model", "messages": [{"role": "user", "content": "hi"}]})
+        self.assertNotIn("upstreamRequestId", response.json()["error"])
+        self.assertNotIn(self.secret, response.text)
 
 
 if __name__ == "__main__":

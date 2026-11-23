@@ -1,5 +1,10 @@
 (function (global) {
   const messages = {
+    "你已停止": "You stopped",
+    "你在 {seconds} 秒后停止了": "You stopped after {seconds} seconds",
+    "你在 {minutes} 分 {seconds} 秒后停止了": "You stopped after {minutes}m {seconds}s",
+    "你在 {hours} 小时 {minutes} 分 {seconds} 秒后停止了": "You stopped after {hours}h {minutes}m {seconds}s",
+    "本轮已中断": "This turn was interrupted",
     "编辑 Markdown": "Edit Markdown",
     "始终允许": "Always allow",
     "内容由 AI 生成，请核实重要信息": "AI-generated content; please verify important information",
@@ -8,6 +13,7 @@
     "用时": "Time",
     "展开过程": "Show process",
     "收起过程": "Hide process",
+    "本轮没有可显示的过程记录。": "No process details are available for this turn.",
     "包含深度思考与回复；历史用时按消息记录计算，缺失用量显示为 —。": "Includes reasoning and reply. Historical time uses message timestamps; missing usage is shown as —.",
     "从已完成的日常对话自动积累，后续工作会自动参考；仅保存在当前账号的本机": "Automatically accumulated from completed conversations and used in later work. Stored locally for this account.",
     "自动保留近期工作摘要，也可以补充或修正内容": "Recent work summaries are saved automatically. You can add notes or correct them.",

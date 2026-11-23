@@ -6,6 +6,8 @@ Command examples use `sh start.sh` on macOS/Linux. On Windows, use `.\start.cmd`
 
 Hub provides identity, authorization, execution governance, plugins, shared materials, and desktop connectivity. It uses FastAPI and asynchronous SQLAlchemy with PostgreSQL; local development can use SQLite.
 
+The first-chat checklist combines the available model catalog with the signed-in administrator’s latest desktop report. The device sends two readiness flags for its runtime and model selection. After five minutes without a fresh report, the Hub shows those steps as awaiting the desktop.
+
 ## Start locally
 
 For a first session, use `sh start.sh` from the repository root; it creates an isolated database, environment, and administrator.
@@ -56,6 +58,16 @@ Run `python3 -m unittest test_runner_event_scope test_runner_event_delivery` to 
 routing, restart recovery, interrupted archive writes, and Hub delivery preservation.
 
 ## Managed Pi execution
+
+Agent discovery searches bounded npm-prefix, Homebrew and nvm locations, including installations absent from a desktop process's inherited PATH. A selected executable's version, Node engine and DeepSeek adapter metadata must belong to that installation; unrelated private packages cannot supply those values. Windows Codex discovery continues after an excluded WindowsApps candidate. Explicit Agent overrides, managed runtime ownership and native dependency checks remain enforced. The DeepSeek desktop application alone does not provide the ACP adapter required by the Runner.
+
+Recognized npm JavaScript Agents use the same validated Node and package entry for version probes and execution. A shim's adjacent Node cannot override that selection. Node candidates must satisfy the selected package and host minimum versions; DeepSeek boot checks and their cache also track the selected Node and entry. Native executables and custom wrappers retain their explicit commands.
+
+DeepSeek native packages follow the selected Node's platform, architecture and Linux libc, including Rosetta and mixed-runtime installations. Unknown Node identities fail closed. Launch and version-probe child processes inherit the selected Node directory without modifying the Runner's global PATH; quoted Windows PATH entries retain their priority.
+
+Model capability report v3 tests streaming continuation after a synthetic tool result, with tools retained and no extra user message. Existing v2 tool successes require rechecking; independent evidence remains available. Deploy the matching desktop update. Model refusals include an opaque `soduwork-trace` marker shared by JSON and SSE errors and the transport log; validated upstream request IDs remain correlation metadata, never error-classification input. Generic 403 guidance does not infer credential permissions from the status alone.
+
+Model transport refusal logs distinguish recognized rate limits, billing failures and unclassified 429 responses without recording provider bodies. Numeric and HTTP-date `Retry-After` values pass through the existing JSON/SSE error contract; waits above one day are bounded to one day, already beyond the desktop retry budget. Billing errors omit retry hints. The Hub does not add a retry loop; the matching desktop update honors the provider wait only within its existing per-turn budget.
 
 Managed Pi execution binds each Runner execution record to its own configuration and session directory under the Runner data root. Startup and follow-up turns use the same explicit path, independent of inherited desktop Pi settings or the operating system home-directory lookup. Model files contain an environment-variable reference for the credential; missing model configuration or failed file publication stops execution before Pi starts. Personal Pi and desktop-local model files are not modified. On upgrade, only the exact native session identified by the Runner record and matching workspace can be copied into the private directory; its original file remains unchanged. Established follow-up turns require an existing session rather than silently starting a new one.
 
@@ -140,6 +152,42 @@ one continuation, plus one more only after successful native compaction. If the
 limit persists, the turn is reported as incomplete with retained progress instead
 of a protocol error. Successful continuation clears the earlier truncation;
 protocol and host-cleanup failures retain priority.
+
+For managed model routes, SoduWork explicitly enables and budgets DeepSeek's
+native automatic compaction. It runs between tool steps within the current turn.
+Its threshold is the smaller of 80% of the
+model context window and the space left after reserving the current output and
+summary budgets. Summary output stays within the model's configured output cap;
+it no longer inherits the native 65,536-token reservation. Ordinary output caps
+are preserved; a cap that would consume almost the whole window is reduced to
+leave input space. Native compaction keeps the existing session, tool results,
+permissions and cancellation ownership, without requiring a new user message.
+This does not turn a provider's individual output limit into a context overflow
+or remove the bounded output recovery described above.
+
+Run `python3 -m unittest test_dsh_gateway test_context_recovery
+test_acp_error_messages test_local_turn_outcome` for model budgets and recovery
+regressions. Configured or inferred context sizes still need to match the actual
+provider; a window too small for the native instructions and tools cannot be made
+usable by compression alone.
+
+For a real native-process check, run `python3 e2e_dsh_auto_compaction.py` with
+the same explicit `--adapter-entry`, `--runtime-root`, `--node` and `--output`
+paths as the lifecycle check above. A synthetic loopback provider drives a 64k
+window through repeated compression in one user prompt. The check compares the
+old provider-only bundle, verifies durable checkpoints and completed tools, and
+requires lower native usage receipts after compaction. This is not a production
+model or desktop UI acceptance test.
+
+Managed Kimi and Qwen also receive the selected model's context window instead
+of inheriting a larger native default. Kimi receives an explicitly configured
+output cap; Qwen retains the operator's sampling and output parameters. Both use
+their own between-step compression. Managed Codex Harness receives the model
+window and an 80% automatic-compaction threshold. Personal-account Codex keeps
+its native model settings, while OpenCode already receives context/output limits
+and retains native automatic compaction. Run `python3 -m unittest
+test_kimi_runtime test_qwen_runtime test_acp_permission_inputs
+test_codex_account_acp` for these configuration and isolation boundaries.
 
 ## Other harness terminal outcomes
 
@@ -296,8 +344,8 @@ The check verifies the packaged native verifier, real TLS with a disposable trus
 
 - Devices enroll with `POST /api/v1/clients/enroll`, then use a short-lived device session. Device long-term keys remain in the Electron main process; Hub stores only their digest.
 - Business requests use `Authorization: Device <session>`. WebSocket connectivity uses the same short-lived session at `/api/v1/ws`.
-- Tasks use `/api/v1/tasks`, task-specific operations, batch updates, completed-task clearing, and agent run/retry/takeover routes. Configuration uses `/api/v1/config`.
-- Administrators sign in at `/api/v1/admin/login` and use bearer tokens for administrator APIs, including clients, tasks, and dispatch.
+- Tasks use `/api/v1/tasks`, task-specific operations, batch updates, completed-task clearing, and agent run/retry/takeover routes. Device preferences use `GET /api/v1/config?withRevision=true`. Send edited fields and the returned `_configRevision` to `PUT /api/v1/config`. The versioned response lists writable fields in `_configKeys`. Unknown fields and invalid values return 422, a stale revision returns 409, and replacing a previously saved value without a revision returns 428.
+- Administrators sign in at `/api/v1/admin/login` and use bearer tokens for administrator APIs, including clients, tasks, and dispatch. After 10 failed sign-ins for one account or 30 from one IP address within a five-minute window, the Hub returns HTTP 429 with the remaining wait in the `Retry-After` header (seconds). The database stores the counters across Hub workers. Failed attempts appear in the audit log as `admin.login.failed`.
 - Long-term device keys must not enter renderers, logs, or URLs. Server state is authoritative; offline client caches must not overwrite it.
 
 Disabling an account invalidates its existing device sessions and AI/tool tickets, returns devices to pending sign-in, and closes their event, terminal and Runner channels. Device keys, configuration and historical ownership are retained. Another active account can sign in on the same device; re-enabling the original account requires a new sign-in and never restores old sessions. Explicit administrator device bans remain revoked and block every account. Devices already revoked by older account-disable behavior require an administrator to review and activate them; account re-enablement does not automatically lift device bans.
@@ -305,6 +353,14 @@ Disabling an account invalidates its existing device sessions and AI/tool ticket
 Account conversation directory and source projections include `contentLocation`: `hub` for legacy Hub content, `source` for content retained by the original endpoint, `replica` for a valid migrated copy at the current source revision, or `unknown` when the reference cannot be established. The field does not expose private replica identifiers or grant access; clients must retain existing account, Hub, and execution checks. An unknown location must not be used to discard a potentially independent local copy.
 
 See [OAuth deployment and validation](CONNECTOR_OAUTH.en.md) for connector credentials and authorization.
+
+### Listing records
+
+Under `/api/v1`, `admin/users`, `admin/orgs`, `admin/roles`, `admin/domains`, `tasks` and `schedules` return their existing arrays when called without pagination. Supply `limit` (1–200) or `offset` (zero-based) to receive `{items, total}`. With only an offset, the page size defaults to 50. The total counts visible records before pagination. An offset past the end returns an empty page.
+
+Use `GET /api/v1/admin/client-inventory` for an object containing `items`, `total`, `counts`, `page`, `pageSize` and `offset` on every call. Choose `page` and `pageSize` (1–100, default 25), or `offset` and `limit`. Existing callers of `admin/clients` can still request the legacy array or use `paged=1` for an object.
+
+The library uses the same optional limit and offset across folders first, then files. Its existing `folders` and `items` arrays remain separate, and the paginated response includes their combined `total`. Approvals and deliveries accept a positive limit and a zero-based offset.
 
 ## Requirement migration and access
 
@@ -384,3 +440,7 @@ python3 e2e_dsh_private_probe.py \
 ```
 
 This explicit check uses the production private-probe job and ACP bridge, the installed adapter and host, and a synthetic loopback model. It first reproduces the old incorrect installation path, then requires a real model request and the expected Agent response with the corrected path. It uses disposable home, state and temporary directories, blocks non-loopback Node connections and cleans up its subprocesses. It does not install or update dependencies, use real credentials, or verify desktop UI, production Hub or provider behavior. Run it separately from the offline quality gate because it requires an existing native installation.
+
+## Model provider deletion
+
+With `integration.manage`, request `GET /api/v1/admin/model-providers/{id}/deletion-impact`. The result includes the provider and impact revisions, child models, and visible saved model selections. Member names require `user.manage` and issue titles require `task.view`; department visibility still applies. Submit the revisions as `expectedRevision` and `expectedImpact` plus the exact ID as `confirmId` to the existing `DELETE /api/v1/admin/model-providers/{id}`. Older delete requests without the preview return HTTP 428. On HTTP 409, retrieve a fresh preview and confirm again. Built-in services cannot be deleted.

@@ -998,6 +998,18 @@ test('work-card access failures keep the historical session reopen action', () =
   assert.doesNotMatch(list.innerHTML, /data-plugin-retry/);
 });
 
+test('a failed submission displays its diagnostic or recovery guidance', () => {
+  const { renderer, ctx, list } = setupRender();
+  ctx._pending = '';
+  ctx._snap = { status: 'failed', messages: [], tools: [], execution: { reason: 'Working directory unavailable' } };
+  renderer._render();
+  assert.match(list.innerHTML, /class="nbad show"/);
+  assert.match(list.innerHTML, />Working directory unavailable</);
+  delete ctx._snap.execution.reason;
+  renderer._render();
+  assert.match(list.innerHTML, />本轮执行失败，请检查工作目录和执行底座后重试。</);
+});
+
 test('permanent plugin capability denials offer a new chat handoff instead of same-session resume', () => {
   const { renderer, ctx, list } = setupRender();
   ctx._pending = '';

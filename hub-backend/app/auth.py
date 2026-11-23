@@ -21,6 +21,8 @@ def hash_password(pw: str) -> str:
 
 
 def verify_password(pw: str, stored: str) -> bool:
+    if not pw:
+        return False
     try:
         scheme, iter_s, salt_hex, hash_hex = (stored or "").split("$")
         if scheme != "pbkdf2":

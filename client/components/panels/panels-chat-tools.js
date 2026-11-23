@@ -22,6 +22,9 @@
     }
     return '';
   }
+  function filePath(args) {
+    return pick(args, ['path', 'file_path', 'filePath', 'filename', 'fileName', 'file', 'target', 'target_path', 'targetPath']);
+  }
   function baseName(p) {
     const s = String(p || '').split(/[\\/]/);
     return s[s.length - 1] || p || '';
@@ -217,7 +220,7 @@
     const item = tool || {};
     const args = (item.args && typeof item.args === 'object') ? item.args : {};
     const kind = toolKind(item);
-    const path = pick(args, ['path', 'file_path', 'filePath', 'filename', 'file', 'target']);
+    const path = filePath(args);
     if (kind === 'command') {
       return render(item).title;
     }
@@ -415,7 +418,7 @@
     const name = String(t.name || '').toLowerCase();
     const kind = toolKind(t);
     const args = (t.args && typeof t.args === 'object') ? t.args : {};
-    const path = pick(args, ['path', 'file_path', 'filePath', 'filename', 'file', 'target']);
+    const path = filePath(args);
     // Read contents are already in the tool receipt; only process them on click.
     if (kind === 'read' && path) return {
       title: '读取', sub: baseName(path), tip: path, file: true, side: true, readSnapshot: true, body: '',
@@ -836,7 +839,7 @@
     const tools = snap?.tools || [], ids = new Set(tools.map(row => row.id));
     return tools.concat((snap?.toolPreparations || []).filter(row => !ids.has(row.id)));
   }
-  global.ChatTools = { displayTools, render, icon, kind: toolKind, diffHtml, esc, patchList, patchContent, mcpView, commandSummary, timeline,
+  global.ChatTools = { displayTools, render, icon, filePath, kind: toolKind, diffHtml, esc, patchList, patchContent, mcpView, commandSummary, timeline,
     isCommandTool, groupConsecutiveCommands, openSide, closeSide,
     phaseNarrative, batchSummary, batchHtml, composerHasPayload, paintSendButton, toggleGroup,
     appendTimeline, appendGoalProgress, goalProgressRows, goalPhaseHtml, artifactKey,

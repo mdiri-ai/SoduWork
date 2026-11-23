@@ -101,6 +101,26 @@ if (typeof electron === 'string') {
     await sleep(180);
     assert.equal(await js('document.querySelectorAll("[data-chat-summary-body] button").length'), 0, 'opening history must not relabel it as current work');
     fs.writeFileSync(path.join(out, 'historical-preview.png'), (await win.webContents.capturePage()).toPNG());
+    const reads = [
+      { id: 'first-attempt', name: 'read', args: { path: 'docs/image.png' }, state: 'error', isError: true, result: 'ENOENT: file missing' },
+      { id: 'different-file', name: 'read', args: { path: 'other/image.png' }, state: 'done' },
+      { id: 'second-attempt', name: 'read_file', args: { file_path: 'docs/image.png' }, state: 'done' },
+      { id: 'write-only', name: 'write', args: { path: 'docs/image.png' }, state: 'done' },
+    ];
+    await js('fixtureContext.snapshot={tools:' + JSON.stringify(reads) + '};ChatChrome.setWorkspace({dir:' + JSON.stringify(cwd) + '});ChatChrome.openSummary()');
+    await click('[data-chat-read-log] summary');
+    await click('[data-chat-read-filter]');
+    await win.webContents.insertText('docs/image.png');
+    const readRows = () => js('Array.from(document.querySelectorAll("[data-chat-read-results] li"), row => row.textContent)');
+    assert.deepEqual(await readRows(), ['docs/image.png读取成功 second-attempt', 'docs/image.png读取失败 ENOENT first-attempt']);
+    assert.equal(await js('document.querySelector("[data-chat-read-cwd]").textContent'), cwd);
+    await win.webContents.insertText('.absent');
+    assert.deepEqual(await readRows(), []);
+    assert.equal(await js('document.querySelector("[data-chat-read-empty]").hidden'), false);
+    await js('ChatChrome.identify("next-chat");fixtureContext.snapshot={tools:[]};ChatChrome.openSummary()');
+    assert.equal(await js('document.querySelector("[data-chat-read-filter]").value'), '');
+    assert.deepEqual(await readRows(), []);
+    report.cases.push('Path filtering shows separate failed and successful read receipts and clears evidence on a chat switch.');
     assert.deepEqual(report.errors, []);
     report.ok = true;
   }).catch(error => { report.error = String(error.stack || error); }).finally(() => {

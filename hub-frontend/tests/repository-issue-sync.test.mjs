@@ -208,10 +208,10 @@ test('switching repositories ignores the previous request and resets unsaved sta
   assert.equal(checkbox(page).props.checked, false)
 })
 
-async function catalogHost(t, manage, methods) {
+async function catalogHost(t, manage, methods, navTo = () => {}) {
   const page = await createComponentHarness(new URL('../src/screens/Repositories.jsx', import.meta.url), {
     dependencies: { '../api.js': { api: methods, can: (permission) => permission === 'integration.manage' && manage },
-      '../ui.jsx': ui, '../FilterControls.jsx': { FilterInput: 'filter-input' },
+      '../ui.jsx': { ...ui, navTo }, '../FilterControls.jsx': { FilterInput: 'filter-input' },
       './project-governance.css': {}, './repositories.css': {},
       './RepositoryIssueSync.jsx': { __esModule: true, default: 'issue-dialog', RepositoryIssueSyncStatus: 'issue-status' } },
   })
@@ -219,6 +219,95 @@ async function catalogHost(t, manage, methods) {
   page.render(); await page.flush()
   return page
 }
+
+test('catalog setup only counts enabled code sources and links back when none are available', async (t) => {
+  setLocale('zh-CN')
+  const destinations = []
+  const sources = [{ id: 'off', type: 'gitlab', enabled: false }, { id: 'ticket', type: 'ticket' }]
+  const methods = { integrations: async () => sources, repositoryCatalog: async () => ({ items: [] }) }
+  const empty = await catalogHost(t, true, methods, (screen) => destinations.push(screen))
+  const back = empty.nodes(node => node.props.title === '没有已启用的代码源')[0].props.text
+  back.props.onClick()
+  assert.deepEqual(destinations, ['integrations'])
+  sources.push({ id: 'new', type: 'github' }, { id: 'ready', type: 'gitlab', pullAccountSet: true })
+  const setup = await catalogHost(t, true, methods)
+  assert.ok(setup.nodes(node => node.props.children === '1 个代码源尚未配置固定拉取账号。').length)
+  assert.equal(setup.nodes(node => node.props.title === '没有已启用的代码源').length, 0)
+})
+
+test('manual catalog sync prevents repeat submissions, refreshes failed health and supports retry', async (t) => {
+  const runs = []
+  let reads = 0
+  const page = await catalogHost(t, true, {
+    integrations: async () => { reads++; return [{ id: 'lab', type: 'gitlab' }, { id: 'hub', type: 'github' }] },
+    repositoryCatalog: async () => ({ items: [] }),
+    repositorySyncProgress: async () => ({ stage: null }),
+    syncRepositoryCatalog: id => { const run = deferred(); runs.push({ id, ...run }); return run.promise },
+  })
+  const card = id => page.nodes(node => node.props.source?.id === id)[0].props
+  const first = card('lab').onSync()
+  card('lab').onSync(); card('hub').onSync()
+  assert.deepEqual(runs.map(run => run.id), ['lab'])
+  assert.equal(card('lab').syncing, true)
+  assert.equal(card('hub').anySyncing, true)
+  runs[0].reject(Object.assign(new Error('provider unavailable'), { status: 409 }))
+  await first
+  assert.equal(reads, 2)
+  assert.equal(card('lab').syncError, 'provider unavailable')
+  assert.ok(!card('hub').syncError)
+  assert.equal(card('hub').anySyncing, false)
+  const retry = card('lab').onSync()
+  runs[1].resolve({ total: 0 })
+  await retry
+  assert.ok(!card('lab').syncError)
+  assert.equal(reads, 3)
+})
+
+for (const status of [undefined, 423]) {
+  test(`catalog sync observes active work after ${status || 'a lost response'} and reloads its receipt`, { timeout: 5000 }, async (t) => {
+    let stage = 'listing', posts = 0, reads = 0
+    const finished = deferred()
+    const page = await catalogHost(t, true, {
+      integrations: async () => {
+        const at = ++reads
+        if (reads > 1) finished.resolve()
+        return [{ id: 'lab', type: 'gitlab', repositorySyncAt: at, repositorySyncOk: true }]
+      },
+      repositoryCatalog: async () => ({ items: [] }),
+      syncRepositoryCatalog: async () => { posts++; throw Object.assign(new Error('no sync receipt'), { status }) },
+      repositorySyncProgress: async () => ({ stage }),
+    })
+    const card = () => page.nodes(node => node.props.source?.id === 'lab')[0].props
+    await card().onSync(); await page.flush()
+    assert.equal(card().stage, 'listing')
+    assert.equal(card().syncing, true)
+    assert.equal(card().syncError, 'no sync receipt')
+    await card().onSync()
+    assert.equal(posts, 1)
+    stage = null
+    await finished.promise; await page.flush()
+    assert.equal(card().syncing, false)
+    assert.equal(card().source.repositorySyncAt, 2)
+    assert.equal(card().source.repositorySyncOk, true)
+    assert.ok(!card().syncError)
+  })
+}
+
+test('a late catalog progress or POST response cannot update an unmounted screen', async (t) => {
+  const scan = deferred(), progress = deferred()
+  let reads = 0
+  const page = await catalogHost(t, true, {
+    integrations: async () => { reads++; return [{ id: 'lab', type: 'gitlab' }] },
+    repositoryCatalog: async () => ({ items: [] }),
+    syncRepositoryCatalog: () => scan.promise,
+    repositorySyncProgress: () => progress.promise,
+  })
+  const request = page.nodes(node => node.props.source?.id === 'lab')[0].props.onSync()
+  page.unmount()
+  progress.resolve({ stage: 'listing' }); scan.resolve({ total: 1 })
+  await request
+  assert.equal(reads, 1)
+})
 
 test('members can read the catalog without integration.manage and cannot configure sync', async (t) => {
   const calls = []
