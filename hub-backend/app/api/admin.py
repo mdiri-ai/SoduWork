@@ -383,7 +383,10 @@ async def update_user(
         role_ref = await rbac.lock_role_reference(session, body.roleId)
         if role_ref is None:
             raise HTTPException(status_code=400, detail="角色不存在")
-        _assert_within_granter(user, set(role_ref.permissions or []))
+        # Only self-assignment is an escalation vector (#1068): a user.manage holder
+        # reassigning someone else's role is ordinary administration.
+        if uid == str(user.id):
+            _assert_within_granter(user, set(role_ref.permissions or []))
     if body.domains is not None:
         domain_ids = {str(value) for value in body.domains}
         found = set((await session.scalars(select(models.Domain.id).where(
