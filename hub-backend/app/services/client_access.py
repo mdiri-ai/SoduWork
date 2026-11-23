@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import ADMIN_PASSWORD_MAX_LENGTH, ADMIN_PASSWORD_MIN_LENGTH
 from ..models import AIUsageDaily, AIUsageEvent, AppSetting, OrgUnit, Role, User
 
 
@@ -80,6 +81,31 @@ def validate_password(value: str, *, new_account: bool = False) -> str:
     if len(password) > 128:
         raise ClientAccessError(
             "\u5bc6\u7801\u957f\u5ea6\u4e0d\u80fd\u8d85\u8fc7 128 \u4f4d",
+            code="PASSWORD_INVALID",
+            status=422,
+        )
+    return password
+
+
+def validate_admin_password(value: str) -> str:
+    """Server-side backstop for administrative credentials (12-128 chars).
+
+    Kept separate from validate_password(): client self-registration, email
+    sign-up and email password reset intentionally keep their own 8-character
+    policy. Every admin create / password-reset path must call this before
+    hash_password so a weak credential can never be persisted even if a caller
+    bypasses the Pydantic contract.
+    """
+    password = str(value or "")
+    if not password or not password.strip():
+        raise ClientAccessError(
+            "密码不能为空或全部为空白字符",
+            code="PASSWORD_INVALID",
+            status=422,
+        )
+    if not ADMIN_PASSWORD_MIN_LENGTH <= len(password) <= ADMIN_PASSWORD_MAX_LENGTH:
+        raise ClientAccessError(
+            f"密码长度需为 {ADMIN_PASSWORD_MIN_LENGTH}–{ADMIN_PASSWORD_MAX_LENGTH} 位",
             code="PASSWORD_INVALID",
             status=422,
         )

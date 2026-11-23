@@ -4,9 +4,10 @@
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
 from pydantic_core import PydanticCustomError
 
+from .auth import ADMIN_PASSWORD_MAX_LENGTH, ADMIN_PASSWORD_MIN_LENGTH
 from .models import Client, Task
 
 
@@ -219,10 +220,27 @@ class ClientRegister(BaseModel):
     workRoot: Optional[str] = None
 
 
+def _reject_blank_admin_password(value: str) -> str:
+    """Reject all-whitespace passwords while preserving the submitted value."""
+    if not value.strip():
+        raise ValueError("密码不能全部为空白字符")
+    return value
+
+
+# Administrative password policy: 12-128 characters, never all whitespace.
+# Shared by login, user creation and password reset so weak credentials cannot
+# reach verify_password or hash_password through any admin endpoint.
+AdminPassword = Annotated[
+    str,
+    StringConstraints(min_length=ADMIN_PASSWORD_MIN_LENGTH, max_length=ADMIN_PASSWORD_MAX_LENGTH),
+    AfterValidator(_reject_blank_admin_password),
+]
+
+
 class AdminLogin(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     user: str
-    pw: str = Field(default="", alias="pass")  # Login form fields: user and pass.
+    pw: AdminPassword = Field(..., alias="pass")  # Login form fields: user and pass.
 
 
 class DispatchCreate(BaseModel):
@@ -351,7 +369,7 @@ class UserTokenQuota(BaseModel):
 class UserCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     username: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
-    password: Annotated[str, StringConstraints(min_length=8, max_length=128)]
+    password: AdminPassword
     displayName: str = ""
     isTestAccount: Optional[bool] = None
     orgId: Optional[str] = None
@@ -368,7 +386,7 @@ class UserUpdate(BaseModel):
     orgId: Optional[str] = None
     roleId: Optional[str] = None
     isActive: Optional[bool] = None
-    password: Optional[Annotated[str, StringConstraints(min_length=8, max_length=128)]] = None
+    password: Optional[AdminPassword] = None
     positions: Optional[list] = None
     domains: Optional[list[str]] = None
     tokenQuota: Optional[UserTokenQuota] = None

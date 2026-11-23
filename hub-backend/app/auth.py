@@ -13,6 +13,12 @@ from .config import get_settings
 
 _ITER = 200_000
 
+# Administrative accounts follow the 12-128 character policy documented in the
+# startup guide. Client self-registration keeps its own shorter policy in
+# services/client_access.validate_password.
+ADMIN_PASSWORD_MIN_LENGTH = 12
+ADMIN_PASSWORD_MAX_LENGTH = 128
+
 
 def hash_password(pw: str) -> str:
     salt = secrets.token_bytes(16)
@@ -28,6 +34,26 @@ def verify_password(pw: str, stored: str) -> bool:
         if scheme != "pbkdf2":
             return False
         dk = hashlib.pbkdf2_hmac("sha256", (pw or "").encode("utf-8"), bytes.fromhex(salt_hex), int(iter_s))
+        return hmac.compare_digest(dk.hex(), hash_hex)
+    except Exception:
+        return False
+
+
+def is_empty_password_hash(stored: str) -> bool:
+    """Return True when a stored PBKDF2 hash was derived from an empty password.
+
+    verify_password() deliberately rejects empty credentials, so a legacy-account
+    scan must compare the derived key directly instead of calling it. Used only
+    for one-time containment of pre-policy accounts, never for authentication.
+    """
+    try:
+        scheme, iter_s, salt_hex, hash_hex = (stored or "").split("$")
+        if scheme != "pbkdf2":
+            return False
+        iterations = int(iter_s)
+        if not 0 < iterations <= 1_000_000:  # Bound work for malformed stored hashes.
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", b"", bytes.fromhex(salt_hex), iterations)
         return hmac.compare_digest(dk.hex(), hash_hex)
     except Exception:
         return False

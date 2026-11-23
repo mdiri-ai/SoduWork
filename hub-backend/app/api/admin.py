@@ -456,10 +456,12 @@ async def update_user(
         await rbac.lock_org_tree(session, shared=True)
     await _assert_user_in_scope(session, user, target)
     if body.password is not None:
-        if len(body.password) < 8:
-            raise HTTPException(status_code=422, detail="密码长度不能少于 8 个字符")
-        if len(body.password) > 128:
-            raise HTTPException(status_code=422, detail="密码长度不能超过 128 个字符")
+        # Validate before any side effects (device revocation, audit rows) so a
+        # rejected password leaves the target account untouched.
+        try:
+            client_access.validate_admin_password(body.password)
+        except client_access.ClientAccessError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)

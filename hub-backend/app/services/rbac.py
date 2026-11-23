@@ -2,18 +2,23 @@
 other users are scoped to their organization subtree. Clients inherit organization through
 user_ref.
 """
+import json
+import logging
+
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import String, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models
 from ..pagination import Page, list_result, select_rows
-from ..auth import hash_password
+from ..auth import hash_password, is_empty_password_hash
 from ..config import get_settings
 from . import catalog_names
 from ..permissions import ALL_KEYS, valid_keys
 from ..schemas import AdminName, _ms
 from . import client_access
+
+log = logging.getLogger("uvicorn.error")
 
 _DEPT_ADMIN_PERMS = [
     "client.view", "client.assign", "client.control", "client.update",
@@ -21,6 +26,7 @@ _DEPT_ADMIN_PERMS = [
 ]
 
 _BUILTIN_ROLE_PERMISSIONS_VERSION = "rbac_builtin_role_permissions_v4"
+_LEGACY_BLANK_PASSWORD_SCAN_KEY = "admin_blank_password_scan_v1"
 
 
 class OrgMutationError(ValueError):
@@ -382,7 +388,7 @@ async def get_user_by_username(session: AsyncSession, username: str) -> models.U
 async def create_user(session: AsyncSession, username: str, password: str, display_name: str,
                       org_id: str | None, role_id: str | None, positions: list | None = None,
                       domains: list | None = None, *, token_quota=None, is_test_account: bool | None = None) -> dict:
-    password = client_access.validate_password(password, new_account=True)
+    password = client_access.validate_admin_password(password)
     u = models.User(
         username=username, password_hash=hash_password(password),
         is_test_account=is_test_account,
@@ -401,7 +407,7 @@ async def create_user(session: AsyncSession, username: str, password: str, displ
 def apply_user_patch(u: models.User, patch: dict) -> None:
     password = patch.get("password")
     if password is not None:
-        password = client_access.validate_password(password, new_account=True)
+        password = client_access.validate_admin_password(password)
     if "displayName" in patch and patch["displayName"] is not None:
         u.display_name = patch["displayName"]
     if "isTestAccount" in patch:
@@ -620,6 +626,41 @@ async def upgrade_builtin_role_permissions(session: AsyncSession) -> None:
     await session.commit()
 
 
+async def quarantine_legacy_blank_passwords(session: AsyncSession) -> int:
+    """One-time containment of accounts created with an empty password (B01).
+
+    PBKDF2 hashes use a random salt, so ``password_hash == hash_password("")``
+    cannot detect legacy blank passwords; is_empty_password_hash() compares the
+    derived key instead (verify_password() short-circuits empty credentials).
+    Accounts whose hash is an empty string (OIDC JIT identities that never had a
+    password) are deliberately left untouched. Deactivating plus an
+    auth_version bump closes both the backdoor and any existing sessions, and an
+    administrator must set a compliant password before re-enabling the account.
+    A persisted marker keeps this scan to a single run across worker restarts.
+    """
+    marker = await session.get(models.AppSetting, _LEGACY_BLANK_PASSWORD_SCAN_KEY)
+    if marker is not None:
+        return 0
+    rows = list((await session.scalars(
+        select(models.User).where(models.User.is_active.is_(True)))).all())
+    quarantined: list[str] = []
+    for user in rows:
+        if user.password_hash and is_empty_password_hash(user.password_hash):
+            user.is_active = False
+            user.auth_version = int(user.auth_version or 0) + 1
+            quarantined.append(user.username)
+    session.add(models.AppSetting(
+        key=_LEGACY_BLANK_PASSWORD_SCAN_KEY,
+        value=json.dumps({"quarantined": quarantined}, ensure_ascii=False),
+    ))
+    await session.commit()
+    if quarantined:
+        log.warning(
+            "已隔离 %d 个历史空口令账号，需由管理员重置为 12–128 位口令后重新启用：%s",
+            len(quarantined), ", ".join(quarantined))
+    return len(quarantined)
+
+
 async def bootstrap(session: AsyncSession) -> None:
     n = await session.scalar(select(func.count()).select_from(models.User))
     if not n:
@@ -640,3 +681,5 @@ async def bootstrap(session: AsyncSession) -> None:
         ))
         await session.commit()
     await upgrade_builtin_role_permissions(session)
+    # Close legacy blank-password backdoors once after upgrading to the 12-128 policy.
+    await quarantine_legacy_blank_passwords(session)

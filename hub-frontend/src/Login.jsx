@@ -45,6 +45,11 @@ export default function Login({ onLogin, onBack, initialError = '' }) {
   async function submit(event) {
     event.preventDefault()
     if (busy) return
+    // Match the server's 12-128 character policy so a rejected password gets a
+    // clear message instead of an opaque validation error.
+    if (pass.length < 12 || pass.length > 128 || !pass.trim()) {
+      setErr(tx('密码需为 12–128 位，且不能全部为空白字符')); return
+    }
     setErr(''); setBusy(true)
     try {
       const result = await api.login(user.trim(), pass)
@@ -87,7 +92,7 @@ export default function Login({ onLogin, onBack, initialError = '' }) {
         {err && <div id={`${formId}-error`} className="login-error" role="alert">{err}</div>}
         {providers.length > 0 && <div className="login-sso">{providers.map(item => <button type="button" className="login-sso-button" key={item.key} disabled={busy} onClick={() => window.location.assign(item.startUrl)}><span className="login-sso-mark" aria-hidden="true">S</span><span>{tx('使用 {0} 登录', [item.name])}</span><b aria-hidden="true">→</b></button>)}<div className="login-divider"><span>{tx('或使用 SoduWork 账号')}</span></div></div>}
         <div className="login-field"><label className="f-lbl" htmlFor={`${formId}-account`}>{tx('账号')}</label><input id={`${formId}-account`} className="f-in" name="username" autoComplete="username" value={user} onBeforeInput={blockAccountLineBreak} onChange={event => updateSingleLineAccount(event, setAccount)} placeholder={tx('输入你的账号')} autoCapitalize="none" spellCheck={false} required autoFocus aria-describedby={err ? `${formId}-error` : undefined} /></div>
-        <div className="login-field"><label className="f-lbl" htmlFor={`${formId}-password`}>{tx('密码')}</label><div className="login-password"><input id={`${formId}-password`} className="f-in" name="password" autoComplete="current-password" type={revealed ? 'text' : 'password'} value={pass} onChange={event => setPass(event.target.value)} placeholder={tx('输入你的密码')} required aria-describedby={err ? `${formId}-error` : undefined} /><button className="login-password-toggle" type="button" onClick={() => setRevealed(!revealed)} aria-label={revealed ? tx('隐藏密码') : tx('显示密码')} aria-pressed={revealed}>{revealed ? tx('隐藏') : tx('显示')}</button></div></div>
+        <div className="login-field"><label className="f-lbl" htmlFor={`${formId}-password`}>{tx('密码')}</label><div className="login-password"><input id={`${formId}-password`} className="f-in" name="password" autoComplete="current-password" type={revealed ? 'text' : 'password'} value={pass} onChange={event => setPass(event.target.value)} placeholder={tx('输入你的密码')} minLength={12} maxLength={128} required aria-describedby={err ? `${formId}-error` : undefined} /><button className="login-password-toggle" type="button" onClick={() => setRevealed(!revealed)} aria-label={revealed ? tx('隐藏密码') : tx('显示密码')} aria-pressed={revealed}>{revealed ? tx('隐藏') : tx('显示')}</button></div></div>
         <button type="submit" className="login-submit" disabled={busy}>{busy ? tx('正在登录…') : tx('进入控制台')}<span aria-hidden="true">→</span></button>
         <details className="login-help">
           <summary>{tx('忘记密码？')}</summary>
