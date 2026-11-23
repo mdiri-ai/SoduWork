@@ -169,6 +169,23 @@ def delivery_mode(node: dict | None, has_repo: bool) -> str:
     return "git" if has_repo else "files"
 
 
+def validate_when_dependency(node: dict | None) -> None:
+    """Require ``when.node`` to be declared in ``dependsOn``; otherwise the scheduler
+    would permanently skip the node before its condition source ever runs."""
+    node = dict(node or {})
+    when = (node.get("config") or {}).get("when")
+    if not isinstance(when, dict):
+        return
+    source = str(when.get("node") or "").strip()
+    if not source:
+        return
+    depends = [str(x or "") for x in node.get("dependsOn") or []]
+    if source not in depends:
+        raise WorkflowContractError(
+            f"节点 {node.get('key') or ''} 的 when 条件引用了未声明的上游节点：{source}"
+            "；when.node 必须在 dependsOn 中，否则节点会在条件来源运行前被永久跳过")
+
+
 def dependency_keys(workflow: dict | None, node: dict | None) -> list[str]:
     """Return the transitive upstream nodes in workflow order.
 
