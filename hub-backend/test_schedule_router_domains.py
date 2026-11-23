@@ -9,6 +9,7 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import models
@@ -127,6 +128,28 @@ class ScheduleRouterDomainTests(unittest.IsolatedAsyncioTestCase):
             result = await self.request("GET", "/ai-schedules/own/runs")
         self.assertEqual(result.status_code, 404, result.text)
         denied.assert_awaited_once()
+
+    async def test_run_history_reads_preserve_receipts_without_committing(self):
+        async with self.sessions() as session:
+            client = await session.get(models.Client, "device")
+            session.add(models.AiScheduleRun(id="legacy", schedule_id="own", owner_client_id="device",
+                                             task_id="legacy-task", state="running"))
+            await session.commit()
+        self.app.dependency_overrides[current_client] = lambda: client
+        headers = {"Authorization": "Bearer " + sign_token("manager", 1)}
+        commits = []
+        event.listen(self.engine.sync_engine, "commit", commits.append)
+        for path in ("/api/v1/admin/ai-schedules/own/runs", "/api/v1/schedules/own/runs"):
+            with self.subTest(path=path):
+                for _ in range(2):
+                    response = await self.http.get(path, headers=headers)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual([(row["id"], row["state"]) for row in response.json()["items"]],
+                                     [("legacy", "running")])
+                async with self.sessions() as session:
+                    run = await session.get(models.AiScheduleRun, "legacy")
+                    self.assertEqual((run.state, run.task_id), ("running", "legacy-task"))
+                self.assertEqual(commits, [])
 
     async def test_personal_router_order_aliases_and_auth(self):
         names = list(route_names(tasks.router.routes))

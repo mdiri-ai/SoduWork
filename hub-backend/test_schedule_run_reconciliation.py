@@ -81,6 +81,21 @@ class ScheduleRunReconciliationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("请重新执行", self.run.error)
         self.assertIsNotNone(self.run.finished_at)
 
+    async def test_limited_tick_reconciles_active_and_older_legacy_receipts(self):
+        self.plan.every = "once"
+        self.plan.run_at = self.started + timedelta(days=1)
+        self.run.receipt = {"timing": schedule_timing.snapshot(self.plan)}
+        self.plan.run_at += timedelta(days=1)
+        older = models.AiScheduleRun(id="legacy", schedule_id=self.plan.id, owner_client_id=self.client.id,
+                                     state="succeeded", task_id=self.task.id, started_at=self.started - timedelta(days=1))
+        self.session.add(older)
+        await self.session.commit()
+
+        await schedules.reconcile_runs(self.session, limit=1)
+        await self.session.commit()
+        self.assertEqual(self.run.state, "cancelled")
+        self.assertEqual((older.state, older.task_id), ("failed", ""))
+
     async def test_native_starting_receipt_waits_for_actual_device_ack(self):
         await self.reconcile()
         self.assertEqual(self.run.state, "starting")

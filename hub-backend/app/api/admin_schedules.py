@@ -173,14 +173,11 @@ async def delete_ai_schedule(sid: str, user: User = Depends(require_perm("task.d
 async def list_ai_schedule_runs(sid: str, limit: int = 20,
                                 user: User = Depends(require_perm("task.dispatch")),
                                 session: AsyncSession = Depends(get_session)):
-    from .admin import _sch_api, _sch_apply, _scoped_ai_schedule
-
-    from ..models import AiSchedule
+    from .admin import _scoped_ai_schedule
     from ..services import schedules as sch
-    s = await _scoped_ai_schedule(session, sid, user)
-    items = await sch.list_runs(session, sid, limit=limit)
-    await session.commit()
-    return {"items": items}
+
+    await _scoped_ai_schedule(session, sid, user)
+    return {"items": await sch.list_runs(session, sid, limit=limit)}
 
 
 @router.post("/ai-schedules/{sid}/run")

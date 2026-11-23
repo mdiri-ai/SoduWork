@@ -465,18 +465,14 @@ async def reconcile_runs(session: AsyncSession, *, schedule_id: str = "",
     await schedule_device_liveness.reconcile_expired(
         session, schedule_id=schedule_id, owner_client_id=owner_client_id,
         owner_user_id=owner_user_id, limit=limit)
-    cloud_mode = models.AiScheduleRun.receipt["executionMode"].as_string() == CLOUD_PROTOCOL
-    damaged_cloud = cloud_mode & (
+    execution_mode = models.AiScheduleRun.receipt["executionMode"].as_string()
+    damaged_cloud = (execution_mode == CLOUD_PROTOCOL) & (
         models.AiScheduleRun.receipt["migratedFrom"].as_string() == "legacy-task-workflow")
-    state_filter = or_(models.AiScheduleRun.state.in_(RUN_ACTIVE), damaged_cloud)
-    # Include every old task/workflow-linked row when a schedule's history is
-    # opened. It is migrated below in one place, so the UI never exposes a
-    # retired task status or attempts to recover the old workflow.
-    legacy_links = or_(models.AiScheduleRun.workflow_run_id != "",
-                       models.AiScheduleRun.task_id != "")
-    if schedule_id:
-        state_filter = or_(state_filter, legacy_links)
-    q = select(models.AiScheduleRun).where(state_filter)
+    # The scheduler retires legacy links even on terminal rows. Modern cloud
+    # receipts keep their task links; legacy receipts may have no executionMode.
+    legacy_links = execution_mode.is_distinct_from(CLOUD_PROTOCOL) & or_(
+        models.AiScheduleRun.workflow_run_id != "", models.AiScheduleRun.task_id != "")
+    q = select(models.AiScheduleRun)
     if schedule_id:
         q = q.where(models.AiScheduleRun.schedule_id == schedule_id)
     if owner_client_id:
@@ -484,9 +480,13 @@ async def reconcile_runs(session: AsyncSession, *, schedule_id: str = "",
     if owner_user_id is not None:
         q = q.where(models.AiScheduleRun.owner_user_id == owner_user_id if owner_user_id
                     else models.AiScheduleRun.owner_user_id.is_(None))
-    active = list((await session.execute(
-        q.order_by(models.AiScheduleRun.started_at.desc()).limit(
-            max(1, min(500, int(limit or 200)))).execution_options(populate_existing=True))).scalars().all())
+    batch = q.order_by(models.AiScheduleRun.started_at.desc()).limit(
+        max(1, min(500, int(limit or 200)))).execution_options(populate_existing=True)
+    # Each group gets a bounded batch, so long-running work and a backlog of
+    # legacy receipts cannot crowd each other out of every scheduler tick.
+    current = or_(models.AiScheduleRun.state.in_(RUN_ACTIVE), damaged_cloud)
+    active = list((await session.scalars(batch.where(current, ~legacy_links))).all())
+    active.extend((await session.scalars(batch.where(legacy_links))).all())
     if not active:
         return active
     now = datetime.now(timezone.utc)
@@ -611,8 +611,6 @@ def run_to_api(run) -> dict:
 async def list_runs(session: AsyncSession, schedule_id: str, *,
                     owner_client_id: str = "", owner_user_id: str | None = None,
                     limit: int = 20) -> list[dict]:
-    await reconcile_runs(session, schedule_id=schedule_id,
-                         owner_client_id=owner_client_id, owner_user_id=owner_user_id)
     q = select(models.AiScheduleRun).where(
         models.AiScheduleRun.schedule_id == schedule_id)
     if owner_client_id:
