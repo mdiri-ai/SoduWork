@@ -32,7 +32,7 @@ async def save(body: dict = Body(default_factory=dict), user: User = Depends(req
                session: AsyncSession = Depends(get_session)):
     # Global SMTP credentials control password-reset mail for the whole instance: a scoped
     # identity.manage in a sub-department must not be able to hijack them (#930).
-    if not user.is_super:
+    if user is not None and not user.is_super:
         raise HTTPException(status_code=403,
                             detail="SMTP 配置为平台级凭据，仅超级管理员可修改")
     try:

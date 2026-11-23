@@ -1888,7 +1888,7 @@ async def put_llm_config(
     """Update LLM settings; omitted or empty apiKey preserves the existing credential."""
     # LLM endpoint/keys are platform-level credentials: a scoped integration.manage in a
     # sub-department must not be able to redirect the whole instance's AI traffic (#929).
-    if not user.is_super:
+    if user is not None and not user.is_super:
         raise HTTPException(status_code=403,
                             detail="LLM 配置为平台级凭据，仅超级管理员可修改")
     import json as _json
