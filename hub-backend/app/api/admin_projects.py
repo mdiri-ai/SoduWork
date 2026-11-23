@@ -384,7 +384,9 @@ async def update_repo(rid: str, body: dict = Body(default_factory=dict),
 @router.delete("/repos/{rid}")
 async def delete_repo(rid: str, user: User = Depends(require_perm("task.dispatch")),
                       session: AsyncSession = Depends(get_session)):
-    from ..models import DeploymentTarget, Repo
+    from .. import automation_models
+    from ..models import Repo
+    DeploymentTarget = automation_models.DeploymentTarget
     r = await session.get(Repo, rid)
     if r is None:
         return {"ok": True}
