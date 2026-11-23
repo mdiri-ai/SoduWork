@@ -374,7 +374,6 @@ async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Pag
     settings = dict((await session.execute(select(models.AppSetting.key, models.AppSetting.value).where(
         models.AppSetting.key.in_(keys)))).all())
     plans = quota_plans.catalog_from(settings.get(quota_plans.CATALOG_KEY))
-    quotas = await client_access.user_quotas(session, [u.id for u in users])
     items = []
     for u in users:
         grant = quota_plans.parse(settings.get(quota_plans.GRANT_PREFIX + u.id))
@@ -384,7 +383,9 @@ async def list_users(session: AsyncSession, scope: set[str] | None, *, page: Pag
             quota = {"mode": "limited" if limit is not None else "inherit", "limit": limit or 0,
                      "source": "assignment"}
         else:
-            quota = {**quotas.get(u.id, {"mode": "inherit", "limit": 0}), "source": "legacy"}
+            raw = settings.get(client_access.USER_QUOTA_PREFIX + u.id)
+            legacy = client_access.user_quota(client_access._stored_json(raw)) if raw else None
+            quota = {**(legacy or {"mode": "inherit", "limit": 0}), "source": "legacy"}
         items.append(user_to_api(u, token_quota=quota))
     return list_result(items, total)
 
