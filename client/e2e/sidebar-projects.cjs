@@ -86,9 +86,12 @@ async function run() {
   assert.equal(picks, 1);
   await js('document.querySelector(".ws-project-save").click()');
   assert.equal(await js('document.querySelector(".ws-project-toggle span").textContent'), 'paperclip');
-  report.cases.push('create project, validate empty name, choose source folder through IPC without changing workdir');
-  await js('document.querySelector(".ws-project-edit").click();document.querySelector("#wsProjectName").value="产品孵化";document.querySelector(".ws-project-save").click()');
+  assert.deepEqual(await js('opens.map(item=>[item.key,item.options.newSession,item.options.cwd,item.options.sidebarProjectId===projectId()])'),
+    [['create', true, 'C:\\Work\\paperclip', true]], 'a new project with a folder becomes the new-session workspace');
+  report.cases.push('create project, validate empty name, choose source folder through IPC without changing workdir; the new session uses that folder');
+  await js('opens.length=0;document.querySelector(".ws-project-edit").click();document.querySelector("#wsProjectName").value="产品孵化";document.querySelector(".ws-project-save").click()');
   assert.equal(await js('document.querySelector(".ws-project-toggle span").textContent'), '产品孵化');
+  assert.equal(await js('opens.length'), 0, 'editing a project keeps the current session');
   await js('window.firstProject=projectId();drag("chat-1",firstProject);drag("chat-2",firstProject,"chat-1")');
   assert.deepEqual(await js('[...document.querySelectorAll(".ws-project-chats .ws-chat")].map(el=>el.dataset.chatId)'), ['chat-2', 'chat-1']);
   assert.equal(await js('opens.length'), 0);
@@ -228,6 +231,35 @@ async function run() {
   assert.equal(await js('document.querySelector("#wsAccountHistoryStatus").hidden'), true);
   report.cases.push('An account read failure preserves visible history and uses a compact recoverable status inside the original recent section');
   rows.splice(0, rows.length, ...originalRows); localRows = []; localRevision++;
+  await js('localStorage.clear()'); await reload();
+  await until('document.querySelectorAll(".ws-chat-row").length===50');
+  const createProject = async (name, withFolder) => {
+    await js('document.querySelector("#wsProjectAdd").click()');
+    await until('!!document.querySelector(".ws-project-dialog[open]")');
+    if (withFolder) {
+      await js('document.querySelector(".ws-project-folder-add").click()');
+      await until('!!document.querySelector(".ws-project-folder")');
+    }
+    await js('document.querySelector("#wsProjectName").value=' + JSON.stringify(name) + ';opens.length=0;document.querySelector(".ws-project-save").click()');
+    await until('!document.querySelector(".ws-project-dialog")');
+  };
+  await createProject('无文件夹项目', false);
+  assert.equal(await js('opens.length'), 0, 'a project without a folder keeps the current draft and its default workspace');
+  await js('WorkspaceShell.activeChatId="chat-0"');
+  await createProject('聊天中创建', true);
+  assert.equal(await js('opens.length'), 0, 'creating a project during a conversation does not leave that conversation');
+  await js('WorkspaceShell.activeChatId=""');
+  await js('row("chat-4").querySelector(".ws-chat-move").click()');
+  await until('!!document.querySelector(".ws-project-move-dialog[open]")');
+  await js('[...document.querySelectorAll(".ws-move-option")].pop().click()');
+  await until('!!document.querySelector(".ws-project-dialog[open]")');
+  await js('document.querySelector(".ws-project-folder-add").click()');
+  await until('!!document.querySelector(".ws-project-folder")');
+  await js('document.querySelector("#wsProjectName").value="移入的项目";opens.length=0;document.querySelector(".ws-project-save").click()');
+  await until('!document.querySelector(".ws-project-dialog")');
+  assert.equal(await js('opens.length'), 0, 'create-and-move keeps the moved conversation and its workspace');
+  assert.equal(await js('row("chat-4").closest(".ws-project")?.querySelector(".ws-project-toggle span")?.textContent'), '移入的项目');
+  report.cases.push('a new project only becomes the new-session workspace when it has a folder, no conversation is open and no chat is being moved');
   await js('localStorage.clear()'); await reload();
   await until('document.querySelectorAll(".ws-chat-row").length===50');
 

@@ -232,7 +232,17 @@
           try {
             state(); if (scope !== currentScope) throw Error('账号已切换，请重新打开项目');
             const projectId = state().saveProject({ id, name: input.value, folders, businessProjectId });
-            finish(); render(); if (chatId) move(chatId, projectId);
+            finish(); render();
+            if (chatId) { move(chatId, projectId); return; }
+            /*
+             * A new project with a source folder becomes the workspace of the new-session
+             * draft, through the same entry as the project-name click. Edits, moved chats
+             * and an open conversation keep their existing workspace.
+             */
+            const saved = project ? null : state().get().projects.find(item => item.id === projectId);
+            if (saved && String(saved.folders?.[0] || '').trim() && !global.WorkspaceShell?.activeChatId) {
+              openProjectSession(saved);
+            }
           } catch (e) { error(e.message || '未能保存，请重试'); }
         };
         document.body.appendChild(dialog); dialog.showModal(); input.focus(); input.select();
