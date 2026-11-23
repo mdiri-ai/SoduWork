@@ -81,11 +81,18 @@ async def export_csv(session, user, environment, **filters):
     fields = ("id", "at", "actorId", "actorName", "action", "targetType", "targetId",
               "targetLabel", "detail", "hubEnvironment")
 
+    def _neutralize(val):
+        if val is not None:
+            s = str(val)
+            if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+                return "'" + s
+        return val
+
     def values(row):
         item = _to_api(row)
         item.update(at=iso_utc(row.at), actorId=row.actor_id, hubEnvironment=environment,
                     detail=json.dumps(item["detail"], ensure_ascii=False))
-        return (item[key] for key in fields)
+        return (_neutralize(item[key]) for key in fields)
 
     return csv_chunks(rows, fields, values)
 
