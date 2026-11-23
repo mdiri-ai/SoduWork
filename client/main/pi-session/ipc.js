@@ -312,7 +312,13 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     const url = frame?.url || sender?.getURL?.() || '';
     if ((frame && frame !== sender?.mainFrame) || (url && !String(url).startsWith('file:')))
       return { ok: false, reason: '会话分支只允许工作台调用' };
-    return _accountSync.branch(String(sessionId || ''), {
+    // The chat renderer passes the runtime handle ref like every other session
+    // API. Account sync resolves native conversation ids, so translate the
+    // handle ref into its session id first; the raw value still reaches
+    // branch() when no handle matches so the caller sees the normal sync-state
+    // error for already-archived ids.
+    const handle = session.get(String(sessionId || ''));
+    return _accountSync.branch(String(handle?.sessionId || sessionId || ''), {
       instruction: input?.instruction, agentId: input?.agentId,
     });
   });
