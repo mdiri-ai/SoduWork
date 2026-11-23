@@ -98,6 +98,24 @@ class EnvironmentSortValidationTests(unittest.IsolatedAsyncioTestCase):
             ])
             self.assertEqual(await session.scalar(select(func.count()).select_from(models.AuditLog)), 0)
 
+    async def test_malformed_promotion_requires_preserves_dependencies(self):
+        async def update(requires):
+            return await self.request("PATCH", "/existing", json={"promotionPolicy": {"requires": requires}})
+
+        accepted = await update(["system"])
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        for value in (12345, True, "system", False, 0, {}, ["system", 2]):
+            with self.subTest(value=value):
+                rejected = await update(value)
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                self.assertEqual(rejected.json()["detail"], "requires 必须是环境标识数组")
+                async with self.sessions() as session:
+                    row = await session.get(am.Environment, "existing")
+                    self.assertEqual(row.promotion_policy["requires"], ["system"])
+        cleared = await update([])
+        self.assertEqual(cleared.status_code, 200, cleared.text)
+        self.assertEqual(cleared.json()["promotionPolicy"]["requires"], [])
+
     async def test_invalid_sort_returns_400_without_data_or_audit_writes(self):
         invalid = [
             [], [1], {}, {"value": 1}, True, False, 1.5, 1.0,

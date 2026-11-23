@@ -59,6 +59,10 @@ def _selector(value) -> dict:
     return selector
 
 
+class InvalidPromotionRequires(ValueError):
+    """The requires field must be a list of environment keys."""
+
+
 def promotion_policy(value) -> dict:
     """Single interpreter for environment-promotion policy; names and categories carry no execution
     semantics.
@@ -66,11 +70,11 @@ def promotion_policy(value) -> dict:
     raw = dict(value or {}) if isinstance(value, dict) else {}
     raw_requires = raw.get("requires")
     if raw_requires is not None and not isinstance(raw_requires, list):
-        raise ValueError("requires 必须是环境标识数组")
+        raise InvalidPromotionRequires("requires 必须是环境标识数组")
     requires = []
     for item in raw_requires or []:
         if not isinstance(item, str):
-            raise ValueError("requires 必须是环境标识数组")
+            raise InvalidPromotionRequires("requires 必须是环境标识数组")
         key = _text(item, 64).lower()
         if not _KEY.fullmatch(key):
             raise ValueError(f"前置环境标识不合法：{key or '空'}")

@@ -16,6 +16,10 @@ router = APIRouter(prefix="/api/v1/admin", tags=["environments"])
 
 
 def _bad(error: ValueError) -> HTTPException:
+    from ..services.environment_contracts import InvalidPromotionRequires
+
+    if isinstance(error, InvalidPromotionRequires):
+        return HTTPException(status_code=400, detail=str(error))
     if isinstance(error, svc.InvalidRunnerSelector):
         return HTTPException(status_code=422, detail=str(error))
     if isinstance(error, svc.InvalidEnvironmentTier):
