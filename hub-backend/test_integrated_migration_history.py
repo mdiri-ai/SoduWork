@@ -29,7 +29,7 @@ from app.schema_migrations import (
 
 OLD_MERGE = "0067_merge_release_account_ownership"
 CANONICAL_MERGE = "0067_merge_account_ownership"
-CURRENT_HEAD = "0094_review_recipient"
+CURRENT_HEAD = "0093_schedule_session_mode"
 
 
 class IntegratedMigrationHistoryTests(unittest.TestCase):
@@ -322,6 +322,9 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
                                 self.assertEqual(row.pop("model_source"), "managed")
                                 self.assertEqual(json.loads(row.pop("source_requirement")),
                                                  expected_source if row["id"] == "schedule-enabled" else {})
+                                # 0093 backfills the reused-conversation fields on old rows.
+                                self.assertEqual(row.pop("session_mode"), "fresh")
+                                self.assertEqual(row.pop("recurring_conversation_id"), "")
                             self.assertEqual(actual, old_schedules)
                             self.assertEqual([dict(row) for row in connection.execute("SELECT * FROM task")],
                                              [{**row, "review_recipient_user_id": None} for row in old_tasks])
