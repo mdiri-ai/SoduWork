@@ -80,8 +80,11 @@ async def upsert_binding(
     # Fill only missing ownership; preserve manual assignments.
     rows = (await session.execute(
         select(Task).where(Task.integration_id == iid))).scalars().all()
+    scope = await rbac.scope_org_ids(session, user)
     fixed = 0
     for t in rows:
+        if scope is not None and not (t.shared_org_id and t.shared_org_id in scope):
+            continue  # Outside the visible scope; backfill only in-scope tasks.
         if (getattr(t, "repo_id", "") or "").strip():
             continue
         if (getattr(t, "ext_repo", "") or "").strip().lower() != ext.lower():
@@ -110,6 +113,8 @@ async def delete_binding(
     repo = await session.get(Repo, b.repo_id)
     if repo is not None:
         await _assert_repo_scope(session, user, repo)
+    else:
+        raise HTTPException(status_code=403, detail="绑定指向的工程不存在，无法确认归属")
     external_repo = b.external_repo
     integration_id = b.integration_id
     repo_id = b.repo_id
@@ -135,6 +140,9 @@ async def pending(
     stuck = [t for t in rows
              if not (getattr(t, "repo_id", "") or "").strip()
              and (getattr(t, "ext_repo", "") or "").strip()]
+    scope = await rbac.scope_org_ids(session, user)
+    if scope is not None:
+        stuck = [t for t in stuck if t.shared_org_id and t.shared_org_id in scope]
     groups: dict[tuple[str, str], dict] = {}
     for t in stuck:
         key = (t.integration_id or "", (t.ext_repo or "").strip())
