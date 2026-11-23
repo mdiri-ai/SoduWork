@@ -1478,6 +1478,24 @@
       return rows;
     },
 
+    /* Issue #495 (方案二): per-member Git repository → local checkout path mappings. */
+    async clientRepoPaths() {
+      var result = await jfetch('/client-repo-paths');
+      return (result && Array.isArray(result.paths)) ? result.paths : [];
+    },
+    async saveClientRepoPath(gitUrl, localPath) {
+      var result = await jfetch('/client-repo-paths', {
+        method: 'PUT', body: JSON.stringify({ gitUrl: gitUrl, localPath: localPath })
+      });
+      return (result && Array.isArray(result.paths)) ? result.paths : [];
+    },
+    async deleteClientRepoPath(gitUrl) {
+      var result = await jfetch('/client-repo-paths', {
+        method: 'DELETE', body: JSON.stringify({ gitUrl: gitUrl })
+      });
+      return (result && Array.isArray(result.paths)) ? result.paths : [];
+    },
+
     /* Personal and team daily/weekly reports, with client reading and confirmation. */
     async getWorkReports(period, anchor, scope, orgId) {
       var q = new URLSearchParams({

@@ -166,9 +166,20 @@ def _fill_repo_wire(repo_ctx: dict, repo) -> None:
 async def _settle_work_dir(session, client, repo, repo_ctx: dict, task_id: str,
                            remote: bool = False) -> dict:
     """Behavior and constraints for this operation."""
-    from ..services import code_creds, scm_support, workdirs
+    from ..services import client_repo_paths, code_creds, scm_support, workdirs
     scm_support.require_active(repo if repo is not None else repo_ctx)
     root = workdirs.work_root_of(client)
+    # 方案二 (issue #495): prefer the member's own repository→local-path mapping before the
+    # device work root + shared relative directory, for interactive and unattended dispatch.
+    member_path = ""
+    if repo is not None and client is not None:
+        member_path = client_repo_paths.resolve_path(client, getattr(repo, "git_url", ""))
+    if member_path:
+        _fill_repo_wire(repo_ctx, repo)
+        if repo_ctx is not None:
+            repo_ctx["path"] = member_path
+        return {"ok": True, "dir": member_path, "workRoot": root,
+                "cloned": False, "remote": bool(remote), "memberPath": True}
     _fill_repo_wire(repo_ctx, repo)
     if remote:
         # For remote execution, send a workspace plan without creating directories or cloning remote paths on Hub.

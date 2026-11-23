@@ -109,6 +109,13 @@ def auto_dir(client, repo) -> tuple[str, str]:
     """Resolve unattended workspaces from the task owner's reported work root, with legacy
     repository ai_work_dir fallback when unavailable. Return the directory and explanation.
     """
+    # 方案二 (issue #495): a member's own repository mapping wins over the shared relative
+    # directory so the same requirement resolves correctly on every device.
+    if repo is not None and client is not None:
+        from .client_repo_paths import resolve_path
+        mapped = resolve_path(client, getattr(repo, "git_url", ""))
+        if mapped:
+            return mapped, "用的是成员配置的仓库本机路径"
     root = work_root_of(client)
     if root and repo is not None:
         d = repo_dir(root, repo)

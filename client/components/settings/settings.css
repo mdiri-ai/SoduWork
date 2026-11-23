@@ -103,6 +103,12 @@
 #settingsPanel .hub-input:hover:not([readonly]):not(:disabled) { border-color: color-mix(in srgb, var(--settings-accent) 40%, var(--settings-line)); }
 #settingsPanel .hub-input:focus { border-color: var(--settings-accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--settings-accent) 12%, transparent); }
 #settingsPanel .hub-input[readonly] { background: var(--settings-canvas); color: var(--settings-muted); box-shadow: none; }
+#settingsPanel .set-repo-path-list { display: grid; gap: 8px; margin-top: 12px; }
+#settingsPanel .set-repo-path-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px; border: 1px solid var(--settings-line); border-radius: 8px; background: var(--settings-canvas); }
+#settingsPanel .set-repo-path-row > span { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--settings-small); }
+#settingsPanel .set-repo-path-url { color: var(--ink, #172235); }
+#settingsPanel .set-repo-path-dir { color: var(--settings-muted); }
+#settingsPanel .set-repo-path-remove { min-height: 30px; padding: 4px 10px; }
 #settingsPanel button {
   font-family: var(--font-ui, sans-serif);
   font-size: var(--settings-text);
