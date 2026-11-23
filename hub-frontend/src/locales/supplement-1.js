@@ -413,5 +413,9 @@ export default {
   "可集中审计、限流与复用会话。": "Centralized audit, rate limits and session reuse.",
   "探测时会选择在线设备；没有在线 Runner 时不会假装成功。": "Probing uses an online device. Without an online Runner, the check cannot succeed.",
   "Windows 上 npx/uvx 这类垫片可以直接写": "On Windows, wrappers such as npx/uvx can be entered directly",
-  "参数（一行一个）": "Arguments (one per line)"
+  "参数（一行一个）": "Arguments (one per line)",
+  "还没有可选模型。连接成功不等于模型可选——": "No usable model yet. A connected service alone is not selectable — ",
+  "加一个模型": "Add a model",
+  "已启用的模型里没有可对话的——点「查看」确认模型与额度，或加一个对话模型。": "None of the enabled models are chat-capable — use View to check models and quota, or add a chat model.",
+  "服务已保存。连接成功不等于模型可选——加一个模型后才能在会话中选用。": "Service saved. A connected service alone is not selectable — add a model before it can be picked in conversations."
 }

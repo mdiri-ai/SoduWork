@@ -226,7 +226,7 @@ export default function ModelCatalog({ me }) {
           <div className="model-catalog-summary-card"><span>{tx("服务总数")}</span><strong>{d ? providers.length : '—'}</strong><small>{d ? tx("已启用 {0} · 已停用 {1}", [enabledProviders, providers.length - enabledProviders]) : error ? tx("目录读取失败") : tx("正在读取目录")}</small></div>
           <div className="model-catalog-summary-card"><span>{tx("模型总数")}</span><strong>{d ? models.length : '—'}</strong><small>{d ? tx("已启用 {0} · 已停用 {1}", [enabledModels, models.length - enabledModels]) : error ? tx("目录读取失败") : tx("正在读取目录")}</small></div>
           <div className="model-catalog-summary-card"><span>{tx("配置完整服务")}</span><strong>{d ? readyProviders : '—'}</strong><small>{tx("服务已启用，且地址与密钥均已填写。")}</small></div>
-          <p className="model-dimension-note">{error ? tx("目录读取失败") : tx("配置完整仅表示设置已齐全。")}</p>
+          <p className="model-dimension-note">{error ? tx("目录读取失败") : tx("配置完整仅表示设置已齐全；会话中可选用还需要服务下有已启用的对话模型。")}</p>
           <button type="button" className="btn btn-ghost xs" aria-haspopup="dialog" onClick={() => setDefaultOpen(true)}
             title={tx("此设置用于日报总结和旧版执行。新需求和 Runner 使用的模型请在模型目录中添加。")}>
             <Icon name="key" />{tx("组织默认调用（旧版兼容）")}</button>
@@ -281,7 +281,14 @@ export default function ModelCatalog({ me }) {
                     {tx("查看")}<Icon name="chevron" aria-hidden="true" />
                   </button>}
                 </div>
-
+                {configured && !ms.length && <p className="model-provider-note">
+                  {tx("还没有可选模型。连接成功不等于模型可选——")}
+                  <button type="button" className="model-cloud-toggle" aria-haspopup="dialog"
+                    onClick={() => setAddM({ providerId: p.id, provider: p })}>{tx("加一个模型")}</button>
+                </p>}
+                {configured && ms.length > 0 && !chatCount && <p className="model-provider-note">
+                  {tx("已启用的模型里没有可对话的——点「查看」确认模型与额度，或加一个对话模型。")}
+                </p>}
               </div>
 
               <footer className="model-provider-actions admin-card-actions">
@@ -445,7 +452,9 @@ function ProviderForm({ initial, onClose, onSaved }) {
         name: name.trim(), kind, baseUrl: baseUrl.trim(), note: note.trim(),
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
-      toast(apiKey.trim() ? tx("已保存，密钥已更新") : tx("已保存（密钥未改动）"))
+      toast(!editing
+        ? tx("服务已保存。连接成功不等于模型可选——加一个模型后才能在会话中选用。")
+        : (apiKey.trim() ? tx("已保存，密钥已更新") : tx("已保存（密钥未改动）")))
       onSaved(pid)
     } catch (e) { toast(tx("保存失败：") + (e.message || e)) }
     setBusy(false)
