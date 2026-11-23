@@ -283,8 +283,13 @@
         if (!current()) return;
         if (!result?.ok) throw Error(result?.reason || '分支创建未完成，请稍后重试');
         close();
-        const taskId = result.taskId;
-        if (taskId && global.WorkspaceHost) { void global.WorkspaceHost.open('detail', { taskId }); return; }
+        // A branch continues in a NEW conversation, like the handoff confirm
+        // flow; opening the task detail would surface the requirement pool
+        // drawer instead of the branched session.
+        if (result.sessionId && global.NativeChat) {
+          global.NativeChat.reset();
+          if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) return;
+        }
         global.petSay?.('分支已创建：' + (result.sessionId || '新的云端会话'));
       } catch (problem) {
         if (!current()) return;
