@@ -4,6 +4,8 @@ Mounted at the original position in the admin router. Shared admin scope helpers
 are imported inside handlers so there is one policy implementation and no
 import-time cycle with the compatibility exports in admin.py.
 """
+from urllib.parse import urlparse
+
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +19,25 @@ from ..services import tasks as svc
 from ..services.repository_catalog import lock_mapping_project
 
 router = APIRouter()
+_REPO_URL_MAX = 2000
+
+
+def _clean_repo_url(value) -> str:
+    """Return an empty link or an absolute http(s) URL; reject script-capable schemes.
+
+    The value is rendered as a link in the administration console and in project
+    detail pages, so a stored `javascript:` URL would become script execution in
+    an administrator's origin.
+    """
+    url = str(value or "").strip()
+    if not url:
+        return ""
+    if len(url) > _REPO_URL_MAX:
+        raise HTTPException(status_code=422, detail="仓库地址过长")
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=422, detail="仓库地址必须以 http:// 或 https:// 开头")
+    return url
 
 
 # Projects organize tasks into sequential or parallel dependency graphs.
@@ -113,7 +134,7 @@ async def create_project(body: dict = Body(default_factory=dict),
     await _available_project_name(session, name, org_id)
     p = Project(name=name, desc=body.get("desc") or "", org_id=org_id,
                 owner_user_id=owner.id, created_by=user.id,
-                group=(body.get("group") or "").strip(), repo_url=(body.get("repoUrl") or "").strip())
+                group=(body.get("group") or "").strip(), repo_url=_clean_repo_url(body.get("repoUrl")))
     session.add(p); await session.commit(); await session.refresh(p)
     await audit.log(session, user, "project.create", "project", p.id, name, {})
     return {"id": p.id, "name": p.name, "group": p.group, "repoUrl": p.repo_url,
@@ -176,7 +197,9 @@ async def update_project(pid: str, body: dict = Body(default_factory=dict),
     for k, f in (("name", "name"), ("desc", "desc"), ("group", "group"),
                  ("repoUrl", "repo_url"), ("extProjectId", "ext_project_id")):
         if k in body:
-            setattr(p, f, str(body.get(k) or "").strip())
+            value = (_clean_repo_url(body.get(k)) if k == "repoUrl"
+                     else str(body.get(k) or "").strip())
+            setattr(p, f, value)
     if not p.name:
         raise HTTPException(status_code=400, detail="请填工程名")
     rerouted = {"requests": 0, "assignments": 0, "skipped": 0}
