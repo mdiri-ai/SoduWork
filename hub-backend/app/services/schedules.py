@@ -611,6 +611,8 @@ def run_to_api(run) -> dict:
 async def list_runs(session: AsyncSession, schedule_id: str, *,
                     owner_client_id: str = "", owner_user_id: str | None = None,
                     limit: int = 20) -> list[dict]:
+    # GET stays idempotent: reconcile_runs itself is idempotent (smoke asserts a
+    # retired receipt never resurrects), so reading can safely finalize legacy runs.
     await reconcile_runs(session, schedule_id=schedule_id,
                          owner_client_id=owner_client_id, owner_user_id=owner_user_id)
     q = select(models.AiScheduleRun).where(
