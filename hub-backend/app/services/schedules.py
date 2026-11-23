@@ -611,8 +611,9 @@ def run_to_api(run) -> dict:
 async def list_runs(session: AsyncSession, schedule_id: str, *,
                     owner_client_id: str = "", owner_user_id: str | None = None,
                     limit: int = 20) -> list[dict]:
-    await reconcile_runs(session, schedule_id=schedule_id,
-                         owner_client_id=owner_client_id, owner_user_id=owner_user_id)
+    # GET stays read-only: what you read is what the database has. Run-state
+    # alignment happens only via the explicit POST refresh-runs endpoint,
+    # never inside a read (a read must never disagree with the database).
     q = select(models.AiScheduleRun).where(
         models.AiScheduleRun.schedule_id == schedule_id)
     if owner_client_id:

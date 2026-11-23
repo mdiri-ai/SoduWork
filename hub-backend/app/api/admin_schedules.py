@@ -50,6 +50,9 @@ async def save_automation_templates(
 ):
     from ..services import automation_templates
     from ..services import template_catalog_revision
+    scope = await rbac.scope_org_ids(session, user) if user is not None else None
+    if scope is not None:
+        raise HTTPException(status_code=403, detail="自动化模板为全公司资产，只能由平台级管理员修改")
     if not isinstance(body.get("revision"), str) or not body["revision"]:
         raise HTTPException(status_code=428, detail="Reload the template catalog before saving; a revision is required.")
     try:
@@ -179,8 +182,27 @@ async def list_ai_schedule_runs(sid: str, limit: int = 20,
     from ..services import schedules as sch
     s = await _scoped_ai_schedule(session, sid, user)
     items = await sch.list_runs(session, sid, limit=limit)
-    await session.commit()
     return {"items": items}
+
+
+@router.post("/ai-schedules/{sid}/refresh-runs")
+async def refresh_ai_schedule_runs(sid: str,
+                                   user: User = Depends(require_perm("task.dispatch")),
+                                   session: AsyncSession = Depends(get_session)):
+    """Explicitly align run states with reality and commit.
+
+    This is the only entry that reconciles run status; GET /runs stays
+    read-only so a read can never disagree with what the database has.
+    """
+    from .admin import _sch_api, _sch_apply, _scoped_ai_schedule
+
+    from ..models import AiSchedule
+    from ..services import schedules as sch
+    s = await _scoped_ai_schedule(session, sid, user)
+    reconciled = await sch.reconcile_runs(session, schedule_id=sid)
+    await session.commit()
+    items = await sch.list_runs(session, sid, limit=20)
+    return {"items": items, "reconciled": len(reconciled)}
 
 
 @router.post("/ai-schedules/{sid}/run")

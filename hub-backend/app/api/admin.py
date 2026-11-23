@@ -9,7 +9,7 @@ import uuid
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import AwareDatetime
+from pydantic import AliasChoices, AwareDatetime
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2272,8 +2272,13 @@ async def delete_integration(iid: str, user: User = Depends(require_perm("integr
 
 # Audit log.
 
-def _audit_filters(action: str | None = None, actor: str | None = None,
-                   since: AwareDatetime | None = None, until: AwareDatetime | None = None):
+def _audit_filters(action: str | None = None,
+                   actor: Annotated[str | None, Query(validation_alias=AliasChoices("actor", "actorId"), max_length=200)] = None,
+                   since: Annotated[AwareDatetime | None, Query(validation_alias=AliasChoices("since", "from"))] = None,
+                   until: Annotated[AwareDatetime | None, Query(validation_alias=AliasChoices("until", "to"))] = None):
+    # "from" is a Python keyword, so the query aliases above are the only way the
+    # frontend parameter names (actorId/from/to) can reach these filters at all;
+    # without them the filters were silently ignored and the list returned everything.
     # SQLite stores UTC without an offset; compare the same instants on both databases.
     try:
         since = since.astimezone(timezone.utc) if since is not None else None
