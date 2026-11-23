@@ -79,11 +79,16 @@
   const CARET = '<svg class="nthink-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
   const THINK_ICON = '<svg class="nthink-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 6a3 3 0 0 0-5.8-1A3.5 3.5 0 0 0 4 11a3.5 3.5 0 0 0 1.8 6.4A3.2 3.2 0 0 0 12 19V6Zm0 0a3 3 0 0 1 5.8-1A3.5 3.5 0 0 1 20 11a3.5 3.5 0 0 1-1.8 6.4A3.2 3.2 0 0 1 12 19"/><path d="M7 9c2 0 3 1 3 3m-4 3c0-1.5.7-2.4 2-2.8M17 9c-2 0-3 1-3 3m4 3c0-1.5-.7-2.4-2-2.8"/></svg>';
   const COPY_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><g class="ncopy-default"><rect x="8.5" y="7.5" width="10.5" height="12" rx="2"/><path d="M15.5 7.5V6A2.5 2.5 0 0 0 13 3.5H6A2.5 2.5 0 0 0 3.5 6v8A2.5 2.5 0 0 0 6 16.5h2.5"/></g><path class="ncopy-check" d="m5.5 12.5 3.2 3.2 9.8-10"/></svg>';
+  const BRANCH_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>';
   function _copyButton(text, className, afterBlock = -1) {
     return '<button type="button" class="' + (className || 'ntext-copy') +
       '" data-copy-message="' + ctx.esc(String(text || '')) +
       '"' + (afterBlock >= 0 ? ' data-copy-after-block="' + afterBlock + '"' : '') +
       ' title="复制内容" aria-label="复制内容">' + COPY_ICON + '</button>';
+  }
+  function _branchButton() {
+    return '<button type="button" class="nmessage-branch" data-branch-conversation' +
+      ' title="在新对话中创建分支" aria-label="在新对话中创建分支">' + BRANCH_ICON + '</button>';
   }
 
   // Use persisted event times only; opening an older transcript must not create a new time.
@@ -111,7 +116,10 @@
     const copy = String(text || '').trim() ? _copyButton(text, user ? 'nmessage-copy' : 'ntext-copy', afterBlock) : '';
     const speech = !user && message.done !== false && String(text || '').trim()
       ? global.SoduWorkReadAloud?.button(text, ctx._ref, messageIndex, ctx.esc) || '' : '';
-    return time || copy || speech ? '<div class="nmessage-footer">' + time + speech + copy + '</div>' : '';
+    // Branching replays the persisted account conversation, so only completed
+    // replies in a session backed by a persistent id offer the entry point.
+    const branch = !user && message.done !== false && ctx._sessionId ? _branchButton() : '';
+    return time || copy || speech || branch ? '<div class="nmessage-footer">' + time + speech + copy + branch + '</div>' : '';
   }
 
   // A provider message can end before a tool runs. Only the last substantive

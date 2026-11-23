@@ -304,6 +304,18 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       return { ok: false, code: 'APP_AI_UNAVAILABLE', reason: '本地需求解析只允许工作台调用' };
     return localRequirementParse(raw);
   });
+  // Conversation branching is an account mutation like lifecycle changes; the
+  // branch request resolves the source conversation through account sync and
+  // posts to the Hub on the caller's behalf.
+  ipcMain.handle('pi-session-conversation-branch', async (event, sessionId, input) => {
+    const frame = event?.senderFrame, sender = event?.sender;
+    const url = frame?.url || sender?.getURL?.() || '';
+    if ((frame && frame !== sender?.mainFrame) || (url && !String(url).startsWith('file:')))
+      return { ok: false, reason: '会话分支只允许工作台调用' };
+    return _accountSync.branch(String(sessionId || ''), {
+      instruction: input?.instruction, agentId: input?.agentId,
+    });
+  });
   // Account-conversation WebSocket messages are invalidation hints, but they
   // still need to reach the renderer.  Without this bridge the sync service
   // refreshed its private cache while an already-open desktop projection and

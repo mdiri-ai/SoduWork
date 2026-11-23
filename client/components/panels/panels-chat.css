@@ -213,12 +213,12 @@
 .nmsg>.nmessage-footer{margin-top:0}
 .nmsg.user{row-gap:4px}
 .nmessage-time{font-size:max(var(--font-min-readable, 14.5px), 12px);line-height:1.4;font-variant-numeric:tabular-nums;color:var(--ink-3);white-space:nowrap}
-.ntext-copy,.nmessage-copy{position:static;flex:none;display:grid;place-items:center;width:28px;height:28px;padding:5px;
+.ntext-copy,.nmessage-copy,.nmessage-branch{position:static;flex:none;display:grid;place-items:center;width:28px;height:28px;padding:5px;
   border:1px solid transparent;border-radius:8px;background:transparent;color:var(--ink-3);cursor:pointer;
   transition:opacity .14s ease,background-color .14s ease,color .14s ease}
-.ntext-copy:hover,.nmessage-copy:hover{background:color-mix(in srgb,var(--bg-2) 76%,transparent);border-color:color-mix(in srgb,var(--line) 78%,transparent);color:var(--ink-2);opacity:1}
-.ntext-copy:focus-visible,.nmessage-copy:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 46%,transparent);outline-offset:1px;opacity:1}
-.ntext-copy svg,.nmessage-copy svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.ntext-copy:hover,.nmessage-copy:hover,.nmessage-branch:hover{background:color-mix(in srgb,var(--bg-2) 76%,transparent);border-color:color-mix(in srgb,var(--line) 78%,transparent);color:var(--ink-2);opacity:1}
+.ntext-copy:focus-visible,.nmessage-copy:focus-visible,.nmessage-branch:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 46%,transparent);outline-offset:1px;opacity:1}
+.ntext-copy svg,.nmessage-copy svg,.nmessage-branch svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .nread-aloud,.nread-aloud [data-speech-controls]{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0}
 .nread-aloud [hidden]{display:none}
 .nread-menu{position:relative;display:inline-flex}
