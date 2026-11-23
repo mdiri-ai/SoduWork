@@ -29,6 +29,14 @@ npm, pip and Electron download caches from both service and desktop preparation 
 
 On Windows, desktop startup also prepares and verifies a private PortableGit command runtime in this instance's application copy so Agents can use Bash, Git, and common tools. No separate Git installation or WSL configuration is needed. Later starts preserve the runtime and download cache and check the tools again. If preparation fails, inspect `startup.log`, resolve the reported cause, and rerun the same launcher.
 
+### Source installation with an Intel macOS Python
+
+The current `cryptography==50.0.2` release publishes macOS wheels for arm64. With an x86_64 Python, including Python running under Rosetta, a fresh instance needs either an Intel-compatible wheel of the pinned release or a local compiler toolchain. An existing instance that can load the pinned native extension can continue running without the compilers. [PyPI release files](https://pypi.org/project/cryptography/50.0.2/#files) · [Upstream build instructions](https://cryptography.io/en/50.0.2/installation/)
+
+Install Xcode Command Line Tools (`xcode-select --install`), a working Rust toolchain with Cargo and rustc 1.83.0 or newer, and Intel-compatible OpenSSL development headers and libraries. With Intel Homebrew, use `brew install rust openssl@3`. For a custom OpenSSL installation, set `OPENSSL_DIR` to its prefix. If rustup uses a different host architecture, install the target with `rustup target add x86_64-apple-darwin`. Choose tools compatible with your macOS version. A configured cross-compiler in `CC` and SDK in `SDKROOT` must preprocess Intel macOS headers successfully.
+
+Run `sh start.sh --check --data-dir /path/to/your-instance` to check the target Python and tools without installing anything. If your organization provides a trusted compatible wheel, set `PIP_FIND_LINKS` to its wheelhouse or configure a private pip index, then run the usual launcher. This wheel replaces the Rust/OpenSSL build for `cryptography`. Other dependencies such as `argon2-cffi-bindings` may still need Intel Clang and the macOS SDK if your pip source lacks compatible wheels. The read-only check reports this route as pending until pip verifies the wheel during setup. When build tools are missing, setup looks for a binary of the exact pinned version before installing the remaining dependencies.
+
 ## Know when startup is complete
 
 The terminal prints these key lines (use the actual address shown):

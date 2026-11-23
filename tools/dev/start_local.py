@@ -488,7 +488,7 @@ def main(argv=None) -> int:
             check_desktop_session()
         if args.check:
             profile = desktop_profile(args.data_dir.expanduser().resolve()) if args.desktop else None
-            dependency_report(desktop=args.desktop)
+            dependency_report(desktop=args.desktop, state=args.data_dir.expanduser().resolve())
             check_windows_source_paths(args.data_dir.expanduser(), source_copy_targets(), probe=False)
             if profile is not None:
                 print(f'Desktop profile: {profile}')
