@@ -390,14 +390,14 @@ async def delete_repo(rid: str, user: User = Depends(require_perm("task.dispatch
     r = await session.get(Repo, rid)
     if r is None:
         return {"ok": True}
-    # Referential-integrity guard: deleting a repo while its deployment targets still exist
-    # leaves orphan target rows that disappear from list_targets' join but keep referencing
-    # the deleted repo, permanently blocking environment deletion (#932).
-    targets = await session.scalar(
-        select(func.count()).select_from(DeploymentTarget).where(DeploymentTarget.repo_id == rid))
-    if targets:
-        raise HTTPException(status_code=409,
-                            detail=f"该仓库名下还有 {targets} 个部署目标，请先删除或改指这些部署目标后再删除仓库")
+    # Referential integrity: cascade-delete the repo's deployment targets so no
+    # orphan target rows survive the delete (orphans disappear from list_targets'
+    # join but keep referencing the deleted repo, permanently blocking environment
+    # deletion) — #932.
+    targets = (await session.scalars(
+        select(DeploymentTarget).where(DeploymentTarget.repo_id == rid))).all()
+    for tgt in targets:
+        await session.delete(tgt)
     name = r.name
     await session.delete(r)
     await session.commit()
