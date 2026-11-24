@@ -79,23 +79,27 @@ test('verified updates enter the inbox once per version across status replays an
   assert.match(reopened.all()[0].text, /手动安装/);
 });
 
-test('sender receipts retain shared files across status updates and refreshes without reviving cleared receipts', async () => {
+test('colleague delivery and read receipts advance the sent message without adding unread inbox items', async () => {
   const attachments = [{ id: 'shared-file', name: '程序员笑话.txt', size: 42 }];
   const item = message({ senderId: 'user-a', recipientId: 'user-b', kind:'mate_message', attachments });
   const f = fixture({ sent: [item] });
   for (const status of ['accepted', 'delivered', 'read']) {
     item.status = status;
+    if (status === 'delivered') item.deliveredAt = 200;
+    if (status === 'read') item.readAt = 300;
     await f.sync.refresh('sent');
-    const receipt = f.sync.rows('received').find(row => row.kind === 'mate_receipt');
-    assert.equal(receipt.receiptStatus, status);
-    assert.deepEqual(JSON.parse(JSON.stringify(receipt.attachments)), attachments);
-    assert.equal(receipt.attachments[0].url, undefined, 'files use freshly authorized metadata when opened');
-    assert.equal(receipt.ownerId, 'user-a');
-    assert.equal(f.sync.rows('sent')[0].attachments.length, 1);
+    assert.equal(f.sync.rows('received').length, 0);
+    assert.equal(f.unread(), 0);
+    const sent = f.sync.rows('sent');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].sentStatus, status);
+    assert.deepEqual(JSON.parse(JSON.stringify(sent[0].attachments)), attachments);
   }
   const reopened = fixture({ values:f.values, sent:[item] });
   await reopened.sync.refresh('sent');
-  assert.equal(reopened.sync.rows('received')[0].attachments[0].id, 'shared-file');
+  assert.equal(reopened.sync.rows('received').length, 0);
+  assert.equal(reopened.sync.rows('sent')[0].readAt, 300);
+  assert.equal(reopened.sync.rows('sent')[0].deliveredAt, 200);
   await reopened.clear();
   await reopened.sync.refresh('sent');
   assert.equal(reopened.sync.rows('received').length, 0);
@@ -104,6 +108,21 @@ test('sender receipts retain shared files across status updates and refreshes wi
   await reopened.sync.refresh('sent');
   assert.equal(reopened.sync.rows('received').length, 0);
   assert.equal(reopened.sync.rows('sent').length, 0);
+});
+
+test('legacy colleague receipt is hidden offline and merged into its own sent row on refresh', async () => {
+  const item = message({kind:'mate_message',senderId:'user-a',recipientId:'user-b'});
+  const sent = {...item, id:'mate_sent_server-1', serverMessageId:item.id, folder:'sent', status:'delivered', deliveredAt:200};
+  const receipt = {id:'mate_receipt_server-1', serverMessageId:item.id, folder:'received', kind:'mate_receipt',
+    receiptStatus:'read', ownerId:item.senderId, read:false, at:300};
+  const values = new Map([['user-a:notices', JSON.stringify([sent, receipt])]]);
+  const f = fixture({values, sent:[item]});
+  assert.equal(f.unread(), 0);
+  await f.sync.refresh('sent');
+  assert.equal(f.sync.rows('received').length, 0);
+  assert.equal(f.sync.rows('sent')[0].sentStatus, 'read');
+  assert.equal(f.sync.rows('sent')[0].readAt, 300);
+  assert.equal(f.all().some(r => r.kind === 'mate_receipt'), false);
 });
 
 test('both production renderers load durable notice storage before reconciliation', () => {

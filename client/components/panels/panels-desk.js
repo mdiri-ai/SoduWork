@@ -470,6 +470,15 @@ globalThis.addEventListener?.('soduwork-locale-change', () => {
 function _noticeFileIsZip(file) {
   return /\.zip$/i.test(String(file?.name || file?.filename || ''));
 }
+function _noticeReceiptTimes(row) {
+  if (_noticeFolder !== 'sent' || row.kind !== 'mate_message') return '';
+  const items = [['已送达', row.deliveredAt], ['已读', row.readAt]].filter(([, at]) => at);
+  return items.length ? '<div class="np-receipt-times">' + items.map(([label, at]) => {
+    const date = new Date(at);
+    return Number.isFinite(date.getTime()) ? '<span>' + label + ' <time datetime="' + date.toISOString() + '">' +
+      esc(date.toLocaleString()) + '</time></span>' : '';
+  }).join('') + '</div>' : '';
+}
 function _renderNoticePanel() {
   _syncNoticeScope();
   _noticeVisibleRows.clear();
@@ -488,7 +497,7 @@ function _renderNoticePanel() {
   const clear = document.getElementById('npClear');
   if (clear) clear.hidden = _noticeFolder === 'sent';
   const loading = _noticeLoad[_noticeFolder] || {};
-  const status = loading.error ? '<div class="np-load-status" role="status"><span>' + esc(loading.error) + '</span><button type="button" data-notice-retry>重试</button></div>' :
+  const status = loading.error ? '<div class="np-load-status" role="status"><span>' + esc(list.length ? '更新失败，正在显示上次保存的通知' : loading.error) + '</span><button type="button" data-notice-retry>重试</button></div>' :
     loading.pending ? '<div class="np-load-status" role="status">正在加载通知…</div>' : '';
   if (!list.length) {
     if (status) { body.innerHTML = status; return; }
@@ -520,6 +529,7 @@ function _renderNoticePanel() {
         '<div class="np-txt' + (long ? ' is-long' : '') + '"' + (view.mate || n.textMessage ? ' data-user-content' : '') + '>' + esc(view.text) + '</div>' +
         (n.kind === 'legal_update' ? '<button type="button" class="np-preview" data-legal-update>' + esc(globalThis.SoduWorkI18n?.translateText?.('查看更新') || '查看更新') + '</button>' : '') +
         (long ? '<button type="button" class="np-expand" data-notice-expand="' + esc(key) + '" aria-expanded="' + expanded + '">' + (expanded ? '收起全文' : '展开全文') + '</button>' : '') +
+        _noticeReceiptTimes(n) +
         (files.length ? '<div class="np-files" data-notice-file-scope="' + esc(_syncNoticeScope()) + '">' + files.map(file => {
           const name = String(file.name || file.filename || '附件'), zip = _noticeFileIsZip(file);
           const size = Math.max(1, Math.ceil(Number(file.size || 0) / 1024)) + ' KB';

@@ -166,3 +166,7 @@ button.ncollab-evidence-row:hover{border-color:#adc9ef;background:#f6f9ff}
 .ncollab-picker-context select{max-width:55%;min-width:120px;padding:6px 9px;background:var(--bg-1);color:var(--ink);border:1px solid var(--line);border-radius:var(--r-sm);font:inherit}
 .ncollab-picker-row:disabled .ncollab-picker-reason{white-space:normal;color:var(--ink-3);line-height:1.5}
 .ncollab-picker-row:disabled{opacity:.7}
+.ncollab-report{padding:10px 12px;border:1px solid var(--task-line);border-radius:8px;overflow-wrap:anywhere}
+.ncollab-report p{margin:4px 0;white-space:pre-wrap}
+.ncollab-report ul{padding-inline-start:18px}
+.ncollab-file-status:empty{display:none}

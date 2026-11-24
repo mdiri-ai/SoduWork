@@ -1,5 +1,11 @@
 (function (global) {
   const messages = {
+    "验收详情": "Acceptance details",
+    "仅有记录": "Record only",
+    "查看文件": "View file",
+    "验收退回": "Returned for changes",
+    "更新失败，正在显示上次保存的通知": "Refresh failed. Showing the last saved notifications.",
+    "文件暂时无法打开，请刷新会话成果后重试。": "Unable to open this file. Refresh the conversation outputs and try again.",
     '需求内容': 'Issue content',
     '执行设置': 'Execution settings',
     '选择插件': 'Select a plugin',

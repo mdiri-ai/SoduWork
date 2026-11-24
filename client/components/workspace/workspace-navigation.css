@@ -368,9 +368,6 @@ html[data-desk-panel="workspace"][data-workspace-layout="conversation"] .ws-rece
 html[data-desk-panel="workspace"][data-workspace-layout="conversation"] .ws-profile-row{
   display:none
 }
-html[data-desk-panel="workspace"][data-workspace-layout="conversation"] .ws-rail-settings{
-  display:none
-}
 html[data-desk-panel="workspace"][data-workspace-layout="conversation"]:not([data-window-sidebar-hidden]) #composePanel{
   border-radius:0 var(--ws-frame-radius) var(--ws-frame-radius) 0!important;
   border-left:.5px solid color-mix(in srgb,var(--line) 72%,transparent)!important

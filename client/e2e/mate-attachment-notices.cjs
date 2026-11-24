@@ -3,17 +3,23 @@
 // transport in isolated accounts. No production services or real recipients.
 const electron = require('electron');
 if (typeof electron === 'string') {
-  const env = { ...process.env };
+  const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-library-e2e-mate-notices-'));
+  const env = { ...process.env, SODUWORK_MATE_TEST_PROFILE: temporary };
   for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'ELECTRON_NO_ATTACH_CONSOLE', 'CHROME_CRASHPAD_PIPE_NAME', 'CHROME_CRASHPAD_PIPE_HANDLE']) delete env[key];
   const child = require('node:child_process').spawn(electron, [__filename, ...process.argv.slice(2)], { env, windowsHide: true, stdio: 'inherit' });
   const timer = setTimeout(() => child.kill(), 120000);
-  child.on('exit', code => { clearTimeout(timer); process.exitCode = code ?? 1; });
+  child.on('close', code => {
+    clearTimeout(timer);
+    process.exitCode = code ?? 1;
+    fs.rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
 } else {
   const { app, BrowserWindow, ipcMain, net } = electron;
   const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), crypto = require('node:crypto');
   const assert = require('node:assert/strict'), { spawn } = require('node:child_process'), { pathToFileURL } = require('node:url');
   const client = path.resolve(__dirname, '..'), backend = path.resolve(client, '../hub-backend');
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-library-e2e-mate-notices-'));
+  const temporary = process.env.SODUWORK_MATE_TEST_PROFILE || fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-library-e2e-mate-notices-'));
   const output = process.argv[2];
   assert(output && path.isAbsolute(output), 'An absolute evidence directory is required');
   fs.mkdirSync(output, { recursive: true }); app.setPath('userData', path.join(temporary, 'profile'));
@@ -138,21 +144,15 @@ if (typeof electron === 'string') {
     // The full desktop periodically refreshes both folders; this fixture has no global tick.
     await js('MateNoticeSync.refresh()');
     await js('openNoticePanel();void 0;');
-    const receiptSelector = '.nk-mate_receipt ' + openSelector;
-    await until(`!!document.querySelector(${JSON.stringify(receiptSelector)})`);
-    assert.match(await js('document.querySelector(".nk-mate_receipt").textContent'), /已读/);
-    await verifyPreview(receiptSelector);
-    fs.writeFileSync(path.join(output, 'sender-read-receipt.png'), (await win.webContents.capturePage()).toPNG());
-    await js('MateNoticeSync.refresh()');
-    await js('closeNoticePanel();openNoticePanel();void 0;');
-    await until(`!!document.querySelector(${JSON.stringify(receiptSelector)})`);
-    assert.equal(await js('document.querySelectorAll(".nk-mate_receipt").length'), 1);
-    assert.equal(await js('document.querySelectorAll(".nk-mate_receipt [data-notice-action=open]").length'), 2);
-    report.cases.push('Sender read receipts retain both attachment cards and authorized preview across refresh and reopening, without duplicates');
+    assert.equal(await js("MateNoticeSync.rows('received').length"), 0);
+    assert.equal(await js('document.querySelectorAll(".nk-mate_receipt").length'), 0);
     await click('[data-notice-folder=sent]');
     await until(`!!document.querySelector(${JSON.stringify(openSelector)})`);
+    assert.match(await js("document.querySelector('.np-delivery').textContent"), /已读/);
+    assert.equal(await js("document.querySelectorAll('.np-receipt-times time').length"), 2);
+    fs.writeFileSync(path.join(output, 'sender-read-receipt.png'), (await win.webContents.capturePage()).toPNG());
     await verifyPreview(openSelector);
-    report.cases.push('The original sent-message card still opens the same immutable attachment');
+    report.cases.push('The sender inbox stays empty, while the original sent card shows both receipt times and opens the same attachment');
     await call('clientLogin', { account: 'other' });
     assert.equal((await call('mateMessages', 'received')).items.length, 0);
     assert.equal((await call('mateMessages', 'sent')).items.length, 0);
@@ -167,7 +167,7 @@ if (typeof electron === 'string') {
     for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.destroy();
     if (server && server.exitCode === null) { const done = new Promise(resolve => server.once('exit', resolve)); server.kill(); await Promise.race([done, wait(2000)]); }
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));
-    fs.rmSync(temporary, { recursive: true, force: true });
+    // Chromium can keep profile files locked until the Electron process exits.
     app.exit(report.ok ? 0 : 1);
   });
 }

@@ -88,3 +88,4 @@ html[data-desk-panel="workspace"] .notice-panel .np-body{padding:4px 28px 32px}
   html[data-desk-panel="workspace"] .notice-panel .np-body{padding:4px 14px 22px}
 }
 @media(prefers-reduced-motion:reduce){.notice-panel .np-row,.notice-panel .np-tabs button,.notice-panel .np-chat-clip{transition:none}}
+.np-receipt-times{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:6px;color:var(--ink-3);font-size:12px}

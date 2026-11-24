@@ -29,6 +29,24 @@ function eventTarget() {
  };
 }
 
+test('results expose distinct session files, retain historical records and show only reports for the selected review and version', () => {
+  const report = {verdict:'approve', summary:'核验 <A>', checks:[{label:'学生行数', result:'pass', evidence:'发现两行'}]};
+  const review = {id:'gate', taskId:'task', action:'review', artifactVersionId:'v1',
+    confirmation:{lockedArtifact:{seq:1}}, context:{aiAcceptanceReports:{
+      reviewer:{report, artifactVersionId:'v1', sourceApprovalId:'direct:task'},
+      stale:{report:{...report, summary:'过期结论'}, artifactVersionId:'v0'},
+      wrongGate:{report:{...report, summary:'无关审批'}, artifactVersionId:'v1', sourceApprovalId:'other'}
+    }}};
+  const {host} = mount({taskId:'task', task:{id:'task'}, trace:{approvals:[review]},
+    outputs:[{artifactId:'first', name:'同名.json'},{artifactId:'second',name:'同名.json'},
+      {artifactId:'foreign',name:'其他需求',taskId:'other'}], evidence:['历史说明']});
+  for (const key of ['first', 'second']) assert.ok(host.innerHTML.includes('data-collab-file="' + key + '"'));
+  assert.match(host.innerHTML,/仅有记录/);
+  assert.match(host.innerHTML,/核验 &lt;A&gt;/);
+  assert.match(host.innerHTML,/发现两行/);
+  assert.doesNotMatch(host.innerHTML,/其他需求|过期结论|无关审批|data-collab-file="历史说明"/);
+});
+
 function interactiveMount() {
  const window=eventTarget(),doc=Object.assign(eventTarget(),{
   defaultView:window,activeElement:null,querySelector:()=>null,querySelectorAll:()=>[],
