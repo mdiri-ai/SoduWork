@@ -3,7 +3,7 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "0093_schedule_session_mode"
-down_revision = "0094_review_recipient"
+down_revision = "0096_usage_chat_source"
 branch_labels = None
 depends_on = None
 
