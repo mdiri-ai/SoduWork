@@ -257,7 +257,7 @@
     const info = global.NativeChat?.sessionInfo?.();
     const agentId = info?.selectedAgentId || info?.adapterId || 'pi';
     const dialog = dialogShell('ncloudBranchTitle', '<form class="nchat-rename-form"><header><div><h2 id="ncloudBranchTitle">在新对话中创建分支</h2>' +
-      '<p>原会话保持不变。分支沿用当前会话的上下文，在新的云端会话里继续推进。</p></div>' +
+      '<p>原会话保持不变。分支沿用当前会话的上下文，在新的本地会话里继续推进。</p></div>' +
       '<button type="button" class="nchat-rename-close" data-branch-close aria-label="关闭">×</button></header>' +
       '<textarea data-branch-instruction rows="4" maxlength="200000" required>' + esc(BRANCH_DEFAULT) + '</textarea>' +
       '<p class="nchat-rename-error" role="alert" hidden></p>' +
@@ -283,14 +283,13 @@
         if (!current()) return;
         if (!result?.ok) throw Error(result?.reason || '分支创建未完成，请稍后重试');
         close();
-        // A branch continues in a NEW conversation, like the handoff confirm
-        // flow; opening the task detail would surface the requirement pool
-        // drawer instead of the branched session.
-        if (result.sessionId && global.NativeChat) {
+        // #1398 复制会话：新分支就是一个普通的新对话，首条消息带原会话上下文＋继续指令，
+        // enter(first) 在新 runtime 打开后自动发出。
+        if (result.seedText && global.NativeChat) {
           global.NativeChat.reset();
-          if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) return;
+          if (await global.NativeChat.enter(result.seedText).catch(() => false)) return;
         }
-        global.petSay?.('分支已创建：' + (result.sessionId || '新的云端会话'));
+        global.petSay?.('分支已创建');
       } catch (problem) {
         if (!current()) return;
         submit.disabled = false; submit.textContent = '创建分支';
