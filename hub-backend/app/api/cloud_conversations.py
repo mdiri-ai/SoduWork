@@ -104,33 +104,45 @@ async def directory(
     rows = []
     for task in cloud_tasks:
         handoff = handoffs.get(str(task["id"]))
-        if handoff is None or str(handoff.owner_user_id or "") != str(client.user_ref or ""):
+        # A branch task created without a Handoff fence (local-execution
+        # branch, see account_conversations.branch) has no handoff row; only
+        # an existing handoff owned by another account is skipped here.
+        if handoff is not None and str(handoff.owner_user_id or "") != str(client.user_ref or ""):
             continue
-        receipt = dict(handoff.receipt or {})
-        source = dict(handoff.source or {})
+        receipt = dict(handoff.receipt or {}) if handoff else {}
+        source = dict(handoff.source or {}) if handoff else {}
         routing = dict(task.get("workRouting") or {})
         cloud = dict(routing.get("cloudConversation") or {})
         event = events.get(str(task["id"]))
         detail = dict(event.detail or {}) if event else {}
         ref = str(receipt.get("ref") or receipt.get("issueId") or
                   detail.get("ref") or detail.get("issueId") or "")
-        target_snapshot = dict((handoff.options or {}).get("targetSnapshot") or {})
+        target_snapshot = dict((handoff.options or {}).get("targetSnapshot") or {}) if handoff else {}
         target = {
             key: str(target_snapshot.get(key) or "")
             for key in ("name", "runnerName", "agentId", "modelMode", "runnerId", "host", "runnerKind")
         }
-        target.update({"id": str((handoff.options or {}).get("assigneeId") or ""),
-                       "model": str((handoff.options or {}).get("model") or "")})
+        if handoff:
+            target.update({"id": str((handoff.options or {}).get("assigneeId") or ""),
+                           "model": str((handoff.options or {}).get("model") or "")})
+        else:
+            # Fenceless branch rows project the execution context the branch
+            # request already stored (local agent + model), so the desktop
+            # sidebar shows the same runtime the follow-up turn will use.
+            context = dict(cloud.get("executionContext") or routing.get("executionContext") or {})
+            agent = dict(context.get("agent") or {})
+            target.update({"id": str(agent.get("id") or ""),
+                           "model": str(context.get("model") or "")})
         session_id = str(source.get("sessionId") or cloud.get("sessionId") or
                          "cloud-task:" + str(task["id"]))
         ai = dict(task.get("ai") or {})
         state = str(ai.get("state") or receipt.get("state") or "queued")
-        can_continue = handoff.phase == "committed" and not bool(task.get("archivedAt"))
+        can_continue = (handoff is None or handoff.phase == "committed") and not bool(task.get("archivedAt"))
         rows.append({
             "id": session_id,
             "sessionId": session_id,
             "taskId": str(task["id"]),
-            "transferId": str(handoff.transfer_id or ""),
+            "transferId": str(handoff.transfer_id or "") if handoff else "",
             "ref": ref,
             "title": str((task.get("title") if task.get("conversationReview") else source.get("title"))
                          or task.get("title") or "Cloud conversation")[:200],
@@ -138,12 +150,13 @@ async def directory(
             "at": task.get("updatedAt") or task.get("created"),
             "state": state,
             "remoteState": state,
-            "phase": str(handoff.phase or "committed"),
+            "phase": str(handoff.phase or "committed") if handoff else "committed",
             "adapterId": str(source.get("adapterId") or target.get("agentId") or "pi"),
             "model": str(source.get("modelName") or target.get("model") or ""),
             "target": target,
             "runnerKind": target.get("runnerKind") or "cloud",
-            "ownerClientId": str(handoff.owner_client_id or ""),
+            "ownerClientId": (str(handoff.owner_client_id or "") if handoff
+                              else str(task.get("ownerClientId") or "")),
             "createdBy": task.get("createdBy") or "",
             "cloud": True,
             "remoteProjection": True,
