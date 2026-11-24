@@ -157,6 +157,7 @@ async function download(path, filename, timeout = 120000) {
 }
 
 export const api = {
+  publicLegalDocuments: () => call('GET', '/client-auth/legal-documents'),
   legalDocument: kind => call('GET', '/admin/legal-documents/' + encodeURIComponent(kind)),
   saveLegalDraft: (kind, body) => call('PUT', '/admin/legal-documents/' + encodeURIComponent(kind) + '/draft', body),
   publishLegalDocument: (kind, body) => call('POST', '/admin/legal-documents/' + encodeURIComponent(kind) + '/publish', body),

@@ -1,12 +1,21 @@
 """Pydantic API contracts for tasks and clients, using camelCase fields and millisecond timestamps.
 
 """
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Optional
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+)
 from pydantic_core import PydanticCustomError
 
+from .auth import ACCOUNT_PASSWORD_MAX, ACCOUNT_PASSWORD_MIN
 from .models import Client, Task
 
 
@@ -268,7 +277,18 @@ class Envelope(BaseModel):
     reporter: Optional[str] = None        # Requester who receives the completion notification.
 
 
-AdminName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+_NAME_CONTROLS = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]")
+
+
+def validate_name_characters(value: str) -> str:
+    if _NAME_CONTROLS.search(value):
+        raise ValueError("Name must be a single line without control or bidirectional formatting characters")
+    return value
+
+
+SingleLineName = Annotated[str, AfterValidator(validate_name_characters)]
+AdminName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+                      AfterValidator(validate_name_characters)]
 
 
 class IntegrationCreate(BaseModel):
@@ -348,11 +368,15 @@ class UserTokenQuota(BaseModel):
     limit: int = Field(default=0, ge=0, le=10_000_000_000_000, strict=True)
 
 
+AccountPassword = Annotated[str, StringConstraints(
+    min_length=ACCOUNT_PASSWORD_MIN, max_length=ACCOUNT_PASSWORD_MAX, pattern=r"\S")]
+
+
 class UserCreate(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    username: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
-    password: Annotated[str, StringConstraints(min_length=8, max_length=128)]
-    displayName: str = ""
+    username: AdminName
+    password: AccountPassword
+    displayName: SingleLineName = ""
     isTestAccount: Optional[bool] = None
     orgId: Optional[str] = None
     roleId: Optional[str] = None
@@ -363,12 +387,12 @@ class UserCreate(BaseModel):
 
 class UserUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
-    displayName: Optional[str] = None
+    displayName: Optional[SingleLineName] = None
     isTestAccount: Optional[bool] = None
     orgId: Optional[str] = None
     roleId: Optional[str] = None
     isActive: Optional[bool] = None
-    password: Optional[Annotated[str, StringConstraints(min_length=8, max_length=128)]] = None
+    password: Optional[AccountPassword] = None
     positions: Optional[list] = None
     domains: Optional[list[str]] = None
     tokenQuota: Optional[UserTokenQuota] = None

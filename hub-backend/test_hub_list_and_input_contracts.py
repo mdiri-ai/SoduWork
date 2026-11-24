@@ -338,6 +338,21 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
             stored = (await session.scalars(select(models.TaskComment.body))).all()
             self.assertEqual(stored, ["x" * 4000])
 
+    async def test_workflow_guide_targets_effective_plugin_in_selected_org(self):
+        async with self.sessions() as session:
+            for plugin_id, org_id, enabled in (
+                ("platform-flow", None, True), ("local-flow", "row-0", False),
+            ):
+                session.add(automation_models.Plugin(id=plugin_id, org_id=org_id,
+                                                     key="shared-flow", name="Flow", enabled=enabled))
+            await session.commit()
+
+        for org_id, plugin_id, enabled in (("row-0", "local-flow", False), ("row-1", "platform-flow", True)):
+            with self.subTest(org_id=org_id):
+                catalog = await self.request("GET", "admin/work-catalog", params={"orgId": org_id})
+                matches = [row for row in catalog["workflows"] if row["key"] == "shared-flow"]
+                self.assertEqual([(row["id"], row["enabled"]) for row in matches], [(plugin_id, enabled)])
+
     async def test_catalog_and_environment_inputs(self):
         for body in ({"name": "fixture", "type": "unlisted"},
                      {"name": "fixture", "type": "generic", "config": {"baseUrl": "unsupported://example.invalid"}}):
@@ -351,6 +366,21 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         await self.request("PATCH", f"admin/environments/{env['id']}", 400, json={"tier": "unlisted"})
         await self.request("POST", "admin/work-catalog/professions", 400,
                            json={"orgId": "row-0", "name": "Analyst", "category": "unlisted"})
+
+    async def test_profession_writes_identify_invalid_competencies(self):
+        for path in ("admin/work-catalog/professions", "admin/positions"):
+            with self.subTest(path=path):
+                profile = {"orgId": "row-0", "name": path.rsplit("/", 1)[-1]}
+                rejected = await self.request("POST", path, 400, json={**profile, "competencies": 12345})
+                self.assertEqual(rejected["detail"], "competencies 必须是数组")
+                created = await self.request("POST", path, json={**profile, "competencies": ["Planning"]})
+                endpoint = f"{path}/{created['id']}"
+                rejected = await self.request("PATCH", endpoint, 400, json={"competencies": 12345})
+                self.assertEqual(rejected["detail"], "competencies 必须是数组")
+                unchanged = await self.request("PATCH", endpoint, json={"description": "Updated profile"})
+                self.assertEqual(unchanged["competencies"], ["Planning"])
+                updated = await self.request("PATCH", endpoint, json={"competencies": ["Writing"]})
+                self.assertEqual(updated["competencies"], ["Writing"])
 
     async def test_users_and_positions_require_an_existing_department(self):
         body = {"username": "candidate", "password": "example-password", "orgId": "missing"}

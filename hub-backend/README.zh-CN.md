@@ -24,6 +24,14 @@ python3 -m venv .venv
 
 打开 http://127.0.0.1:9080/docs 查看 API 文档，健康检查为 `GET /healthz`。
 
+## 排查派活排队
+
+Runner 首次接收派活时会在日志中记录执行引用和队列位置。任务排队期间，
+`GET /api/v1/tasks/{tid}/ai-status` 可返回 `runner.waitReason`。
+`resource_pressure` 表示资源准入策略暂停启动新任务。
+`execution_slot` 表示这项工作可用的执行槽已被占用。
+该字段为可选项。再次查询同一任务即可看到当前等待原因或已开始执行的状态。
+
 ## 桌面本地 Runner 事件恢复
 
 桌面本地 Runner 执行会将事件去向与会话别名分别持久化。本地历史不会进入 Hub
@@ -253,6 +261,8 @@ python3 e2e_runner_tls.py --output /absolute/evidence/directory
 检查覆盖随包原生验证模块、使用临时信任锚的真实 TLS 握手、显式信任覆盖，以及拒绝不可信证书和主机名不匹配的证书；不修改机器的证书信任存储。`--source-only` 可不打包执行同一调用路径。这些测试不能替代完整桌面、生产模型或其他操作系统验证。
 
 ## API 概览
+
+通过 `POST /api/v1/usage/events` 上报用量时，省略 `occurredAt` 表示使用 Hub 收到事件的时间。上报历史事件时可填写 ISO 8601 时间戳。没有时区偏移的时间戳按 UTC 解释。如果任一事件的时间戳无效，Hub 返回 HTTP 422，整批事件均不入账。
 
 - 客户端契约（设备登记 → 管理员激活 → 短期 `Device` 会话；长期设备密钥在 Hub 只存摘要）
   - `GET/POST /api/v1/tasks`、`GET/PATCH/DELETE /api/v1/tasks/{id}`

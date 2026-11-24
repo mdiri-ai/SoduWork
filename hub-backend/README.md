@@ -37,6 +37,14 @@ Direct development uses local configuration and data; keep it separate from real
 
 API documentation: **http://127.0.0.1:9080/docs**. Health check: `GET /healthz`.
 
+## Diagnosing queued dispatches
+
+When the Runner first accepts a dispatch, its log records the execution reference and queue position.
+While it is queued, `GET /api/v1/tasks/{tid}/ai-status` can return `runner.waitReason`.
+`resource_pressure` means the Runner's resource budget is blocking new starts.
+`execution_slot` means all slots available to this work are occupied.
+The field is optional. Poll the same task to see the current reason or its transition to running.
+
 ## Desktop-local Runner event recovery
 
 Desktop-local Runner executions persist their event destination separately from the
@@ -341,6 +349,8 @@ python3 e2e_runner_tls.py --output /absolute/evidence/directory
 The check verifies the packaged native verifier, real TLS with a disposable trust anchor, strict explicit overrides, and rejection of untrusted or mismatched certificates. It does not modify the machine's trust store. `--source-only` exercises the same paths without freezing. These fixtures do not replace full desktop, production model or other operating-system verification.
 
 ## API and trust boundaries
+
+When posting usage to `POST /api/v1/usage/events`, omit `occurredAt` to use the time the Hub receives the event. Supply an ISO 8601 timestamp to report an earlier instant. The Hub interprets a timestamp without an offset as UTC. If an event has an invalid timestamp, the Hub returns HTTP 422 before recording any event in the batch.
 
 - Devices enroll with `POST /api/v1/clients/enroll`, then use a short-lived device session. Device long-term keys remain in the Electron main process; Hub stores only their digest.
 - Business requests use `Authorization: Device <session>`. WebSocket connectivity uses the same short-lived session at `/api/v1/ws`.

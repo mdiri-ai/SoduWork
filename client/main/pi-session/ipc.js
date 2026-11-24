@@ -397,6 +397,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     cloudHistory: _cloudHandoff, accountHistory: _accountSync, sharedHistory: _sharedHistory });
   require('../conversation/work-conversation-cards').install({ app, ipcMain, session, BrowserWindow,
     identityOf: sendIdentityOf || identityOf, accountHistory: _accountSync, sharedHistory: _sharedHistory,
+    cloudHistory: _cloudHandoff,
     newCwd: options => _newSessionCwd(app, 'chat-' + require('node:crypto').randomUUID(), options) });
   /*
    * Read fixed-name plugin drafts only from outputs of active registered sessions; never

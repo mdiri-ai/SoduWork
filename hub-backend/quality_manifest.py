@@ -10,6 +10,7 @@ from public_source import INTERNAL_SMOKES, is_public_snapshot
 
 # Release checks are offline, deterministic and safe to run against isolated data.
 RELEASE_SMOKES = tuple(sorted((
+    "test_alert_channel_settings.py",
     "test_plugin_import_rollback.py",
     "test_repository_deployment_target_integrity.py",
     "test_org_sort_validation.py",
@@ -143,6 +144,7 @@ RELEASE_SMOKES = tuple(sorted((
     "smoke/smoke_automation_templates.py",
     "test_automation_templates.py",
     "test_quality_gate_cleanup.py",  # Native ownership, bounded cleanup and timeout diagnostics.
+    "test_changed_lint.py",  # New findings on top of an existing Ruff baseline.
     "smoke/smoke_builtin_delivery_e2e.py",
     "smoke/smoke_capabilities.py",
     "smoke/smoke_change_hygiene.py",
@@ -316,6 +318,7 @@ RELEASE_SMOKES = tuple(sorted((
     "smoke/smoke_schedule_ledger.py",
     "smoke/smoke_scheduler_concurrency.py",
     "smoke/smoke_schedules.py",
+    "test_release_schema_history.py",
     "smoke/smoke_schema_migrations.py",
     "smoke/smoke_script_tool.py",
     "smoke/smoke_server_image.py",

@@ -455,11 +455,6 @@ async def update_user(
     if not user.is_super or body.orgId is not None:
         await rbac.lock_org_tree(session, shared=True)
     await _assert_user_in_scope(session, user, target)
-    if body.password is not None:
-        if len(body.password) < 8:
-            raise HTTPException(status_code=422, detail="密码长度不能少于 8 个字符")
-        if len(body.password) > 128:
-            raise HTTPException(status_code=422, detail="密码长度不能超过 128 个字符")
     if body.orgId is not None:
         await _assert_org_in_scope(session, user, body.orgId)
         await _require_existing_org(session, body.orgId)
@@ -617,15 +612,18 @@ async def update_domain(
     if "name" in body and body["name"] is None:
         raise HTTPException(status_code=422, detail="领域名称必须为 1 到 64 个字符")
     try:
-        r = await rbac.update_domain(session, did, body.get("name"), sort)
+        change = await rbac.update_domain(session, did, body.get("name"), sort)
     except DuplicateName as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="领域名称必须为 1 到 64 个字符") from exc
-    if r is None:
+    if change is None:
         raise HTTPException(status_code=404, detail="领域不存在")
-    await audit.log(session, user, "domain.update", "domain", did, r["name"], {})
-    return r
+    before, after = change
+    audit.add(session, user, "domain.update", "domain", did, after["name"],
+              {"before": before, "after": after})
+    await session.commit()
+    return after
 
 
 @router.delete("/domains/{did}")
@@ -1988,14 +1986,18 @@ async def put_team_module_scope(
     return {"ok": True, "scope": scope}
 
 
+# Older consoles put the GET result back unchanged when saving the form.
+# A fixed non-URL marker preserves that round trip without revealing any URL part.
+_HIDDEN_ALERT_URL = "••••••••"
+
+
 @router.get("/alert-config", dependencies=[Depends(require_perm("integration.manage"))])
 async def get_alert_config(session: AsyncSession = Depends(get_session)):
-    """Configure delivery alert channels; an empty configuration keeps alerts in the application."""
-    from ..models import AppSetting
     from ..services import notify
-    row = (await session.execute(select(AppSetting).where(
-        AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-    return {"url": (row.value if row else "") or ""}
+    row = await session.get(models.AppSetting, notify.ALERT_URL_KEY)
+    destination = (row.value or "").strip() if row else ""
+    return {"configured": bool(destination), "url": _HIDDEN_ALERT_URL if destination else "",
+            "usesPlainHttp": destination.lower().startswith("http://")}
 
 
 @router.put("/alert-config")
@@ -2004,27 +2006,24 @@ async def put_alert_config(
     user: User = Depends(require_perm("integration.manage")),
     session: AsyncSession = Depends(get_session),
 ):
-    from ..models import AppSetting
     from ..services import notify
+    from ..services.model_runtime import lock_setting
     url = body.get("url")
-    if url is not None:
-        url = str(url).strip()[:600]
-        if url and not url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头")
-        row = (await session.execute(select(AppSetting).where(
-            AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-        if row is None:
-            session.add(AppSetting(key=notify.ALERT_URL_KEY, value=url))
-        else:
-            row.value = url
-        await session.commit()
-    # Read current state for audit and response.
-    current_row = (await session.execute(select(AppSetting).where(
-        AppSetting.key == notify.ALERT_URL_KEY))).scalars().first()
-    # Webhook URLs permit message injection if leaked; audit only whether a URL is configured.
-    await audit.log(session, user, "alert.config", "setting", None, "告警通道",
-                    {"configured": bool(current_row and current_row.value)})
-    return {"ok": True, "configured": bool(current_row and current_row.value)}
+    if url is None or url == _HIDDEN_ALERT_URL:
+        row = await session.get(models.AppSetting, notify.ALERT_URL_KEY)
+        return {"ok": True, "configured": bool(row and row.value)}
+    if not isinstance(url, str):
+        raise HTTPException(status_code=422, detail="告警地址必须是字符串")
+    url = url.strip()
+    if len(url) > 600 or (url and not url.startswith(("http://", "https://"))):
+        raise HTTPException(status_code=422, detail="告警地址要以 http:// 或 https:// 开头，最多 600 个字符")
+    row = await lock_setting(session, notify.ALERT_URL_KEY, "")
+    row.value = url
+    configured = bool(url)
+    audit.add(session, user, "alert.config", "setting", None, "告警通道",
+              {"configured": configured})
+    await session.commit()
+    return {"ok": True, "configured": configured}
 
 
 @router.post("/alert-config/test")

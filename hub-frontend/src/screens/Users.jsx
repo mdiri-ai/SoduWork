@@ -1,5 +1,5 @@
 import { getLocale, translateText as tx, localeMap, useLocale } from '../i18n.js'
-import React, { useState, useEffect, useId } from 'react'
+import React, { useState, useEffect, useId, useRef } from 'react'
 import { orgOptions } from '../org-options.js'
 import { api, getUser } from '../api.js'
 import { FilterInput, FilterSelect } from '../FilterControls.jsx'
@@ -189,6 +189,12 @@ function UserEditor({ user, orgs, roles, onClose, onDone }) {
   const [username, setUsername] = useState(user ? user.username : '')
   const [displayName, setDisplayName] = useState(user ? user.displayName : '')
   const [password, setPassword] = useState('')
+  const passwordInput = useRef(null)
+  const [passwordTouched, setPasswordTouched] = useState(false)
+  const passwordLength = [...password].length
+  const passwordInvalid = (isNew || password !== '') && (
+    passwordLength < 8 || passwordLength > 128 || !/[^\p{White_Space}\u001c-\u001f]/u.test(password))
+  const showPasswordError = passwordTouched && passwordInvalid
   const [orgId, setOrgId] = useState(user ? user.orgId || '' : '')
   const [roleId, setRoleId] = useState(user ? user.roleId || '' : '')
   const [isActive, setIsActive] = useState(user ? user.isActive : true)
@@ -228,7 +234,12 @@ function UserEditor({ user, orgs, roles, onClose, onDone }) {
   const toggleDom = (id) => setDomSel((a) => a.includes(id) ? a.filter((x) => x !== id) : [...a, id])
 
   async function save() {
-    if (isNew && (!username.trim() || !password)) { toast(tx("请填账号与初始密码")); return }
+    if (isNew && !username.trim()) { toast(tx("请填账号与初始密码")); return }
+    if (passwordInvalid) {
+      setPasswordTouched(true)
+      passwordInput.current?.focus()
+      return
+    }
     if (!orgId) { toast(tx("请选择所属部门")); return }
     setBusy(true)
     try {
@@ -264,7 +275,17 @@ function UserEditor({ user, orgs, roles, onClose, onDone }) {
         <div style={{ flex: 1 }}><label className="f-lbl" htmlFor={`${formId}-username`}>{tx("账号")}</label><input id={`${formId}-username`} name="managed-username" autoComplete="off" className="f-in" value={username} disabled={!isNew} required={isNew} onChange={(e) => setUsername(e.target.value)} placeholder={tx("登录账号")} /></div>
         <div style={{ flex: 1 }}><label className="f-lbl" htmlFor={`${formId}-name`}>{tx("姓名")}</label><input id={`${formId}-name`} name="managed-display-name" autoComplete="off" className="f-in" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={tx("显示名")} /></div>
       </div>
-      <div><label className="f-lbl" htmlFor={`${formId}-password`}>{isNew ? tx("初始密码") : tx("重置密码（留空不改）")}</label><input id={`${formId}-password`} name="managed-new-password" autoComplete="new-password" className="f-in" type="password" value={password} required={isNew} onChange={(e) => setPassword(e.target.value)} placeholder={isNew ? tx("设置初始密码") : tx("不改则留空")} /></div>
+      <div className="managed-password">
+        <label className="f-lbl" htmlFor={`${formId}-password`}>{isNew ? tx("初始密码") : tx("重置密码（留空不改）")}</label>
+        <input ref={passwordInput} id={`${formId}-password`} name="managed-new-password" autoComplete="new-password"
+          className="f-in" type="password" value={password} required={isNew}
+          aria-invalid={showPasswordError} aria-describedby={`${formId}-password-hint`}
+          onBlur={() => setPasswordTouched(true)} onChange={(e) => setPassword(e.target.value)}
+          placeholder={isNew ? tx("设置初始密码") : tx("不改则留空")} />
+        <p className="managed-password-hint" id={`${formId}-password-hint`}>
+          {showPasswordError && <strong aria-hidden="true">! </strong>}{tx("使用 8–128 个字符，不能全为空白。")}
+        </p>
+      </div>
       <div style={{ display: 'flex', gap: 12 }}>
         <div style={{ flex: 1 }}><label className="f-lbl" id={`${formId}-org-label`} htmlFor={`${formId}-org`}>{tx("所属部门")}</label>
           <SelectMenu searchable id={`${formId}-org`} aria-labelledby={`${formId}-org-label`} required className="f-in" value={orgId} onChange={(e) => setOrgId(e.target.value)}><option value="">{tx("— 选择部门 —")}</option>{opts.map((o) => <option key={o.id} value={o.id} data-path={o.path}>{o.label}</option>)}</SelectMenu>

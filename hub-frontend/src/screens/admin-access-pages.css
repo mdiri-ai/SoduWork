@@ -79,3 +79,12 @@
 /* Use a neutral avatar placeholder in the new-user dialog. */
 .ava-placeholder{width:46px;height:46px;border-radius:50%;flex:0 0 46px;background:var(--surface-2,#f2f5f9);color:var(--ink-3,#98a2b3);display:flex;align-items:center;justify-content:center;border:1px solid var(--line,#e3e8ef)}
 .ava-placeholder svg{width:22px;height:22px}
+
+.managed-password-hint {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--font-min-readable, 14.5px);
+  line-height: 1.5;
+}
+.managed-password input[aria-invalid="true"] { border-color: var(--crit); }
+.managed-password input[aria-invalid="true"] + .managed-password-hint { color: var(--crit); }

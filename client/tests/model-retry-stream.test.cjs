@@ -40,7 +40,7 @@ function deny(response) {
   response.end(JSON.stringify({ error: { message: denial } }));
 }
 
-test('对话收到模型服务的 401 时显示个人与企业凭据排查路径', async t => {
+test('A conversation shows personal and company credential guidance when the model service returns HTTP 401', async t => {
   const f = await fixture(t);
   f.reply(() => ({ respond(response) {
     response.writeHead(401, { 'content-type': 'application/json' });

@@ -903,19 +903,26 @@
       const validation = String(file.evidenceMeta?.verification?.state || file.validation?.state || '').toLowerCase();
       const validationLabel = validation === 'failed' ? '校验未通过' : validation && validation !== 'passed' ? '待校验' : '';
       const autoBundle = file.autoBundle === true;
+      const mime = String(file.contentType || '').split(';', 1)[0].trim().toLowerCase();
+      const warnDownload = !autoBundle && (/\.(?:exe|html?|svg)$/i.test(name) ||
+        ['text/html', 'image/svg+xml', 'application/x-msdownload', 'application/vnd.microsoft.portable-executable'].includes(mime));
+      const warningId = warnDownload ? 'rq-download-warning-' + esc(file.id) : '';
+      const describedBy = warnDownload ? ' aria-describedby="' + warningId + '"' : '';
+      const warning = warnDownload ? '<span class="rq-material-meta rq-material-warning" id="' + warningId +
+        '" data-i18n="task.attachment.downloadWarning">此文件可能包含可执行内容。下载后请先核实来源，勿直接运行。</span>' : '';
       const downloadState = downloadStates.get(String(file.id)) || {};
       const bundleIds = autoBundle ? ' data-rq-bundle-ids="' + esc(JSON.stringify(file.attachmentIds || [])) + '"' : '';
       const meta = [autoBundle ? '自动打包' : extension, file.size ? formatBytes(file.size) : '', round > 0 ? 'v' + round : '', version ? version.slice(0, 12) : '', validationLabel].filter(Boolean).join(' · ');
       const open = autoBundle
         ? '<button type="button" class="rq-attachment" data-rq-bundle-download' + bundleIds + '>' + esc(name) + '</button>'
-        : '<button type="button" class="rq-attachment" data-rq-file="' + esc(file.id) + '">' + esc(name) + '</button>';
+        : '<button type="button" class="rq-attachment" data-rq-file="' + esc(file.id) + '"' + describedBy + '>' + esc(name) + '</button>';
       const download = autoBundle
         ? '<button type="button" class="rq-material-icon rq-material-download" title="下载" aria-label="下载" data-rq-bundle-download' + bundleIds + '>↓</button>'
-        : '<button type="button" class="rq-material-icon rq-material-download" title="下载" aria-label="下载" data-rq-download="' + esc(file.id) + '" aria-busy="' + Boolean(downloadState.pending) + '"' + (downloadState.pending ? ' disabled' : '') + '>↓</button>';
+        : '<button type="button" class="rq-material-icon rq-material-download" title="下载" aria-label="下载" data-rq-download="' + esc(file.id) + '"' + describedBy + ' aria-busy="' + Boolean(downloadState.pending) + '"' + (downloadState.pending ? ' disabled' : '') + '>↓</button>';
       const status = autoBundle ? '' : '<span class="rq-material-meta rq-material-status" data-rq-download-status role="status" aria-live="polite"' +
         (downloadState.text ? '' : ' hidden') + '>' + esc(downloadState.text || '') + '</span>';
       return '<div class="rq-material" role="listitem" data-rq-file-id="' + esc(file.id || '') + '"><div class="rq-material-info"><span class="rq-material-type" aria-hidden="true">' + esc(autoBundle ? 'ZIP' : extension.slice(0, 4)) + '</span><div>' +
-        open + (meta ? '<span class="rq-material-meta">' + esc(meta) + '</span>' : '') + status + '</div></div><div class="rq-material-actions">' +
+        open + (meta ? '<span class="rq-material-meta">' + esc(meta) + '</span>' : '') + warning + status + '</div></div><div class="rq-material-actions">' +
         download + (global.LibraryTransfer?.button ? (autoBundle
           ? LibraryTransfer.button({deliveryBundle: true, taskId: task.id, attachmentIds: file.attachmentIds, name}, '', 'data-rq-bundle-library')
             .replace('data-rq-bundle-library=', bundleIds + ' data-rq-bundle-library=')

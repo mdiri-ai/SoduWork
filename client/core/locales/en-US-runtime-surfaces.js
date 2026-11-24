@@ -1,5 +1,6 @@
 (function (global) {
   const messages = {
+    "task.attachment.downloadWarning": "This file may contain executable content. Verify its source before opening or running the download.",
     "文件读取记录": "File read history",
     "按路径筛选": "Filter by path",
     "当前记录中没有匹配的读取，文件状态尚待核验。": "No matching read in the loaded history. The file status is unverified.",

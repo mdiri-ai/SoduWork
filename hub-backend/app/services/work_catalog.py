@@ -524,9 +524,13 @@ async def save_profession(
     row.category = category
     row.description = str(body.get(
         "description", current.description if current else "") or "").strip()[:400]
-    row.competencies = _items(
-        body.get("competencies", current.competencies if current else []),
-        limit=30, length=80)
+    try:
+        competencies = _items(
+            body.get("competencies", current.competencies if current else []),
+            limit=30, length=80)
+    except (TypeError, ValueError) as error:
+        raise ValueError("competencies 必须是数组") from error
+    row.competencies = competencies
     try:
         sort = int(body.get("sort", current.sort if current else 0) or 0)
     except (TypeError, ValueError):

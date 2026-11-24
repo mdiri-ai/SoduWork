@@ -81,20 +81,53 @@ class AdminUserTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class UserRoleUpdateTests(AdminUserTestCase):
+    async def test_user_names_reject_controls_on_create_and_edit(self):
+        fields = {"orgId": "team", "username": "member", "password": secrets.token_urlsafe(24)}
+        for invalid in ({"displayName": "Jo\x1bAnn"}, {"username": "له\u2066نا"}):
+            response = await self.request("POST", "/users", json={**fields, **invalid})
+            self.assertEqual(response.status_code, 422, response.text)
+        created = await self.request("POST", "/users", json=fields)
+        self.assertEqual(created.status_code, 200, created.text)
+        self.assertEqual(created.json()["displayName"], "member")
+        path = "/users/" + created.json()["id"]
+        for name, expected in (("研发 · ليلى", 200), ("First\nLast", 422)):
+            response = await self.request("PATCH", path, json={"displayName": name})
+            self.assertEqual(response.status_code, expected, response.text)
+        async with self.sessions() as session:
+            self.assertEqual((await session.get(models.User, created.json()["id"])).display_name, "研发 · ليلى")
+
     async def test_admin_password_policy_applies_to_create_and_reset(self):
-        for password in ("", "short", "x" * 129):
-            for method, path, fields in (("POST", "/users", {"username": "new", "orgId": "team"}),
-                                         ("PATCH", "/users/target", {})):
-                response = await self.request(method, path, json={**fields, "password": password})
-                self.assertEqual(response.status_code, 422, response.text)
-                # Password length validation is enforced by Pydantic schema;
-                # the error message no longer includes the raw password value.
-                self.assertIn("password", response.text)
-        response = await self.request("POST", "/users", json={
-            "username": "new", "orgId": "team", "password": "fixture-password"})
-        self.assertEqual(response.status_code, 200, response.text)
-        from app.auth import hash_password, verify_password
-        self.assertFalse(verify_password("", hash_password("")))
+        from app.auth import verify_password
+        from app.services import client_access
+
+        for password in ("", "x", "x" * 7, " " * 8, "\u2003" * 12, "x" * 129):
+            with self.subTest(length=len(password), blank=not password.strip()):
+                for method, path, fields in (("POST", "/users", {"username": "new", "orgId": "team"}),
+                                             ("PATCH", "/users/target", {})):
+                    response = await self.request(method, path, json={**fields, "password": password})
+                    self.assertEqual(response.status_code, 422, response.text)
+                with self.assertRaises(client_access.ClientAccessError):
+                    client_access.validate_password(password, new_account=True)
+
+        for method, path, fields, password in (
+            ("POST", "/users", {"username": "new", "orgId": "team"}, " " + secrets.token_hex(3) + " "),
+            ("PATCH", "/users/target", {}, secrets.token_hex(64)),
+        ):
+            response = await self.request(method, path, json={**fields, "password": password})
+            self.assertEqual(response.status_code, 200, response.text)
+            async with self.sessions() as session:
+                user = await session.get(models.User, response.json()["id"])
+                self.assertTrue(verify_password(password, user.password_hash))
+
+    def test_out_of_policy_passwords_are_rejected_before_hash_verification(self):
+        from unittest.mock import patch
+        from app.auth import verify_password
+
+        with patch("app.auth.hashlib.pbkdf2_hmac") as derive:
+            for password in ("", "x" * 7, "\t" * 8, "\u2003" * 12, "x" * 129):
+                with self.subTest(length=len(password)):
+                    self.assertFalse(verify_password(password, "pbkdf2$200000$abcd$abcd"))
+            derive.assert_not_called()
 
     async def test_builtin_role_is_read_only_and_catalog_explains_permissions(self):
         async with self.sessions() as session:

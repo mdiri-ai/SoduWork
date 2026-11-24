@@ -189,6 +189,7 @@ async def latest_artifact(session: AsyncSession, task_id: str, *,
     return (await session.execute(
         q
         .order_by(am.ArtifactVersion.seq.desc(), am.ArtifactVersion.created_at.desc()).limit(1)
+        .execution_options(populate_existing=True)
     )).scalar_one_or_none()
 
 
@@ -234,6 +235,8 @@ async def _new_artifact(session: AsyncSession, task: models.Task, *, kind: str,
     latest = await latest_artifact(session, task.id, stream=stream)
     # Idempotency applies only to repeated current content; reverting after an intervening version creates a new sequence number.
     # Thus v1 content after v2 becomes v3, keeping latest and approval bindings accurate.
+    if latest and latest.kind == "files" and latest.state == "rejected" and kind in {"files", "manual", "text"}:
+        artifact_version_guard.require_revised_files(latest, payload)
     if existing is not None and latest is not None and existing.id == latest.id:
         return existing, False
     await _cancel_old(session, task.id, stream)

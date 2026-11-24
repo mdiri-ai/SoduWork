@@ -545,20 +545,21 @@ async def create_domain(session: AsyncSession, name: str, sort: int = 0) -> dict
     return domain_to_api(d)
 
 
-async def update_domain(session: AsyncSession, did: str, name: str | None, sort: int | None) -> dict | None:
+async def update_domain(session: AsyncSession, did: str, name: str | None, sort: int | None) -> tuple[dict, dict] | None:
+    """Capture both sides of the edit for the caller's audit transaction."""
+    await catalog_names.lock_catalog(session, models.Domain)
     d = await session.get(models.Domain, did)
     if d is None:
         return None
+    before = domain_to_api(d)
     if name is not None:
         name = _admin_name.validate_python(name)
         if name != d.name:
-            await catalog_names.require_available(session, models.Domain, name, "领域名已存在", exclude_id=did)
+            await catalog_names.check_available(session, models.Domain, name, "领域名已存在", exclude_id=did)
         d.name = name
     if sort is not None:
         d.sort = sort
-    await session.commit()
-    await session.refresh(d)
-    return domain_to_api(d)
+    return before, domain_to_api(d)
 
 
 async def _lock_domains(session: AsyncSession, ids: list[str]) -> list[models.Domain]:
@@ -578,6 +579,8 @@ async def validate_user_domains(session: AsyncSession, ids: list[str] | None) ->
 
 
 async def delete_domain(session: AsyncSession, did: str) -> dict:
+    # Match the update lock order before acquiring the row lock for deletion.
+    await catalog_names.lock_catalog(session, models.Domain)
     domains = await _lock_domains(session, [did])
     if not domains:
         return {"ok": False, "reason": "not_found"}
@@ -624,6 +627,7 @@ async def bootstrap(session: AsyncSession) -> None:
     n = await session.scalar(select(func.count()).select_from(models.User))
     if not n:
         s = get_settings()
+        password = client_access.validate_password(s.admin_pass, new_account=True)
         root = None
         if not await session.scalar(select(func.count()).select_from(models.OrgUnit)):
             root = models.OrgUnit(name="总部")
@@ -635,7 +639,7 @@ async def bootstrap(session: AsyncSession) -> None:
             session.add(models.Role(name="系统管理员", permissions=list(ALL_KEYS), is_system=True))
             session.add(models.Role(name="部门管理员", permissions=list(_DEPT_ADMIN_PERMS), is_system=True))
         session.add(models.User(
-            username=s.admin_user, password_hash=hash_password(s.admin_pass),
+            username=s.admin_user, password_hash=hash_password(password),
             display_name="超级管理员", org_id=root.id, is_super=True, is_active=True,
         ))
         await session.commit()

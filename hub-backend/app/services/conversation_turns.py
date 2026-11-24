@@ -148,7 +148,8 @@ def _delivery_hint(reason: str, files: list[str]) -> str:
 
 async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str,
                             provider: str = "", files: list,
-                            categories: dict | None = None,
+                            categories: dict | None = None, declared_paths: set[str] | None = None,
+                            replacements: dict[str, list[str]] | None = None,
                             outcome: str = "completed") -> dict:
     """Ingest conversation-turn outputs through shared classification, validation, versioning, and
     review. Only completed turns create candidates; incomplete turns retain evidence without
@@ -265,7 +266,9 @@ async def deliver_artifacts(session, task, *, conversation_id: str, turn_id: str
                            "sha256": hashlib.sha256(data).hexdigest(),
                            "identifier": turn_id, "round": round_no,
                            "conversationId": conversation_id,
-                           "category": category, "verification": verification},
+                           "category": category, "verification": verification,
+                           **({"requestedOutput": True} if declared_paths and fn in declared_paths else {}),
+                           **({"replaces": replacements[fn]} if replacements and replacements.get(fn) else {})},
             created_at=datetime.now(timezone.utc)))
         got.append(fn)
         received.add(fn)

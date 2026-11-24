@@ -1,3 +1,4 @@
+import { catalogSearchView, scheduleCatalogSearch } from './repository-catalog-search.js'
 import { translateText as tx, localeMap, useLocale } from '../i18n.js'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { api, can } from '../api.js'
@@ -143,7 +144,8 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
   const [integrations, setIntegrations] = useState([])
   const [sourceId, setSourceId] = useState('')
   const [clientId, setClientId] = useState((clients.find((c) => c.online) || clients[0] || {}).id || '')
-  const [catalog, setCatalog] = useState([])
+  const [pages, setPages] = useState([])
+  const [searchResult, setSearchResult] = useState(null)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(null)
   const [branches, setBranches] = useState([])
@@ -163,22 +165,27 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
     }).catch((e) => { setLoading(false); toast(tx("代码源没有加载：") + e.message) })
   }, [])
 
-  const loadCatalog = useCallback(async (iid) => {
-    if (!iid) { setCatalog([]); setLoading(false); return }
-    setLoading(true)
-    try {
-      const result = await api.repositoryCatalog(iid)
-      setCatalog(result.items || [])
-    } catch (e) {
-      setCatalog([])
-      toast(tx("仓库目录没有加载：") + e.message)
-    } finally { setLoading(false) }
-  }, [])
-
+  const [refresh, setRefresh] = useState(0)
   useEffect(() => {
-    setSelected(null); setBranches([]); setQuery('')
+    let active = true
+    async function loadCatalog(iid) {
+      setPages([])
+      if (!iid) { setLoading(false); return }
+      setLoading(true)
+      try {
+        const result = await api.repositoryCatalog(iid)
+        if (active) setPages([{ id: iid, items: result.items || [] }])
+      } catch (e) {
+        if (active) toast(tx("仓库目录没有加载：") + e.message)
+      } finally { if (active) setLoading(false) }
+    }
     loadCatalog(sourceId)
-  }, [sourceId, loadCatalog])
+    return () => { active = false }
+  }, [sourceId, refresh])
+
+  function changeSource(id) {
+    setSelected(null); setBranches([]); setQuery(''); setSourceId(id)
+  }
 
   async function choose(row) {
     setSelected(row)
@@ -199,7 +206,7 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
     setSyncing(true)
     try {
       const result = await api.syncRepositoryCatalog(sourceId, clientId)
-      await loadCatalog(sourceId)
+      setRefresh(value => value + 1)
       toast(tx("仓库目录已同步：") + result.total + tx(" 个仓库"))
     } catch (e) { toast(tx("仓库目录同步失败：") + e.message) } finally { setSyncing(false) }
   }
@@ -219,17 +226,20 @@ function CatalogRepoModal({ pid, clients, onClose, onDone }) {
     } catch (e) { toast(tx("仓库没有加入项目：") + e.message) } finally { setBusy(false) }
   }
 
-  const shown = catalog.filter((row) => !query.trim() || [row.fullName, row.displayName].some((v) => String(v || '').toLowerCase().includes(query.trim().toLowerCase())))
+  const term = query.trim()
+  useEffect(() => scheduleCatalogSearch(pages, term, api.repositoryCatalog, setSearchResult), [pages, term])
+  const search = catalogSearchView(pages, term, searchResult)
+  const shown = search.rows
   return <Modal scope="project-governance" title={tx("从远程仓库目录添加")} icon="box" wide draft={selected ? [selected.id, form] : null} onClose={onClose} foot={dismiss => <><button className="btn btn-ghost" onClick={dismiss}>{tx("取消")}</button><button className="btn btn-primary" disabled={busy || !selected} onClick={save}>{busy ? tx("正在添加…") : tx("添加到项目")}</button></>}>
     <div className="pg-catalog-lead"><div><b>{tx("选择真实代码资产，再指定这个项目使用的分支")}</b><span>{tx("同一个远程仓库可以服务多个项目；每个项目独立保存工作分支、合并目标与研发规则。")}</span></div>{canSync && <button className="btn btn-ghost btn-sm" disabled={syncing || !sourceId} onClick={sync}><Icon name="refresh" />{syncing ? tx("同步中…") : tx("同步目录")}</button>}</div>
     <div className="pg-catalog-source">
-      <Field label={tx("代码源")}><SelectMenu className="f-in" value={sourceId} onChange={(e) => setSourceId(e.target.value)}><option value="">{tx("选择 GitLab…")}</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {String(item.type).toUpperCase()}</option>)}</SelectMenu></Field>
+      <Field label={tx("代码源")}><SelectMenu className="f-in" value={sourceId} onChange={(e) => changeSource(e.target.value)}><option value="">{tx("选择 GitLab…")}</option>{sources.map((item) => <option key={item.id} value={item.id}>{item.name} · {String(item.type).toUpperCase()}</option>)}</SelectMenu></Field>
       <Field label={tx("用于读取的代码账号")}><SelectMenu className="f-in" value={clientId} onChange={(e) => setClientId(e.target.value)}><option value="">{tx("选择 SoduWork…")}</option>{clients.map((client) => <option key={client.id} value={client.id}>{client.name || client.id}{client.online ? tx(" · 在线") : tx(" · 离线")}</option>)}</SelectMenu></Field>
     </div>
     {!sources.length ? <EmptyPanel icon="plug" title={tx("还没有可用代码源")} text={tx("请先在「系统集成」接入 GitLab，然后回到这里同步仓库目录。")} /> : <div className="pg-catalog-layout">
       <section className="pg-catalog-browser">
         <FilterInput className="pg-catalog-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={tx("搜索仓库名称或路径")} />
-        <div className="pg-catalog-list">{loading ? <Loading /> : shown.length ? shown.map((row) => <button type="button" key={row.id} className={selected && selected.id === row.id ? 'on' : ''} onClick={() => choose(row)}><span className="pg-catalog-provider">{'GL'}</span><span><b>{row.displayName || row.fullName}</b><small>{row.fullName}</small></span><em>{row.defaultBranch || 'main'}</em></button>) : <div className="pg-catalog-none"><b>{tx("目录里还没有仓库")}</b><span>{canSync ? tx("选择代码账号后点击“同步目录”。") : tx("请联系平台管理员同步企业仓库目录。")}</span></div>}</div>
+        <div className="pg-catalog-list">{loading || search.loading ? <Loading /> : search.failures.length ? <div role="alert">{tx("仓库目录没有加载：")}{search.failures.join(" · ")}</div> : shown.length ? shown.map((row) => <button type="button" key={row.id} className={selected && selected.id === row.id ? 'on' : ''} onClick={() => choose(row)}><span className="pg-catalog-provider">{'GL'}</span><span><b>{row.displayName || row.fullName}</b><small>{row.fullName}</small></span><em>{row.defaultBranch || 'main'}</em></button>) : <div className="pg-catalog-none"><b>{term ? tx("没有匹配的仓库") : tx("目录里还没有仓库")}</b><span>{term ? tx("换个关键词试试。") : canSync ? tx("选择代码账号后点击“同步目录”。") : tx("请联系平台管理员同步企业仓库目录。")}</span></div>}</div>
       </section>
       <section className={'pg-catalog-config' + (selected ? '' : ' empty')}>
         {selected ? <><header><small>PROJECT BRANCH MAPPING</small><b>{selected.fullName}</b><span>{tx("这里只定义该项目如何使用这个仓库，不会修改远程代码。")}</span></header>

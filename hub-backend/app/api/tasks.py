@@ -4,24 +4,63 @@
 import logging
 import re
 from types import SimpleNamespace
+from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from pydantic import Json
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..pagination import PageQuery
 from ..db import get_session
-from ..deps import current_ai_client, authenticated_client, current_client, enforce_client_access, enforce_client_quota
+from ..deps import (
+    authenticated_client,
+    current_ai_client,
+    current_client,
+    enforce_client_access,
+    enforce_client_quota,
+)
 from ..models import Client, Task, User
+from ..pagination import PageQuery
 from ..realtime import hub
-from ..schemas import BatchUpdate, ReviewRecipient, TaskCreate, TaskSyncCreate, TaskUpdate, task_to_api
+from ..schemas import (
+    BatchUpdate,
+    ReviewRecipient,
+    TaskCreate,
+    TaskSyncCreate,
+    TaskUpdate,
+    task_to_api,
+)
 from ..services import audit, task_access
 from ..services import task_access as _task_access
 from ..services import tasks as svc
 from ..services.task_dispatch_context import (
-    _ext_project_id, _repo_ctx, _resolve_repo,
-    _attach_dev_flow, _attach_skills, _fill_repo_wire, _settle_work_dir,
-    _aio_thread, _link_task_repo, _stale_runner_hint, _push_task,
+    _aio_thread as _aio_thread,
+)
+from ..services.task_dispatch_context import (
+    _attach_dev_flow,
+    _attach_skills,
+    _ext_project_id,
+    _link_task_repo,
+    _push_task,
+    _repo_ctx,
+    _resolve_repo,
+    _settle_work_dir,
+)
+from ..services.task_dispatch_context import (
+    _fill_repo_wire as _fill_repo_wire,
+)
+from ..services.task_dispatch_context import (
+    _stale_runner_hint as _stale_runner_hint,
 )
 from ..timestamps import iso_utc
 
@@ -624,6 +663,8 @@ async def conversation_task_delivery(
     outcome: str = Form(default="completed"),
     client: Client = Depends(authenticated_client),
     session: AsyncSession = Depends(get_session),
+    declared_paths: Annotated[list[str] | None, Form(alias="declaredPaths")] = None,
+    replacements: Annotated[Json[dict[str, list[str]]] | None, Form()] = None,
 ):
     """Import completed conversation-turn artifacts under the delivery contract, record
     ai.artifacts evidence, freeze candidate versions, and notify the creator for review.
@@ -649,6 +690,13 @@ async def conversation_task_delivery(
     prepared = []
     prepared_categories = {}
     from ..services import delivery_manifest
+    declared = {delivery_manifest.normalize_name(path) for path in declared_paths or []}
+    replaced = {
+        delivery_manifest.normalize_name(path): [delivery_manifest.normalize_name(old) for old in previous]
+        for path, previous in (replacements or {}).items()
+    }
+    if not (declared | replaced.keys()) <= {delivery_manifest.normalize_name(path) for path in paths}:
+        raise HTTPException(422, "交付声明必须引用本轮上传的文件")
     for index, (path, file) in enumerate(zip(paths, files)):
         data = await file.read()
         max_bytes = get_settings().attach_max_mb * 1024 * 1024
@@ -669,7 +717,7 @@ async def conversation_task_delivery(
         result = await conversation_turns.deliver_artifacts(
             session, task, conversation_id=conversation_id[:180],
             turn_id=turn_id[:120], provider=provider, files=prepared,
-            categories=prepared_categories,
+            categories=prepared_categories, declared_paths=declared, replacements=replaced,
             outcome=normalized_outcome)
     except HTTPException:
         raise
