@@ -39,8 +39,8 @@
   font-size:max(var(--font-min-readable, 14.5px), 12px);color:var(--ink-4);padding:6px 10px}
 .workspace-shell.is-chat-dragging .ws-chat-actions{visibility:hidden}
 .ws-chat-row[data-chat-dragging]{opacity:.4}
-[data-sidebar-section].is-drop-target{background:color-mix(in srgb,var(--accent) 9%,transparent);
-  border-radius:9px;outline:1.5px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:-1.5px}
+[data-sidebar-section].is-drop-target{background:color-mix(in srgb,var(--accent) 5%,transparent);
+  border-radius:9px;outline:1px solid color-mix(in srgb,var(--accent) 24%,transparent);outline-offset:-1px}
 /* Names the destination while dragging, at the bottom of the sidebar's visible area. */
 .ws-drop-hint{position:fixed;z-index:60;transform:translate(-50%,-100%);max-width:240px;padding:4px 12px;border-radius:999px;
   background:var(--ink);color:var(--bg-0,#fff);box-shadow:var(--shadow-md,0 4px 14px rgba(0,0,0,.18));pointer-events:none;
