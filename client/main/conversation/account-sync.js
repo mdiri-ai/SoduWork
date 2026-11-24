@@ -1002,71 +1002,14 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
     const text = String(instruction || '').trim();
     if (!text) return { ok: false, reason: '请填写继续执行的指令后再创建分支' };
     if (text.length > 200000) return { ok: false, reason: '继续指令过长，请精简后再创建分支' };
-    let lockedId = '';
-    try {
-      const identity = await (localIdentityOf || identityOf)?.(app);
-      if (closed || !identity?.session || !identityKey(identity)) throw Error('请先登录 SoduWork 后操作会话');
-      // #1398 local-copy fast path: when the source session's native Pi archive
-      // lives on this device, the branch is a plain new local chat with the
-      // injected instruction - no hub task, directory row or ownership chain,
-      // regardless of whether an account sync record exists. Cross-device
-      // continuation keeps using the relay mechanism.
-      try {
-        const sessionModule = require('../pi-session/session');
-        if (typeof sessionModule.findBySessionId === 'function' && sessionModule.findBySessionId(id)) {
-          const localSessionId = require('node:crypto').randomUUID();
-          return { ok: true, sessionId: localSessionId, taskId: localSessionId,
-            transferId: localSessionId, localCopy: true,
-            accountConversationId: null, expectedRevision: 0 };
-        }
-      } catch (_) { /* Fall through to the account branch path. */ }
-      const captured = directoryScope(identity), generation = historyGeneration;
-      const resolved = await lifecycleTarget(id, identity, true);
-      const check = async () => {
-        if (closed || generation !== historyGeneration || captured !== directoryScope(await (localIdentityOf || identityOf)?.(app)))
-          throw Error('账号或服务已切换，请重新打开会话');
-      };
-      if (!resolved.found) {
-        // Local-copy fast path (#1398): the source session exists only on this
-        // device (never synced to the account), so a branch is simply a new
-        // local session id - the client opens it as an ordinary new chat with
-        // the injected instruction. No hub task, directory row or ownership
-        // chain; cross-device continuation keeps using the relay mechanism.
-        const localSessionId = require('node:crypto').randomUUID();
-        return { ok: true, sessionId: localSessionId, taskId: localSessionId,
-          transferId: localSessionId, localCopy: true,
-          accountConversationId: null, expectedRevision: 0 };
-      }
-      if (resolved.pending) return { ok: false, reason: '本地会话同步尚未确认，本次操作未完成，请稍后重试' };
-      const target = accountRows.get(resolved.conversation.id) || resolved.conversation;
-      if (!target?.id || target.deleted === true) return { ok: false, reason: '该会话已关闭，无法创建分支' };
-      lockedId = captured + ':' + target.id;
-      if (branchLocks.has(lockedId)) throw Error('这条会话正在创建分支，请稍后重试');
-      branchLocks.set(lockedId, true);
-      await check();
-      const agent = String(agentId || '').trim() || 'pi';
-      const request = require('node:crypto').randomUUID();
-      const response = await fetch(identity, endpoint(identity, '/account-conversations/branches/' +
-        encodeURIComponent(request)), {
-        method: 'POST', redirect: 'error', signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30000)]),
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ accountConversationId: target.id, expectedRevision: Number(target.revision || 0),
-          instruction: text, agentId: agent }),
-      });
-      const data = await response.json().catch(() => ({}));
-      await check();
-      if (!response.ok) {
-        const detail = typeof data.detail === 'string' && data.detail ? data.detail : '';
-        if (response.status === 409) return { ok: false, reason: detail || '会话记录已更新，请刷新会话后重新创建分支', changed: true };
-        if (response.status === 410) return { ok: false, reason: '该会话已关闭，无法创建分支' };
-        if (response.status === 413) return { ok: false, reason: '该会话记录过长，无法创建分支' };
-        return { ok: false, reason: detail || '分支创建未完成，请稍后重试' };
-      }
-      if (data.ok !== true || !data.sessionId || !data.taskId) throw Error('分支创建未确认，请刷新后重试');
-      return { ok: true, sessionId: data.sessionId, taskId: data.taskId, transferId: data.transferId || request,
-        accountConversationId: target.id, expectedRevision: Number(target.revision || 0) };
-    } catch (error) { return { ok: false, reason: String(error.message || error) }; }
-    finally { if (lockedId) branchLocks.delete(lockedId); }
+    // #1398: a branch is simply a new local session - the client opens it as
+    // an ordinary new chat with the injected instruction. No hub task,
+    // directory row, ownership assertion or restore chain, whatever the
+    // source is. Cross-device continuation keeps using the relay mechanism.
+    const localSessionId = require('node:crypto').randomUUID();
+    return { ok: true, sessionId: localSessionId, taskId: localSessionId,
+      transferId: localSessionId, localCopy: true,
+      accountConversationId: null, expectedRevision: 0 };
   }
 
   async function row(id) {
