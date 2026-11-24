@@ -1006,6 +1006,20 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
     try {
       const identity = await (localIdentityOf || identityOf)?.(app);
       if (closed || !identity?.session || !identityKey(identity)) throw Error('请先登录 SoduWork 后操作会话');
+      // #1398 local-copy fast path: when the source session's native Pi archive
+      // lives on this device, the branch is a plain new local chat with the
+      // injected instruction - no hub task, directory row or ownership chain,
+      // regardless of whether an account sync record exists. Cross-device
+      // continuation keeps using the relay mechanism.
+      try {
+        const sessionModule = require('../pi-session/session');
+        if (typeof sessionModule.findBySessionId === 'function' && sessionModule.findBySessionId(id)) {
+          const localSessionId = require('node:crypto').randomUUID();
+          return { ok: true, sessionId: localSessionId, taskId: localSessionId,
+            transferId: localSessionId, localCopy: true,
+            accountConversationId: null, expectedRevision: 0 };
+        }
+      } catch (_) { /* Fall through to the account branch path. */ }
       const captured = directoryScope(identity), generation = historyGeneration;
       const resolved = await lifecycleTarget(id, identity, true);
       const check = async () => {
