@@ -239,11 +239,14 @@
       if (paintCatalogStatus()) return;
       const state = options.state(), selection = state.selection || {};
       const selected = selection.name || selection.model?.id || state.model?.id || '';
+      // 同名模型（不同 key/显示名）可能并存：name 命中后再按显示名区分，避免两个条目同时标选中。
+      const selectedLabel = selection.model?.label || '';
+      const isPicked = row => row.name === selected && (!selectedLabel || row.label === selectedLabel);
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
       listNode.setAttribute('aria-busy', 'false');
       listNode.innerHTML = visible.length ? visible.map(row =>
-        '<button type="button" role="option" aria-selected="' + (row.name === selected) +
+        '<button type="button" role="option" aria-selected="' + isPicked(row) +
         '" data-model-name="' + esc(row.name) + '"><span class="nmodel-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span>' +
         '<span class="nmodel-row-copy"><b data-user-content>' + esc(row.label) + '</b>' +
         (row.subtitle ? '<small class="nmodel-row-subtitle" data-user-content>' + esc(row.subtitle) + '</small>' : '') + '</span>' +
