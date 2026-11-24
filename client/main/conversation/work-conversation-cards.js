@@ -441,6 +441,19 @@ function create({ app, identityOf, session, accountHistory, sharedHistory, cloud
         return { ok: true, sessionId: id, cards: [], workOnly: false,
           draftSelection: null, draftSelectionRevision: 0 };
       }
+      // 纯本地 Pi 会话（如复制的分支）：归档在本机 agent 目录，无工作卡也合法，
+      // 与普通本地会话一致，直接放行空卡片。
+      if (!row) {
+        try {
+          const sessionModule = require('../pi-session/session');
+          const found = await sessionModule.historyEntry(app, id, { strict: true });
+          if (found?.ok && found.entry?.path) {
+            await guard(captured);
+            return { ok: true, sessionId: id, cards: [], workOnly: false,
+              draftSelection: null, draftSelectionRevision: 0 };
+          }
+        } catch (_) { /* 本地归档不存在则继续原有链路 */ }
+      }
       if (accountHistory && (!row || row.accountProjection || row.adapterId === 'account-sync')) {
         // Card restoration runs before Agent opening. Resolve a trusted account
         // alias here as well, without starting a runtime or trusting renderer flags.

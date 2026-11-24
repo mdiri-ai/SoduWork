@@ -283,13 +283,16 @@
         if (!current()) return;
         if (!result?.ok) throw Error(result?.reason || '分支创建未完成，请稍后重试');
         close();
-        // #1398 复制会话：新分支就是一个普通的新对话，首条消息带原会话上下文＋继续指令，
-        // enter(first) 在新 runtime 打开后自动发出。
-        if (result.seedText && global.NativeChat) {
+        // #1398 复制会话：新分支与原会话同目录出现在侧边栏，点开显示一模一样的
+        // 完整历史，无需发送任何消息即可继续对话。
+        if (result.sessionId && global.NativeChat) {
           global.NativeChat.reset();
-          if (await global.NativeChat.enter(result.seedText).catch(() => false)) return;
+          if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) {
+            global.ChatCloudHandoff?.sync?.();
+            return;
+          }
         }
-        global.petSay?.('分支已创建');
+        global.petSay?.('分支已创建：' + (result.sessionId || '新会话'));
       } catch (problem) {
         if (!current()) return;
         submit.disabled = false; submit.textContent = '创建分支';

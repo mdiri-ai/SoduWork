@@ -312,42 +312,37 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     const url = frame?.url || sender?.getURL?.() || '';
     if ((frame && frame !== sender?.mainFrame) || (url && !String(url).startsWith('file:')))
       return { ok: false, reason: '会话分支只允许工作台调用' };
-    // #1398 复制会话：读原会话的本地对话记录拼成上下文，渲染层开一个普通新对话
-    // 并把「原会话记录＋继续指令」作为首条消息发出。不建云端任务/目录/守卫。
+    // #1398 复制会话：把原会话的本地 JSONL 归档复制为新会话（header id 替换），
+    // 新会话与原会话同目录出现在侧边栏，点开显示一模一样的完整历史，
+    // AI 上下文完整；归属绑定同样写入，直接可继续对话。不碰云端链路。
     const handle = session.get(String(sessionId || ''));
     const id = String(handle?.sessionId || sessionId || '');
-    const instruction = String(input?.instruction || '').trim();
-    let seedText = '';
+    if (!id) return { ok: false, reason: '会话标识无效' };
     try {
       const fs = require('node:fs');
-      const readline = require('node:readline');
+      const path = require('path');
+      const crypto = require('node:crypto');
       const sessionModule = require('./session');
+      const memories = require('../conversation/session-memory');
+      const identity = await (sendIdentityOf || identityOf)?.(app);
       const found = await sessionModule.historyEntry(app, id, { strict: true });
-      if (found?.ok && found.entry?.path) {
-        const msgs = [];
-        const input2 = fs.createReadStream(found.entry.path, { encoding: 'utf8' });
-        const lines = readline.createInterface({ input: input2, crlfDelay: Infinity });
-        try {
-          for await (const line of lines) {
-            let entry; try { entry = JSON.parse(line); } catch { continue; }
-            if (entry?.type !== 'message' || !entry.message || !('content' in entry.message) ||
-                !['user', 'assistant'].includes(entry.message.role)) continue;
-            const content = typeof entry.message.content === 'string' ? entry.message.content :
-              Array.isArray(entry.message.content) ? entry.message.content
-                .filter(block => block && block.type === 'text').map(block => block.text || '').join(' ') : '';
-            if (String(content).trim()) msgs.push((entry.message.role === 'user' ? '用户' : '助手') + '：' + String(content).trim().slice(0, 2500));
-          }
-        } finally { lines.close(); input2.destroy(); }
-        const recent = msgs.slice(-24);
-        if (recent.length) {
-          seedText = '以下是原会话「' + String(found.entry.name || found.entry.firstMessage || '').slice(0, 60) +
-            '」的最近对话记录，供你延续上下文：\n\n' + recent.join('\n\n') +
-            '\n\n（原会话记录到此结束）\n\n' + (instruction ? '用户的继续指令：' + instruction : '请基于以上上下文继续推进原任务。');
-        }
-      }
-    } catch (_) { /* 无本地记录时退化为纯指令 */ }
-    if (!seedText) seedText = instruction || '请继续推进原任务。';
-    return { ok: true, sessionId: '', seedText, localCopy: true };
+      if (!found?.ok || !found.entry?.path) return { ok: false, reason: '找不到原会话的本地记录，无法复制' };
+      const srcPath = found.entry.path;
+      const newId = crypto.randomUUID();
+      const dstPath = path.join(path.dirname(srcPath), newId + '.jsonl');
+      if (fs.existsSync(dstPath)) return { ok: false, reason: '会话标识已被占用，请重试' };
+      const raw = fs.readFileSync(srcPath, 'utf8').split(/\r?\n/);
+      const header = raw.length && raw[0] ? JSON.parse(raw[0]) : null;
+      if (!header || header.type !== 'session' || typeof header.id !== 'string')
+        return { ok: false, reason: '原会话记录格式无效，无法复制' };
+      header.id = newId;
+      raw[0] = JSON.stringify(header);
+      const fd = fs.openSync(dstPath, 'wx', 0o600);
+      try { fs.writeFileSync(fd, raw.join('\n')); } finally { fs.closeSync(fd); }
+      try { memories.bind(app, newId, identity, [], true); } catch (_) { /* 归属绑定失败则不阻止复制 */ }
+      return { ok: true, sessionId: newId, taskId: newId, transferId: newId, localCopy: true,
+        title: String(found.entry.name || '') };
+    } catch (error) { return { ok: false, reason: String(error?.message || error) }; }
   });
   // Account-conversation WebSocket messages are invalidation hints, but they
   // still need to reach the renderer.  Without this bridge the sync service
