@@ -218,7 +218,14 @@ async def create(session, client, request_id, raw, uploads):
             kind="task", status="todo", origin="cloud-conversation", created_by=user.id,
             created_by_name=user.display_name or user.username,
             work_routing={"selectedStrategy": "direct", "requiredSkills": requested["requiredSkills"],
-                          "cloudConversation": {"requestId": request_id, "sessionId": requested["sessionId"]}})
+                          "cloudConversation": {"requestId": request_id, "sessionId": requested["sessionId"]},
+                          # The branched/handoff turn dispatches with this context; without an
+                          # agent the composer turn cannot resolve an assignee and fails as 执行失败.
+                          "executionContext": {"schemaVersion": 1, "strategy": "direct",
+                              "agent": {"id": "local:" + str(options.get("agentId") or "pi"),
+                                        "cli": str(options.get("agentId") or "pi")},
+                              "runner": {"mode": "local"}, "location": {"mode": "local"},
+                              "model": str(options.get("model") or "")[:160]}})
         session.add_all([row, task, *attachments])
         committing = True
         await session.commit()
