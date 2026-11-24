@@ -54,48 +54,24 @@
    * Implement petSay as a toast so workspace operations always provide feedback without a
    * pet element.
    */
-  let _toastT = null, _toastMs = 0;
-  function _toast() {
+  let _toastT = null;
+  window.petSay = function (msg, dur) {
     let el = document.getElementById('deskToast');
     if (!el) {
       el = document.createElement('div');
       el.id = 'deskToast';
       el.className = 'desk-toast';
-      // Keep an actionable toast open while the pointer is on it.
-      el.addEventListener('mouseenter', () => clearTimeout(_toastT));
-      el.addEventListener('mouseleave', () => { if (el.classList.contains('show')) _hideLater(el, _toastMs); });
       document.body.appendChild(el);
     }
-    return el;
-  }
-  function _hideLater(el, dur) {
-    clearTimeout(_toastT);
-    _toastT = setTimeout(() => el.classList.remove('show', 'has-action'), dur);
-  }
-  window.petSay = function (msg, dur) {
-    const el = _toast();
-    // Replacing the text also drops any earlier undo action.
     el.textContent = String(msg || '');
-    el.classList.remove('has-action');
     el.classList.add('show');
-    _toastMs = Math.max(1800, dur || 2800);
-    _hideLater(el, _toastMs);
+    clearTimeout(_toastT);
+    _toastT = setTimeout(() => el.classList.remove('show'), Math.max(1800, dur || 2800));
   };
-  /* A toast with one undo action; the action runs at most once and closes the toast. */
-  window.petSayUndo = function (msg, onUndo, dur) {
-    window.petSay(msg, dur || 6000);
-    if (typeof onUndo !== 'function') return;
-    const el = _toast(), action = document.createElement('button');
-    action.type = 'button'; action.className = 'desk-toast-action'; action.textContent = '撤销';
-    action.addEventListener('click', () => {
-      clearTimeout(_toastT);
-      el.classList.remove('show', 'has-action');
-      action.remove();
-      onUndo();
-    }, { once: true });
-    el.append(' ', action);
-    el.classList.add('has-action');
-  };
+  /*
+   * Fall back to a normal toast for undo bubbles when no clickable pet bubble exists.
+   */
+  window.petSayUndo = function (msg) { window.petSay(msg); };
   /* Transparent-overlay passthrough helpers are no-ops in native workspace windows. */
   window.expandForOverlay = function () {};
   window.shrinkFromOverlay = function () {};

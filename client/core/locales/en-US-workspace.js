@@ -165,7 +165,6 @@
     '暂时无法连接 SoduWork 服务（{address}）。请检查服务地址或网络后重试。': 'Cannot connect to SoduWork ({address}). Check the service address or network and try again.',
     '本月已用 {used} / {limit} Tokens': 'Used this month: {used} / {limit} tokens',
     '当前版本 {version}': 'Current version: {version}', '已设为 {path}': 'Set to {path}', '已移到 {project}': 'Moved to {project}',
-    '撤销': 'Undo', '放到：{value1}': 'Move to: {value1}', '原位置已不可用，无法撤销': 'The original place is no longer available, so this cannot be undone',
     '在此目录创建会话：{path}': 'Start a chat in: {path}', '任务视图：{size}': "Issue view: {size}", '字体：{size}': 'Font size: {size}',
     '已停止接收新的本机工作，正在等待 {count} 项工作结束；现有任务不会中断。': 'No new local work will be accepted. Waiting for {count} active tasks to finish without interruption.',
     '未知服务': 'Unknown service', '未启用额度限制': 'No quota limit', '本月已用': 'Used this month', '正在登录': 'Signing in', '例：张三': 'e.g. Alex Chen',

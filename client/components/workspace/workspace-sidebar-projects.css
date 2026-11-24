@@ -41,19 +41,12 @@
 .ws-chat-row[data-chat-dragging]{opacity:.4}
 [data-sidebar-section].is-drop-target{background:color-mix(in srgb,var(--accent) 5%,transparent);
   border-radius:9px;outline:1px solid color-mix(in srgb,var(--accent) 24%,transparent);outline-offset:-1px}
-/* Names the destination while dragging, at the bottom of the sidebar's visible area. */
-.ws-drop-hint{position:fixed;z-index:60;transform:translate(-50%,-100%);max-width:240px;padding:4px 12px;border-radius:999px;
-  background:var(--ink);color:var(--bg-0,#fff);box-shadow:var(--shadow-md,0 4px 14px rgba(0,0,0,.18));pointer-events:none;
-  font-size:max(var(--font-min-readable, 14.5px), 12px);line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-  opacity:0;transition:opacity .12s ease}
-.ws-drop-hint.show{opacity:.92}
-/* Briefly marks where a moved conversation landed. */
+/* Briefly marks where a moved conversation landed, close to the active-row tint. */
 .ws-chat-row[data-just-moved]>.ws-chat{animation:ws-just-moved 1.6s ease-out}
 /* No end frame: the row fades back to its own background, including the active state. */
-@keyframes ws-just-moved{0%,35%{background:color-mix(in srgb,var(--accent) 16%,var(--bg-0))}}
+@keyframes ws-just-moved{0%,35%{background:color-mix(in srgb,var(--accent) 10%,var(--bg-0))}}
 @media(prefers-reduced-motion:reduce){
-  .ws-drop-hint{transition:none}
-  .ws-chat-row[data-just-moved]>.ws-chat{animation:none;outline:1.5px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:-1.5px}
+  .ws-chat-row[data-just-moved]>.ws-chat{animation:none;outline:1px solid color-mix(in srgb,var(--accent) 24%,transparent);outline-offset:-1px}
 }
 .ws-chat-row.is-drop-before::before,.ws-chat-row.is-drop-after::after{content:"";position:absolute;left:10px;right:9px;
   height:2px;border-radius:2px;background:var(--accent);z-index:5;pointer-events:none}

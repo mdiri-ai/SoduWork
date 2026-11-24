@@ -74,10 +74,6 @@
       const groups = state().view(getItems());
       return [...groups.pinned, ...groups.recent, ...groups.projects.flatMap(p => p.items)];
     }
-    const tr = (source, params) => {
-      const value = global.SoduWorkI18n?.t ? global.SoduWorkI18n.t(source, source, params) : source;
-      return String(value).replace(/\{(\w+)\}/g, (all, name) => params && Object.hasOwn(params, name) ? String(params[name]) : all);
-    };
     function rowFor(id) {
       return [...root.querySelectorAll('.ws-chat-row')].find(el => {
         const button = el.querySelector('.ws-chat');
@@ -100,16 +96,11 @@
       };
       if (typeof global.requestAnimationFrame === 'function') global.requestAnimationFrame(show); else show();
     }
-    function placeLabel(destination) {
-      return destination === 'pinned' ? tr('置顶') : destination === 'recent' ? tr('最近聊天')
-        : state().get().projects.find(p => p.id === destination)?.name || tr('项目');
-    }
-    function move(id, destination, before, { undo = false, position = '' } = {}) {
+    function move(id, destination, before) {
       safe(() => {
         const item = allItems().find(row => String(row.id) === id);
         if (!item) throw Error('会话已不在列表中，请刷新后重试');
-        const owner = scope;
-        const origin = state().move(item, destination, before, getItems(), { position });
+        state().move(item, destination, before, getItems());
         // Keep an appended conversation visible even beyond the project preview.
         if (state().get().projects.some(project => project.id === destination)) expandedProjects.add(destination);
         if (destination === 'pinned' || destination === 'recent') {
@@ -117,22 +108,10 @@
           if (body.hidden) root.querySelector(destination === 'pinned' ? '#wsPinnedToggle' : '#wsChatsToggle').click();
         }
         render();
-        const message = tr('已移到 {project}', { project: placeLabel(destination) });
-        status.textContent = message;
-        // Reordering inside one section happens under the pointer; only a change of place needs notice.
-        if (!origin || origin.target === destination) { if (!undo) reveal(id); return; }
         reveal(id);
-        if (undo) return;
-        const restore = () => {
-          // An account switch replaces the sidebar; the old placement no longer applies.
-          if (owner !== scope || !state().get().projects.concat([{ id: 'recent' }, { id: 'pinned' }]).some(p => p.id === origin.target)) {
-            notify(Error('原位置已不可用，无法撤销'));
-            return;
-          }
-          move(id, origin.target, origin.beforeId, { undo: true, position: origin.position });
-        };
-        if (typeof global.petSayUndo === 'function') global.petSayUndo(message, restore, 6000);
-        else global.petSay?.(message);
+        const label = destination === 'pinned' ? '置顶' : destination === 'recent' ? '最近聊天'
+          : state().get().projects.find(p => p.id === destination)?.name;
+        status.textContent = '已移到' + label;
       });
     }
     function file(id, projectId, row) {

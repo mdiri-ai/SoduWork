@@ -715,21 +715,14 @@
       /*
        * Without a neighbor, recent places the conversation first: the list reads newest
        * first, and an appended row lands behind every older conversation. Projects and
-       * pinned keep appending. Returns where the conversation was, so a move can be undone.
+       * pinned keep appending.
        */
-      move(item, target, beforeId, items, { position = '' } = {}) {
+      move(item, target, beforeId, items) {
         if (!item?.id || item.pending) throw Error('会话建立后即可移动');
         const id = String(item.id);
-        if (id === beforeId) return null;
+        if (id === beforeId) return;
         const visible = view(items);
         const same = references([id], [item]);
-        const sections = [['pinned', visible.pinned], ...visible.projects.map(p => [p.id, p.items]), ['recent', visible.recent]];
-        const owner = sections.find(([, rows]) => rows.some(row => same.has(String(row.id))));
-        const origin = owner ? (() => {
-          const rows = owner[1], index = rows.findIndex(row => same.has(String(row.id)));
-          const next = rows.slice(index + 1).find(row => !same.has(String(row.id)));
-          return { target: owner[0], beforeId: next ? String(next.id) : '', position: next ? '' : 'end' };
-        })() : null;
         const recentIds = visible.recent.filter(row => row.id).map(row => String(row.id));
         const projectIds = visible.projects.find(p => p.id === target)?.items.map(row => String(row.id)) || [];
         const map = referenceMap(visibleRows), before = references([beforeId]);
@@ -749,15 +742,13 @@
           if (p) p.chatIds = unique([...storedOrder(projectIds, p.chatIds), ...p.chatIds]).filter(v => !same.has(v));
           const list = p ? p.chatIds : target === 'pinned' ? next.pins : next.recent;
           const at = list.findIndex(value => before.has(value));
-          const first = position === 'start' || (target === 'recent' && position !== 'end');
-          list.splice(at >= 0 ? at : first ? 0 : list.length, 0, id);
+          list.splice(at >= 0 ? at : target === 'recent' ? 0 : list.length, 0, id);
           next.manualOrder = normalizedManualOrder(next.manualOrder);
           if (target === 'recent') next.manualOrder.recent = true;
           else if (p) next.manualOrder.projects[p.id] = true;
           if (p) { p.collapsed = false; next.collapsed = false; }
           remember(next, [item]);
         });
-        return origin;
       },
       forget(id) { return forgetMany([id]); },
       forgetMany,

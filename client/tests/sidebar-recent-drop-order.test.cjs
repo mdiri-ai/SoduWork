@@ -36,12 +36,6 @@ test('a recent drop on a row keeps the row position', () => {
   assert.deepEqual(ids(s.view(rows).recent), ['c3', 'c0', 'c4', 'c2', 'c5']);
 });
 
-test('an explicit end position still appends, which undo relies on', () => {
-  const { s } = setup();
-  s.move(row('c4'), 'recent', '', rows, { position: 'end' });
-  assert.deepEqual(ids(s.view(rows).recent).at(-1), 'c4');
-});
-
 test('the first position also goes above conversations created after the last reorder', () => {
   const { s, project } = setup();
   const fresh = [{ id: 'new', title: 'new', at: 5000 }, ...rows];
@@ -68,21 +62,9 @@ test('unpinning returns the conversation to the top of a manually ordered recent
   assert.deepEqual(ids(s.view(rows).recent)[0], 'c5');
 });
 
-test('move reports the previous place so it can be restored exactly', () => {
-  const { s, project } = setup();
-  const fromProject = s.move(row('c1'), 'recent', '', rows);
-  assert.deepEqual({ ...fromProject }, { target: project, beforeId: 'c4', position: '' });
-  s.move(row('c1'), fromProject.target, fromProject.beforeId, rows, { position: fromProject.position });
-  assert.deepEqual(ids(s.view(rows).projects.find(p => p.id === project).items), ['c1', 'c4']);
-  const fromRecentEnd = s.move(row('c5'), project, '', rows);
-  assert.deepEqual({ ...fromRecentEnd }, { target: 'recent', beforeId: '', position: 'end' });
-  s.move(row('c5'), fromRecentEnd.target, fromRecentEnd.beforeId, rows, { position: fromRecentEnd.position });
-  assert.equal(ids(s.view(rows).recent).at(-1), 'c5', 'the oldest conversation returns to the end');
-});
-
-test('dropping a conversation on itself changes nothing and reports nothing', () => {
+test('dropping a conversation on itself changes nothing', () => {
   const { s } = setup();
   const before = JSON.stringify(s.get());
-  assert.equal(s.move(row('c0'), 'recent', 'c0', rows), null);
+  s.move(row('c0'), 'recent', 'c0', rows);
   assert.equal(JSON.stringify(s.get()), before);
 });
