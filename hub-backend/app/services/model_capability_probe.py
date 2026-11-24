@@ -227,7 +227,10 @@ async def _exchange(conf, body, budget, working, *, stream=False, tools=False,
                         raise ProbeIssue("response_truncated")
                     retry_reasoning_budget = False
                     continue
-                working["maxTokensField"] = "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens"
+                tokens_field = ("max_completion_tokens" if "max_completion_tokens" in body
+                                else "max_tokens" if "max_tokens" in body else None)
+                if tokens_field:
+                    working["maxTokensField"] = tokens_field
                 if stream:
                     working["streamOptions"] = "stream_options" in body
                 return data
@@ -244,6 +247,8 @@ def _raise_reasoning_budget(conf: dict, body: dict, message: dict) -> bool:
     if not any(meaningful(message.get(key)) for key in ("reasoning_content", "reasoning", "thinking")):
         return False
     field = "max_completion_tokens" if "max_completion_tokens" in body else "max_tokens"
+    if field not in body:
+        return False
     current = body[field]
     larger = min(_output_limit(_settings(conf)), max(current * 4, 4096))
     if larger <= current:
@@ -252,10 +257,42 @@ def _raise_reasoning_budget(conf: dict, body: dict, message: dict) -> bool:
     return True
 
 
+def _minimal_tools_evidence(data) -> dict:
+    """Reshape a non-streamed tools response into streamed-probe evidence form."""
+    choice = response_choice(data)
+    message = choice["message"]
+    return {"choices": [{"message": message, "finish_reason": choice.get("finish_reason")}],
+            "_toolCallIndices": list(range(len(message.get("tool_calls") or []))),
+            "_legacyCallObserved": message.get("function_call") is not None,
+            "_reasoningStreamReported": False}
+
+
+async def _minimal_tools_exchange(conf, body, budget, working, phase, stage):
+    """Re-run one toolCalling phase without streaming or optional controls.
+
+    Some gateways answer a streamed tools probe with an explicit
+    tools-not-supported refusal while a standard non-streamed tools request
+    works, so a refusal that names the capability is not proof the model
+    lacks it. Only model, messages and tools are sent, matching a plain
+    tools call; evidence is reshaped for the shared checks.
+    """
+    minimal = {"model": conf["model"], "messages": body["messages"], "tools": body["tools"]}
+    phase["stage"] = stage
+    return _minimal_tools_evidence(await _exchange(conf, minimal, budget, working))
+
+
 async def _check(conf, check, budget, working, phase):
     body, expected = _payload({**conf, "compatibility": {**working, **budget.candidate}}, check)
-    data = await _exchange(conf, body, budget, working, stream=body["stream"], tools=check == "toolCalling",
-                           retry_reasoning_budget=check in ("connection", "imageInput"))
+    try:
+        data = await _exchange(conf, body, budget, working, stream=body["stream"], tools=check == "toolCalling",
+                               retry_reasoning_budget=check in ("connection", "imageInput"))
+    except UpstreamError as error:
+        # A streamed tools probe may be refused while plain tools calls work;
+        # re-probe minimally before reporting the capability as unsupported.
+        if (check != "toolCalling" or body.get("stream") is not True or "tools" not in body
+                or _failure(error, check) != ("unsupported", "capability_not_supported")):
+            raise
+        data = await _minimal_tools_exchange(conf, body, budget, working, phase, "tool_call")
     if (check == "toolCalling" and isinstance(body.get("tool_choice"), dict)
             and data["choices"][0].get("finish_reason") == "stop"
             and meaningful(data["choices"][0]["message"].get("content"))
@@ -303,7 +340,15 @@ async def _check(conf, check, budget, working, phase):
         "content": receipt}]
     # This result is fabricated locally. No model-suggested function is executed.
     phase["stage"] = "tool_result"
-    final = await _exchange(conf, followup, budget, working, stream=True, tools=True)
+    try:
+        final = await _exchange(conf, followup, budget, working, stream=True, tools=True)
+    except UpstreamError as error:
+        if _failure(error, "toolCalling") != ("unsupported", "capability_not_supported"):
+            raise
+        followup["stream"] = False
+        followup.pop("stream_options", None)
+        phase["stage"] = "tool_result"
+        final = _minimal_tools_evidence(await _exchange(conf, followup, budget, working))
     final_choice = final["choices"][0]
     answer = final_choice["message"].get("content")
     if final_choice.get("finish_reason") != "stop":

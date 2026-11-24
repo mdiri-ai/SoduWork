@@ -145,6 +145,12 @@ class CapabilityTests(IsolatedDatabase):
                 status, data = "400 Bad Request", b'{"error":{"message":"image input is not supported"}}'
             elif self.mode == "private-error":
                 status, data = "401 Unauthorized", b'{"error":{"message":"company-private secret internal response"}}'
+            elif self.mode == "streamed-tools-refused" and body.get("tools") and body.get("stream"):
+                status, content_type = "400 Bad Request", "application/json"
+                data = b'{"error":{"message":"function calling is not supported"}}'
+            elif self.mode == "tools-refused" and body.get("tools"):
+                status, content_type = "400 Bad Request", "application/json"
+                data = b'{"error":{"message":"tools are not supported"}}'
             elif body.get("stream"):
                 content_type = "text/event-stream"
                 tool_result = next((row for row in body["messages"] if row["role"] == "tool"), None)
@@ -177,6 +183,7 @@ class CapabilityTests(IsolatedDatabase):
                             b'data: {"choices":[{"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
             else:
                 message = {"content": "OK"}
+                finish = "stop"
                 tool_result = next((row for row in body["messages"] if row["role"] == "tool"), None)
                 if tool_result:
                     message = {"content": tool_result["content"]}
@@ -184,13 +191,14 @@ class CapabilityTests(IsolatedDatabase):
                     value = re.search(r"value ([a-f0-9]+)", body["messages"][0]["content"])[1]
                     message = {"tool_calls": [{"id": "call-test", "type": "function", "function": {
                         "name": "soduwork_capability_echo", "arguments": json.dumps({"value": value})}}]}
+                    finish = "tool_calls"
                 elif isinstance(body["messages"][0]["content"], list):
                     url = body["messages"][0]["content"][1]["image_url"]["url"]
                     self.assertEqual(runtime_images._mime(base64.b64decode(url.split(",")[1])), "image/png")
                     self.assertNotIn(self.challenge, body["messages"][0]["content"][0]["text"])
                     wrong = str((int(self.challenge[0]) + 1) % 10) + self.challenge[1:]
                     message = {"content": self.challenge if self.mode != "wrong-image" else wrong}
-                data = json.dumps({"choices": [{"message": message, "finish_reason": "stop"}]}).encode()
+                data = json.dumps({"choices": [{"message": message, "finish_reason": finish}]}).encode()
             writer.write(("HTTP/1.1 " + status + "\r\nContent-Type: " + content_type +
                           "\r\nContent-Length: " + str(len(data)) + "\r\nConnection: close\r\n\r\n").encode() + data)
             await writer.drain()
@@ -342,6 +350,35 @@ class CapabilityTests(IsolatedDatabase):
         self.assertEqual(result["capabilityProfile"]["toolCalling"]["state"], "unknown")
         self.assertEqual(result["checks"]["streaming"]["status"], "passed")
         self.assertTrue(self.requests[0][1]["stream"])
+
+    async def test_streamed_tools_refusal_falls_back_to_minimal_non_streamed_probe(self):
+        self.mode = "streamed-tools-refused"
+        response = await self.check(checks=["connection", "toolCalling", "streaming"])
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["checks"]["toolCalling"]["status"], "passed")
+        self.assertEqual(result["checks"]["toolCalling"]["code"], "verified")
+        self.assertEqual(result["checks"]["toolCalling"]["stage"], "tool_result")
+        self.assertEqual(result["capabilityProfile"]["toolCalling"]["state"], "supported")
+        self.assertEqual(result["checks"]["connection"]["status"], "passed")
+        self.assertEqual(result["checks"]["streaming"]["status"], "passed")
+        first_fallback, receipt_fallback = [body for _, body in self.requests
+                                            if "tools" in body and not body.get("stream")]
+        # A minimal standard tools request, matching a plain tools call.
+        self.assertEqual(len(first_fallback["messages"]), 1)
+        self.assertNotIn("tool_choice", first_fallback)
+        self.assertNotIn("stream_options", first_fallback)
+        self.assertEqual([row["role"] for row in receipt_fallback["messages"]], ["user", "assistant", "tool"])
+
+    async def test_minimal_tools_refusal_still_reports_unsupported(self):
+        self.mode = "tools-refused"
+        response = await self.check(checks=["toolCalling", "streaming"])
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["checks"]["toolCalling"]["status"], "unsupported")
+        self.assertEqual(result["checks"]["toolCalling"]["code"], "capability_not_supported")
+        self.assertEqual(result["capabilityProfile"]["toolCalling"]["state"], "unsupported")
+        self.assertEqual(result["checks"]["streaming"]["status"], "passed")
 
     async def test_organization_evidence_follows_org_credentials_and_runtime_revision_changes(self):
         async with self.sessions() as session:
