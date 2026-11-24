@@ -1109,3 +1109,18 @@ test('迟到失败不会删除被其他会话替换或已经出现消息的存�
     assert.equal(fs.existsSync(f.planned().file), true);
   }
 });
+
+test('云端交接会话恢复为只读结果，本地未知会话仍报缺失错误', async t => {
+  const remoteId = 'cloud-sync-' + 'a'.repeat(40);
+  const f = await fixture(t, { cloudHistory: { isRemote: id => id === remoteId } });
+  const restored = await f.store.read(remoteId);
+  assert.equal(restored.ok, true, restored.reason);
+  assert.equal(restored.sessionId, remoteId);
+  assert.deepEqual(restored.cards, []);
+  assert.equal(restored.workOnly, false);
+  assert.equal(restored.draftSelection, null);
+  assert.equal(restored.draftSelectionRevision, 0);
+  // A local id without a handoff record still reports the ordinary
+  // missing-conversation error, so the renderer keeps its blocked banner.
+  assert.equal((await f.store.read('chat-missing')).ok, false);
+});
