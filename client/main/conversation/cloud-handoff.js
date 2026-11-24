@@ -855,6 +855,20 @@ function create({ app, identityOf, request = http, workspace = portable, notify 
     try { const record = read(String(sessionId || '')); return Boolean(record && record.phase !== 'aborted'); }
     catch (_) { return false; }
   }
+  // Conversations created on the Hub side (branch requests, mobile starts)
+  // have no local handoff receipt, so the local read cannot classify them.
+  // Fall through to the cloud directory (TTL-cached); the local answer stays
+  // authoritative whenever a record exists.
+  async function isRemoteKnown(sessionId) {
+    const id = String(sessionId || '');
+    try { const record = read(id); if (record) return record.phase !== 'aborted'; }
+    catch (_) { return false; }
+    try {
+      await refreshRemoteDirectory();
+      const record = remoteRecords.get(id);
+      return Boolean(record && record.phase !== 'aborted');
+    } catch (_) { return false; }
+  }
   const executionSelection = require('./cloud-execution-selection').create({ app, read, save, guard, identity, request, view, notify, busy });
   // Directory aliases can reopen remote views, but only durable receipts can own a sync checkpoint.
   const projection = require('./cloud-execution-projection').create({ app, root, read: readReceipt, save,
@@ -891,7 +905,7 @@ function create({ app, identityOf, request = http, workspace = portable, notify 
     }
     return cloudStart.forget(id);
   }
-  return { reopen, refreshTaskExecution, start: cloudStart.start, history, historyEntry, forget, resolveDeleteAlias, isRemote,
+  return { reopen, refreshTaskExecution, start: cloudStart.start, history, historyEntry, forget, resolveDeleteAlias, isRemote, isRemoteKnown,
     synchronization, onSynchronized(listener) { syncListeners.add(listener); return () => syncListeners.delete(listener); },
     targets: async agentId => request(await identity(), '/conversation-handoffs/targets?agentId=' + encodeURIComponent(agentId || 'pi')),
     ...Object.fromEntries(Object.entries({ selectExecution: executionSelection.selectExecution, executionRuntimes: executionSelection.executionRuntimes, preview, confirm, recover, abort, guard, view, observe, send, stop, materialize, artifactSession,

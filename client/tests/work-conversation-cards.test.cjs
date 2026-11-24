@@ -1112,7 +1112,7 @@ test('迟到失败不会删除被其他会话替换或已经出现消息的存�
 
 test('云端交接会话恢复为只读结果，本地未知会话仍报缺失错误', async t => {
   const remoteId = 'cloud-sync-' + 'a'.repeat(40);
-  const f = await fixture(t, { cloudHistory: { isRemote: id => id === remoteId } });
+  const f = await fixture(t, { cloudHistory: { isRemoteKnown: async id => id === remoteId } });
   const restored = await f.store.read(remoteId);
   assert.equal(restored.ok, true, restored.reason);
   assert.equal(restored.sessionId, remoteId);
@@ -1123,4 +1123,14 @@ test('云端交接会话恢复为只读结果，本地未知会话仍报缺失�
   // A local id without a handoff record still reports the ordinary
   // missing-conversation error, so the renderer keeps its blocked banner.
   assert.equal((await f.store.read('chat-missing')).ok, false);
+});
+
+test('Hub-side branch conversations pass through the cloud directory as readonly results', async t => {
+  const branchId = 'cloud-9ecef1a8-8ac2-4694-9f5c-dcd2af560fcf';
+  const f = await fixture(t, { cloudHistory: { isRemoteKnown: async id => id === branchId } });
+  const restored = await f.store.read(branchId);
+  assert.equal(restored.ok, true, restored.reason);
+  assert.equal(restored.sessionId, branchId);
+  assert.deepEqual(restored.cards, []);
+  assert.equal(restored.workOnly, false);
 });

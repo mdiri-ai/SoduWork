@@ -432,11 +432,11 @@ function create({ app, identityOf, session, accountHistory, sharedHistory, cloud
           workOnly: false, draftSelection: null, draftSelectionRevision: 0 };
       }
       let row = await resolve(id, captured, { allowMissing: true });
-      if (!row && cloudHistory?.isRemote?.(id)) {
-        // Card restoration runs before Agent opening. Cloud handoff
-        // conversations have no local work-card store; the ordinary opener
-        // still authorizes their readonly contents through the remote runtime
-        // once its handle reopens the handoff.
+      if (!row && await (cloudHistory?.isRemoteKnown?.(id) ?? false)) {
+        // Card restoration runs before Agent opening. Cloud handoff and
+        // Hub-side branch conversations have no local work-card store; the
+        // ordinary opener still authorizes their readonly contents through
+        // the remote runtime once its handle reopens the handoff.
         await guard(captured);
         return { ok: true, sessionId: id, cards: [], workOnly: false,
           draftSelection: null, draftSelectionRevision: 0 };
