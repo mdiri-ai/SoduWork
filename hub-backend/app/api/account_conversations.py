@@ -20,7 +20,7 @@ from ..account_conversation_models import (
 )
 from ..db import SessionLocal, get_session
 from ..deps import current_client, identity_only
-from ..models import Client
+from ..models import Client, Task
 from ..realtime import hub
 
 router = APIRouter(prefix="/api/v1/account-conversations", tags=["account-conversations"])
@@ -655,25 +655,32 @@ async def branch_account_conversation(
         # user's intent.  The source transcript is optional context.
         branch_text = instruction
 
-    from ..services import cloud_conversations
-    options = {
-        "sessionId": "cloud-" + request_id,
-        "agentId": agent_id,
-        "model": model,
-        "title": row.title or instruction[:80],
-        "text": branch_text,
-        "userText": instruction,
-        "requiredSkills": [],
-        **({"targetRunnerId": target_runner_id} if target_runner_id else {}),
-        **({"targetRunnerKind": target_runner_kind} if target_runner_kind else {}),
-    }
-    receipt = await cloud_conversations.create(session, client, request_id, options, [])
-    if not isinstance(receipt, dict) or receipt.get("ok") is False:
-        raise HTTPException(status_code=502, detail="branch task could not be created")
+    # A local-execution branch: the source conversation runs on the owner's
+    # device (native Pi), so the branch inherits that position instead of being
+    # dispatched to a matched cloud runner. No Handoff fence and no runner
+    # matching; the follow-up turn dispatches locally from executionContext.
+    tid = str(uuid.uuid4())
+    task = Task(
+        id=tid, owner_client_id=client.id, owner_user_id=client.user_ref,
+        title=row.title or instruction[:80], note=instruction,
+        kind="task", status="todo", origin="cloud-conversation",
+        created_by=client.user_ref,
+        work_routing={
+            "selectedStrategy": "direct",
+            "cloudConversation": {"requestId": request_id, "sessionId": "cloud-" + request_id},
+            "executionContext": {
+                "schemaVersion": 1, "strategy": "direct",
+                "agent": {"id": "local:" + agent_id, "cli": agent_id},
+                "runner": {"mode": "local"}, "location": {"mode": "local"},
+                "model": str(model or "")[:160],
+            },
+        },
+    )
+    session.add(task)
+    await session.commit()
     return {
-        **receipt,
+        "ok": True, "taskId": tid, "sessionId": "cloud-" + request_id,
         "transferId": request_id,
-        "sessionId": "cloud-" + request_id,
         "branch": {
             "accountConversationId": row.id,
             "expectedRevision": expected_revision,

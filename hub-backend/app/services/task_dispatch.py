@@ -170,7 +170,15 @@ async def dispatch(tid, body, client, session, *, actor=None):
         routing = dict(t.work_routing or {})
         routing["selectedStrategy"] = "direct"
         routing["workflowBindingId"] = ""
-        routing["executionContext"] = public_execution_context(body.get("executionContext"))
+        incoming_context = body.get("executionContext")
+        # The composer turn echoes the whole execution context back; an empty
+        # agent must not overwrite the task's existing execution agent, or later
+        # turns can never resolve an assignee and keep failing with 执行失败.
+        if isinstance(incoming_context, dict) and not incoming_context.get("agent"):
+            stored_agent = ((t.work_routing or {}).get("executionContext") or {}).get("agent")
+            if stored_agent:
+                incoming_context = {**incoming_context, "agent": stored_agent}
+        routing["executionContext"] = public_execution_context(incoming_context)
         t.work_routing = routing
     attempt_id = await dispatch_attempts.start(
         session, tid, who, aid, atype, str(body.get("model") or ""),

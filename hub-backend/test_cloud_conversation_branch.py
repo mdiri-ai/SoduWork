@@ -13,6 +13,12 @@ class Session:
             owner_user_id='user-1', title='old task', note='initial request',
         )
 
+    def add(self, obj):
+        self.added = obj
+
+    async def commit(self):
+        self.committed = True
+
 
 class CloudBranchTests(unittest.IsolatedAsyncioTestCase):
     async def test_cloud_directory_exposes_same_account_remote_projection_only(self):
@@ -113,27 +119,34 @@ class CloudBranchTests(unittest.IsolatedAsyncioTestCase):
             async def scalars(self, _query):
                 return Result()
 
-        created = {}
+            def add(self, obj):
+                self.added = obj
 
-        async def create(_session, client, request_id, options, files):
-            created.update(client=client, request_id=request_id, options=options, files=files)
-            return {'ok': True, 'taskId': 'branched-task', 'ref': 'branched-ref'}
+            async def commit(self):
+                self.committed = True
 
-        with patch('app.services.cloud_conversations.create', new=AsyncMock(side_effect=create)):
-            result = await branch_account_conversation(
-                'branch-from-phone', {
-                    'accountConversationId': row.id,
-                    'expectedRevision': 7,
-                    'instruction': '在我的电脑上继续整理',
-                    'agentId': 'pi',
-                    'targetRunnerId': 'desktop-1',
-                }, types.SimpleNamespace(id='mobile-1', user_ref='user-1'), Session())
+        session = Session()
+        result = await branch_account_conversation(
+            'branch-from-phone', {
+                'accountConversationId': row.id,
+                'expectedRevision': 7,
+                'instruction': '在我的电脑上继续整理',
+                'agentId': 'pi',
+                'targetRunnerId': 'desktop-1',
+            }, types.SimpleNamespace(id='mobile-1', user_ref='user-1'), session)
 
-        self.assertEqual(result['taskId'], 'branched-task')
-        self.assertEqual(created['client'].id, 'mobile-1')
-        self.assertEqual(created['options']['targetRunnerId'], 'desktop-1')
-        self.assertEqual(created['options']['userText'], '在我的电脑上继续整理')
-        self.assertEqual(created['files'], [])
+        # Local-execution branch: the task is created directly with the source
+        # conversation's execution position (native pi on the owner's device);
+        # no cloud runner dispatch.
+        task_obj = session.added
+        self.assertTrue(result['taskId'])
+        self.assertEqual(task_obj.id, result['taskId'])
+        self.assertEqual(task_obj.origin, 'cloud-conversation')
+        self.assertEqual(task_obj.work_routing['executionContext']['agent'],
+                         {'id': 'local:pi', 'cli': 'pi'})
+        self.assertEqual(task_obj.work_routing['executionContext']['location'], {'mode': 'local'})
+        self.assertEqual(task_obj.work_routing['executionContext']['runner'], {'mode': 'local'})
+        self.assertEqual(result['sessionId'], 'cloud-' + result['transferId'])
 
 
 if __name__ == '__main__':
