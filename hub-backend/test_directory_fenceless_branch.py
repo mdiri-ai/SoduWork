@@ -73,6 +73,10 @@ class FencelessBranchDirectoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(row["readOnly"])
         self.assertEqual(row["target"]["id"], "local:pi")
         self.assertEqual(row["adapterId"], "pi")
+        # The desktop ownership check (history-access assertClassifiedOwner)
+        # throws 云端会话归属记录无效 when ref is empty; fenceless rows must
+        # carry the task id as ref.
+        self.assertEqual(row["ref"], "fenceless-task")
 
 
 if __name__ == "__main__":

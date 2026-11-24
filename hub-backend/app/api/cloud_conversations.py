@@ -117,6 +117,11 @@ async def directory(
         detail = dict(event.detail or {}) if event else {}
         ref = str(receipt.get("ref") or receipt.get("issueId") or
                   detail.get("ref") or detail.get("issueId") or "")
+        if not ref and handoff is None:
+            # Fenceless branch rows have no handoff receipt or dispatch event;
+            # the immutable task id is the ref the desktop client's ownership
+            # check requires to read the transcript.
+            ref = str(task["id"])
         target_snapshot = dict((handoff.options or {}).get("targetSnapshot") or {}) if handoff else {}
         target = {
             key: str(target_snapshot.get(key) or "")
