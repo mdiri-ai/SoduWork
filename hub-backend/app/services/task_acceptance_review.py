@@ -122,6 +122,37 @@ async def context(session, client, tid):
             "acceptanceOnly": True}
 
 
+EVIDENCE_REF_KINDS = {"attachment", "artifact_digest", "log_range", "external_url"}
+
+
+def _validate_evidence_refs(raw_refs):
+    """Validate optional structured evidence references.
+
+    Follow-up on #428: invalid references now fail loudly (422) instead of
+    being silently discarded; valid references are preserved into the
+    normalized report so review conclusions stay machine-auditable.
+    """
+    if raw_refs is None:
+        return []
+    if not isinstance(raw_refs, list) or len(raw_refs) > 20:
+        raise HTTPException(422, "evidenceRefs 必须是不超过 20 项的数组")
+    refs = []
+    for raw in raw_refs:
+        if not isinstance(raw, dict):
+            raise HTTPException(422, "evidenceRefs 每项必须是对象")
+        kind = raw.get("kind")
+        ref = raw.get("ref")
+        if (kind not in EVIDENCE_REF_KINDS
+                or not isinstance(ref, str) or not ref.strip() or len(ref) > 512):
+            raise HTTPException(
+                422,
+                "evidenceRefs 引用无效：kind 须为 "
+                f"{sorted(EVIDENCE_REF_KINDS)} 之一，ref 须为非空字符串（≤512 字符）",
+            )
+        refs.append({"kind": kind, "ref": ref.strip()})
+    return refs
+
+
 def validate_report(body, criteria):
     report = body.get("report")
     if not isinstance(report, dict):
@@ -146,9 +177,11 @@ def validate_report(body, criteria):
             raise HTTPException(422, "验收报告包含重复、未知标准或无效判断")
         if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 8000:
             raise HTTPException(422, "每项验收结论都必须附上实际核验依据")
+        evidence_refs = _validate_evidence_refs(check.get("evidenceRefs"))
         seen.add(item["id"])
         normalized.append({"criterion": item["id"], "label": item["label"],
-                           "result": check["result"], "evidence": evidence.strip()})
+                           "result": check["result"], "evidence": evidence.strip(),
+                           "evidenceRefs": evidence_refs})
     failed = any(item["result"] == "fail" for item in normalized)
     if (verdict == "approve") == failed:
         raise HTTPException(422, "验收总论与逐项核验结果不一致")
