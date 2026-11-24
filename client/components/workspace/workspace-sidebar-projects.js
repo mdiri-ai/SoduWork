@@ -85,8 +85,8 @@
       const show = () => {
         const row = rowFor(id);
         if (!row) return;
-        const reduced = global.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-        row.scrollIntoView?.({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+        // Instant: a smooth scroll is skipped while the window is in the background.
+        row.scrollIntoView?.({ block: 'nearest' });
         // A data attribute survives list repaints, which reassign the row's className.
         delete row.dataset.justMoved;
         void row.offsetWidth;
