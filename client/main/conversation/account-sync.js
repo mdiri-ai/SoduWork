@@ -1012,7 +1012,17 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
         if (closed || generation !== historyGeneration || captured !== directoryScope(await (localIdentityOf || identityOf)?.(app)))
           throw Error('账号或服务已切换，请重新打开会话');
       };
-      if (!resolved.found) return { ok: false, reason: '该会话尚未同步到账号，暂时无法创建分支' };
+      if (!resolved.found) {
+        // Local-copy fast path (#1398): the source session exists only on this
+        // device (never synced to the account), so a branch is simply a new
+        // local session id - the client opens it as an ordinary new chat with
+        // the injected instruction. No hub task, directory row or ownership
+        // chain; cross-device continuation keeps using the relay mechanism.
+        const localSessionId = require('node:crypto').randomUUID();
+        return { ok: true, sessionId: localSessionId, taskId: localSessionId,
+          transferId: localSessionId, localCopy: true,
+          accountConversationId: null, expectedRevision: 0 };
+      }
       if (resolved.pending) return { ok: false, reason: '本地会话同步尚未确认，本次操作未完成，请稍后重试' };
       const target = accountRows.get(resolved.conversation.id) || resolved.conversation;
       if (!target?.id || target.deleted === true) return { ok: false, reason: '该会话已关闭，无法创建分支' };

@@ -82,10 +82,14 @@ test('a revision conflict during branch creation reports the change to the calle
   assert.equal(f.branches.length, 1, 'the rejected request still reached the Hub branch route');
 });
 
-test('an unsynced local conversation cannot create a branch', async t => {
+test('an unsynced local conversation branches locally without a hub round trip', async t => {
   const f = await fixture(t, { synced: false });
   const result = await f.branch('native', { instruction: 'Continue the work' });
-  assert.equal(result.ok, false);
-  assert.ok(result.reason.includes('同步'), result.reason);
+  // #1398 local-copy fast path: the branch is just a new local session id -
+  // no hub request, no cloud branch record.
+  assert.equal(result.ok, true);
+  assert.equal(result.localCopy, true);
+  assert.ok(result.sessionId, result.reason);
+  assert.ok(result.taskId, result.reason);
   assert.equal(f.branches.length, 0);
 });
