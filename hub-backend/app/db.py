@@ -182,6 +182,9 @@ _WANT_COLUMNS = {
         ("source_requirement", "{json} NOT NULL DEFAULT '{{}}'"),
         ("model_name", "VARCHAR(300) NOT NULL DEFAULT ''"),
         ("model_source", "VARCHAR(16) NOT NULL DEFAULT 'managed'"),
+        # Adopt the reused-conversation fields in legacy databases, matching 0093.
+        ("session_mode", "VARCHAR(16) NOT NULL DEFAULT 'fresh'"),
+        ("recurring_conversation_id", "VARCHAR(180) NOT NULL DEFAULT ''"),
         ("created_by", "VARCHAR(36)"),
         ("time_zone", "VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'"),
         ("required_capabilities", "{json} NOT NULL DEFAULT '[]'"),

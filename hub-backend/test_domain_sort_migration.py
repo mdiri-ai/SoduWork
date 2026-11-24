@@ -142,16 +142,23 @@ class DomainSortMigrationTests(unittest.TestCase):
             path = Path(directory) / ".smoke.db"
             engine = sa.create_engine("sqlite:///" + path.as_posix())
             try:
+                with engine.begin() as connection:
+                    Domain.__table__.create(connection)
+                    AuditLog.__table__.create(connection)
+                    connection.exec_driver_sql("CREATE TABLE task (id VARCHAR(36) PRIMARY KEY)")
+                    connection.exec_driver_sql("CREATE TABLE app_user (id TEXT PRIMARY KEY)")
+                    # 0093_schedule_session_mode adds its columns onto ai_schedule
+                    # during this upgrade, so the fixture needs the bare table.
+                    connection.exec_driver_sql("CREATE TABLE ai_schedule (id VARCHAR(36) PRIMARY KEY)")
+                    connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(64) PRIMARY KEY)")
+                    connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0090_requirement_creator')")
+                    self.insert_domain(connection, "valid", 9)
+                    self.insert_domain(connection, "legacy", "abc")
                 with patch.dict(os.environ, {"DATABASE_URL": "sqlite+aiosqlite:///" + path.as_posix()}):
                     get_settings.cache_clear()
                     try:
-                        config = _config()
-                        command.upgrade(config, "0090_requirement_creator")
-                        with engine.begin() as connection:
-                            self.insert_domain(connection, "valid", 9)
-                            self.insert_domain(connection, "legacy", "abc")
-                        command.upgrade(config, "head")
-                        command.upgrade(config, "head")
+                        command.upgrade(_config(), "head")
+                        command.upgrade(_config(), "head")
                     finally:
                         get_settings.cache_clear()
                 with engine.connect() as connection:
