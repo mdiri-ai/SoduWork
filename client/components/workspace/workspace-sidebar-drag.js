@@ -4,13 +4,41 @@
   function install({ root, find, move }) {
     const scroller = root.querySelector('#wsSideScroll');
     let source = '', target = null, before = '', marker = null, y = 0, frame = 0, suppressUntil = 0;
+    // One fixed hint names the destination even when its heading has scrolled away.
+    let hint = null, hinted = null;
+    const t = (source, params) => {
+      const value = global.SoduWorkI18n?.t ? global.SoduWorkI18n.t(source, source, params) : source;
+      return String(value).replace(/\{(\w+)\}/g, (all, name) => params && Object.hasOwn(params, name) ? String(params[name]) : all);
+    };
+    function zoneName(zone) {
+      const section = zone.dataset.sidebarSection;
+      if (section === 'recent') return t('最近聊天');
+      if (section === 'pinned') return t('置顶');
+      return zone.querySelector('.ws-project-toggle span')?.textContent || t('项目');
+    }
+    function showHint(zone) {
+      if (hinted === zone && hint?.isConnected) return;
+      hinted = zone;
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'ws-drop-hint'; hint.setAttribute('aria-hidden', 'true');
+      }
+      if (!hint.isConnected) root.appendChild(hint);
+      // Destination names are user content; only the surrounding phrase is localized.
+      hint.textContent = t('放到：{value1}', { value1: zoneName(zone) });
+      const box = scroller.getBoundingClientRect();
+      hint.style.left = Math.round(box.left + box.width / 2) + 'px';
+      hint.style.top = Math.round(box.bottom - 12) + 'px';
+      hint.classList.add('show');
+    }
+    function hideHint() { hinted = null; hint?.classList.remove('show'); }
     function clearTarget() {
       target?.classList.remove('is-drop-target');
       marker?.classList.remove('is-drop-before', 'is-drop-after');
       target = null; marker = null; before = '';
     }
     function stop() {
-      clearTarget(); source = ''; root.classList.remove('is-chat-dragging');
+      clearTarget(); hideHint(); source = ''; root.classList.remove('is-chat-dragging');
       root.querySelectorAll('[data-chat-dragging]').forEach(el => delete el.dataset.chatDragging);
       cancelAnimationFrame(frame); frame = 0;
     }
@@ -46,10 +74,21 @@
       y = event.clientY;
       const zone = event.target.closest('[data-sidebar-section]');
       clearTarget();
-      if (!zone) return;
+      if (!zone) { hideHint(); return; }
       event.preventDefault(); event.dataTransfer.dropEffect = 'move';
       target = zone; target.classList.add('is-drop-target');
+      showHint(zone);
       const row = event.target.closest('.ws-chat-row');
+      if (!row && zone.dataset.sidebarSection === 'recent') {
+        // Outside a row, recent receives the conversation first; show exactly that slot.
+        const first = [...zone.querySelectorAll('#wsChats .ws-chat-row')].find(el => !el.dataset.chatDragging);
+        const button = first?.querySelector('.ws-chat');
+        if (first && button) {
+          marker = first; marker.classList.add('is-drop-before');
+          before = button.dataset.sidebarChatId || button.dataset.chatId || '';
+        }
+        return;
+      }
       if (!row || row.dataset.chatDragging) return;
       marker = row;
       const box = row.getBoundingClientRect(), lower = y > box.top + box.height / 2;
@@ -68,7 +107,7 @@
     });
     root.addEventListener('dragend', () => { suppressUntil = Date.now() + 300; stop(); });
     root.addEventListener('dragleave', event => {
-      if (!root.contains(event.relatedTarget)) { clearTarget(); y = -1; }
+      if (!root.contains(event.relatedTarget)) { clearTarget(); hideHint(); y = -1; }
     });
     root.addEventListener('click', event => {
       if (Date.now() < suppressUntil && event.target.closest('.ws-chat-row')) {

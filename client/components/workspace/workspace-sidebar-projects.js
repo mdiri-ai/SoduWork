@@ -74,11 +74,42 @@
       const groups = state().view(getItems());
       return [...groups.pinned, ...groups.recent, ...groups.projects.flatMap(p => p.items)];
     }
-    function move(id, destination, before) {
+    const tr = (source, params) => {
+      const value = global.SoduWorkI18n?.t ? global.SoduWorkI18n.t(source, source, params) : source;
+      return String(value).replace(/\{(\w+)\}/g, (all, name) => params && Object.hasOwn(params, name) ? String(params[name]) : all);
+    };
+    function rowFor(id) {
+      return [...root.querySelectorAll('.ws-chat-row')].find(el => {
+        const button = el.querySelector('.ws-chat');
+        return !!button && (button.dataset.sidebarChatId === id || button.dataset.chatId === id);
+      }) || null;
+    }
+    // Scroll the moved conversation into view and mark it briefly, so it is never lost off screen.
+    function reveal(id) {
+      const show = () => {
+        const row = rowFor(id);
+        if (!row) return;
+        const reduced = global.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+        row.scrollIntoView?.({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' });
+        // A data attribute survives list repaints, which reassign the row's className.
+        delete row.dataset.justMoved;
+        void row.offsetWidth;
+        row.dataset.justMoved = '1';
+        clearTimeout(row.__justMoved);
+        row.__justMoved = setTimeout(() => { delete row.dataset.justMoved; }, 1700);
+      };
+      if (typeof global.requestAnimationFrame === 'function') global.requestAnimationFrame(show); else show();
+    }
+    function placeLabel(destination) {
+      return destination === 'pinned' ? tr('置顶') : destination === 'recent' ? tr('最近聊天')
+        : state().get().projects.find(p => p.id === destination)?.name || tr('项目');
+    }
+    function move(id, destination, before, { undo = false, position = '' } = {}) {
       safe(() => {
         const item = allItems().find(row => String(row.id) === id);
         if (!item) throw Error('会话已不在列表中，请刷新后重试');
-        state().move(item, destination, before, getItems());
+        const owner = scope;
+        const origin = state().move(item, destination, before, getItems(), { position });
         // Keep an appended conversation visible even beyond the project preview.
         if (state().get().projects.some(project => project.id === destination)) expandedProjects.add(destination);
         if (destination === 'pinned' || destination === 'recent') {
@@ -86,9 +117,22 @@
           if (body.hidden) root.querySelector(destination === 'pinned' ? '#wsPinnedToggle' : '#wsChatsToggle').click();
         }
         render();
-        const label = destination === 'pinned' ? '置顶' : destination === 'recent' ? '最近聊天'
-          : state().get().projects.find(p => p.id === destination)?.name;
-        status.textContent = '已移到' + label;
+        const message = tr('已移到 {project}', { project: placeLabel(destination) });
+        status.textContent = message;
+        // Reordering inside one section happens under the pointer; only a change of place needs notice.
+        if (!origin || origin.target === destination) { if (!undo) reveal(id); return; }
+        reveal(id);
+        if (undo) return;
+        const restore = () => {
+          // An account switch replaces the sidebar; the old placement no longer applies.
+          if (owner !== scope || !state().get().projects.concat([{ id: 'recent' }, { id: 'pinned' }]).some(p => p.id === origin.target)) {
+            notify(Error('原位置已不可用，无法撤销'));
+            return;
+          }
+          move(id, origin.target, origin.beforeId, { undo: true, position: origin.position });
+        };
+        if (typeof global.petSayUndo === 'function') global.petSayUndo(message, restore, 6000);
+        else global.petSay?.(message);
       });
     }
     function file(id, projectId, row) {
@@ -320,6 +364,7 @@
         }
         render();
         status.textContent = pinned ? '已置顶' : '已取消置顶';
+        reveal(wanted);
       }); },
       openMoveMenu: id => moveMenu(id),
       forget: id => safe(() => state().forget(id)),

@@ -222,6 +222,54 @@ try {
   await page.run(() => { fixtureAccount = 'employee'; WorkspaceShell.setChats([]); });
   assert.deepEqual(await page.run(() => [...document.querySelectorAll('.ws-project')].map(el => el.querySelectorAll('.ws-chat-row').length)), [5, 5]);
   report.cases.push('project expansion does not leak across account changes');
+  report.stage = 'recent-top';
+  // Manual recent order is where an appended row used to sink below older history.
+  await page.run(() => {
+    window.undoCalls = [];
+    window.petSayUndo = (message, undo) => { window.lastNotice = message; window.undoCalls.push(undo); };
+    window.drag('chat-29', 'recent', 'chat-28');
+  });
+  const recentIds = () => page.run(() => [...document.querySelectorAll('#wsChats .ws-chat')].map(el => el.dataset.sidebarChatId));
+  const moved = await page.run(() => document.querySelector('.ws-project .ws-chat').dataset.sidebarChatId);
+  const members = () => page.run(() => [...WorkspaceShell.searchProjects().find(p => p.id === projectId()).chatIds]);
+  const projectBefore = await members();
+  // A native drag to the recent heading names the destination and marks the first slot.
+  await page.call('Input.setInterceptDrags', { enabled: false });
+  const hintDuringDrag = await page.run(id => {
+    const source = row(id), data = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: data }));
+    const heading = document.querySelector('#wsChatsBox .ws-section-toggle'), box = heading.getBoundingClientRect();
+    heading.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data, clientX: box.x + 20, clientY: box.y + 8 }));
+    const hint = document.querySelector('.ws-drop-hint'), first = document.querySelector('#wsChats .ws-chat-row');
+    const result = { text: hint?.textContent, shown: hint?.classList.contains('show'), marker: first?.classList.contains('is-drop-before'),
+      target: document.querySelector('#wsChatsBox').classList.contains('is-drop-target') };
+    source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+    return result;
+  }, moved);
+  assert.deepEqual(hintDuringDrag, { text: '放到：最近聊天', shown: true, marker: true, target: true });
+  assert.equal(await page.run(() => document.querySelector('.ws-drop-hint').classList.contains('show')), false, 'the hint hides when the drag ends');
+  await drag(moved, 'recent');
+  assert.equal((await recentIds())[0], moved, 'a heading drop puts the conversation first in recent');
+  assert.equal(await page.run(id => {
+    const box = row(id).getBoundingClientRect(), view = document.querySelector('#wsSideScroll').getBoundingClientRect();
+    return box.top >= view.top && box.bottom <= view.bottom;
+  }, moved), true, 'the moved conversation is scrolled into view');
+  assert.equal(await page.run(id => row(id).hasAttribute('data-just-moved'), moved), true);
+  assert.equal(await page.run(() => window.lastNotice), '已移到 最近聊天');
+  assert.equal(await page.run(() => window.undoCalls.length), 1);
+  await page.run(() => window.undoCalls.at(-1)());
+  assert.deepEqual(await members(), projectBefore, 'undo restores the original project position');
+  assert.equal(await page.run(() => window.undoCalls.length), 1, 'undo does not offer another undo');
+  // The move dialog has no drop row either.
+  await page.run(id => { row(id).querySelector('.ws-chat-move').click(); document.querySelector('[data-move-to="recent"]').click(); }, moved);
+  assert.equal((await recentIds())[0], moved, 'the move dialog also places the conversation first');
+  await page.run(() => window.undoCalls.at(-1)());
+  assert.deepEqual(await members(), projectBefore);
+  // Reordering inside recent under the pointer needs no notice.
+  const notices = await page.run(() => window.undoCalls.length);
+  await page.run(() => window.drag('chat-27', 'recent', 'chat-26'));
+  assert.equal(await page.run(() => window.undoCalls.length), notices);
+  report.cases.push('recent heading and move-dialog drops put the conversation first, reveal it, name the destination while dragging, and undo restores its project position');
   assert.deepEqual(page.takeRuntimeErrors(), []);
   report.ok = true;
 } catch (error) { report.error = error.stack; report.cause = String(error.cause || ''); report.browserLog = browserLog; report.runtimeErrors = page?.takeRuntimeErrors(); process.exitCode = 1; }
