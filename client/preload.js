@@ -192,7 +192,6 @@ const workPreview = {
   onComposerInbox: (cb) => ipcRenderer.on('work-preview-composer-inbox', (_e, msg) => { try { cb(msg || {}); } catch (_) {} }),
   onComposerHello: (cb) => ipcRenderer.on('work-preview-composer-hello', (_e, msg) => { try { cb(msg || {}); } catch (_) {} }),
   onComposerRefresh: (cb) => ipcRenderer.on('work-preview-composer-refresh', (_e, msg) => { try { cb(msg || {}); } catch (_) {} }),
-  composerState: (payload) => ipcRenderer.invoke('work-preview-composer-state', payload || {}),
   composerTurnSettled: () => ipcRenderer.invoke('work-preview-composer-turn-settled'),
   composerSubmitResult: payload => ipcRenderer.invoke('work-preview-composer-submit-result', payload),
   authorizeComposerAutomation: id => ipcRenderer.invoke('work-preview-composer-automation-authorize',id),
@@ -352,8 +351,9 @@ const soduWorkBridge = {
   selectHubEnvironment: (hub) => ipcRenderer.invoke('hub-environment-select', hub || ''),
   runtimeForm: () => { try { return ipcRenderer.sendSync('runtime-form'); } catch (e) { return 'packaged'; } },
   deviceAuthBootstrap: (payload) => timedPageInvoke('device-auth-bootstrap', payload || {}),
+  copyDevicePairingToken: scope => ipcRenderer.invoke('device-auth-copy-pairing', scope),
   deviceAuthMigrateLegacy: payload => timedPageInvoke('device-auth-migrate-legacy', payload),
-  clientDomainRead: (domain, scope) => timedPageInvoke('client-domain-read', domain, scope),
+  clientDomainRead: (domain, scope, fresh) => timedPageInvoke('client-domain-read', domain, scope, fresh === true),
   clientDomainInvalidate: (domain, scope) => ipcRenderer.invoke('client-domain-invalidate', domain, scope),
   onClientDomainChanged: callback => {
     const handler = (_event, value) => callback(value);
