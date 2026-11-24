@@ -341,7 +341,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       try { fs.writeFileSync(fd, raw.join('\n')); } finally { fs.closeSync(fd); }
       try { memories.bind(app, newId, identity, [], true); } catch (_) { /* 归属绑定失败则不阻止复制 */ }
       return { ok: true, sessionId: newId, taskId: newId, transferId: newId, localCopy: true,
-        title: String(found.entry.name || '') };
+        sourceSessionId: id, title: String(found.entry.name || '') };
     } catch (error) { return { ok: false, reason: String(error?.message || error) }; }
   });
   // Account-conversation WebSocket messages are invalidation hints, but they

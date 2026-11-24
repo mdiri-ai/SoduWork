@@ -288,6 +288,12 @@
         if (result.sessionId && global.NativeChat) {
           global.NativeChat.reset();
           if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) {
+            // #1398 复制会话：放进原会话所属的项目目录（项目按 chatIds 显式归组）。
+            try {
+              const sourceId = String(result.sourceSessionId || '');
+              const project = sourceId ? global.WorkspaceShell?.projectForChat?.(sourceId) : null;
+              if (project?.id) global.WorkspaceShell?.fileChatInProject?.(result.sessionId, project.id, { id: result.sessionId });
+            } catch (_) { /* 归组失败不阻止分支 */ }
             global.ChatCloudHandoff?.sync?.();
             return;
           }
