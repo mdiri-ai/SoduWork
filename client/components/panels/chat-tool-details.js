@@ -61,6 +61,9 @@
     const state = stateFor(ctx), key = keyOf(tool), prior = cached(state, key);
     if (prior?.tool || (bodyWanted && prior?.html != null)) return Promise.resolve(prior);
     if (state.pending.has(key)) return state.pending.get(key);
+    // Tag the receipt with the row state it was fetched for: a running row pins a
+    // placeholder, and the settling row must re-read instead of reusing it.
+    const requestState = String(tool.state || '');
     const api = ctx._api?.(), ref = ctx._ref;
     const request = Promise.resolve().then(async () => {
       if (!api?.toolDetail) throw Error('detail unavailable');
@@ -68,7 +71,7 @@
       if (!response?.ok || !response.tool || String(response.tool.id) !== String(tool.id)) throw Error('detail unavailable');
       const full = response.tool;
       const html = bodyWanted ? (global.ChatTools.render(full)?.body || '') : null;
-      const size = receiptBytes(full), entry = { tool: size <= MAX_BYTES ? full : null, html, bytes: 0 };
+      const size = receiptBytes(full), entry = { tool: size <= MAX_BYTES ? full : null, html, bytes: 0, state: requestState };
       entry.bytes = (entry.tool ? size : 0) + (html?.length || 0) * 2;
       if (entry.bytes > MAX_BYTES) { entry.tool = null; entry.bytes = (html?.length || 0) * 2; }
       if (live(ctx, state, tool)) {
@@ -89,13 +92,14 @@
     return request;
   }
   function bodyHtml(ctx, tool, view) {
-    // Command summaries have no details; restored expansion state must not trigger receipt reads.
-    if (view?.commandOnly) return view.body || '';
+    // Command cards now expand inline like ordinary details; the receipt fetch reuses the shared path below.
     if (!tool.detailsDeferred) return view.body || '';
     const state = stateFor(ctx), entry = cached(state, keyOf(tool));
     if (entry?.error) return errorHtml(tool.id);
-    if (entry?.html != null) return entry.html;
-    if (entry?.tool) {
+    const rowState = String(tool.state || '');
+    if (entry?.html != null && entry.state === rowState) return entry.html;
+    if (entry?.html != null) remove(state, keyOf(tool));
+    if (entry?.tool && entry.state === rowState) {
       const html = global.ChatTools.render(entry.tool)?.body || '';
       remember(state, keyOf(tool), { ...entry, html, bytes: entry.bytes + html.length * 2 });
       return html;
@@ -138,7 +142,8 @@
     const tool = current(ctx, id);
     if (!tool || !global.ChatTools) return false;
     const state = stateFor(ctx), view = global.ChatTools.render(tool), node = nodeOf(ctx, id);
-    if (view?.summaryOnly) return true;
+    /* Command/cancellation cards expand inline now; other summary-only kinds stay click-through. */
+    if (view?.summaryOnly && !view?.commandOnly) return true;
     if (retry) remove(state, keyOf(tool));
     if (view?.side) {
       const selection = ++state.selection;

@@ -32,7 +32,8 @@ function imageReadHarness() {
   f.sandbox.ChatWorkbench = { openPath: (file, hint) => { opened.push({ file, hint }); return true; } };
   function add(tool) {
     let status = null;
-    const node = { isConnected: true, attrs: {}, querySelector: () => status,
+    const node = { isConnected: true, attrs: {}, classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
+      querySelector: () => status,
       setAttribute(name, value) { this.attrs[name] = value; }, removeAttribute(name) { delete this.attrs[name]; },
       appendChild(child) { status = child; child.remove = () => { status = null; }; } };
     nodes.set(tool.id, node); f.ctx._snap.tools.push(tool); return node;
@@ -122,22 +123,21 @@ test('receipt cache has an entry bound and a byte bound', async () => {
   assert.match(details.bodyHtml(ctx, big, tools.render(big)), /short/);
   assert.equal(count.requests, 20, 'the bounded rendered body is reusable after the oversized receipt is discarded');
 });
-test('command summaries ignore old detail clicks without queueing a receipt read', async () => {
+test('command summaries expand inline and queue a receipt read for the recorded output', async () => {
   const { ctx, count, full, details, tools } = harness();
   const tool = { id: 'cmd', name: 'bash', state: 'done', detailsDeferred: true, detailVersion: 'v1',
     args: { command: 'netstat -ano | findstr ":9080"' } };
-  Object.defineProperty(tool, 'result', { get() { throw Error('命令行的展开不得回读收据'); } });
-  Object.defineProperty(tool, 'partial', { get() { throw Error('命令行的展开不得回读流式输出'); } });
+  Object.defineProperty(tool, 'result', { get() { throw Error('快照摘要不得读取完整收据'); } });
+  Object.defineProperty(tool, 'partial', { get() { throw Error('快照摘要不得读取流式输出'); } });
   full.set(tool.id, { ...tool, result: 'LARGE_PRIVATE_OUTPUT'.repeat(1000) });
   ctx._snap.tools = [tool];
   assert.equal(tools.render(tool).commandOnly, true);
   assert.equal(tools.render(tool).summaryOnly, true);
-  assert.equal(tools.render(tool).body, '');
   details.activate(ctx, tool.id);
-  assert.equal(details.bodyHtml(ctx, tool, tools.render(tool)), '');
+  assert.equal(ctx._openTool.has(tool.id), true);
+  assert.match(details.bodyHtml(ctx, tool, tools.render(tool)), /正在读取详情/);
   await tick();
-  assert.equal(count.requests, 0, '状态摘要不排队任何收据读取');
-  assert.equal(ctx._openTool.has(tool.id), false);
+  assert.equal(count.requests, 1, '命令展开排队一次收据读取');
 });
 
 function commandRecordFixture() {
@@ -147,8 +147,8 @@ function commandRecordFixture() {
     const tool = { id, name: 'bash', state: 'done', args: { command: 'echo ' + id },
       detailsDeferred: deferred, detailVersion: 'v1' };
     const row = f.add(tool);
-    const html = f.renderer._toolHtml(tool);
-    const owner = html.match(/data-command-owner="([^"]+)"/)[1].replaceAll('&quot;', '"');
+    // 卡片上的执行记录链接已移除，这里直接构造同源的 owner/按钮验证取数能力。
+    const owner = f.tools.recordOwner(f.ctx);
     const button = { isConnected: true, dataset: { commandRecord: id, commandOwner: owner },
       closest: () => row };
     row.contains = target => target === button;
@@ -165,12 +165,12 @@ test('explicit record selection reads only the selected receipt and keeps the tr
   const full = { ...second.tool, detailsDeferred: false, result: 'second command output' };
   f.ctx._api = () => ({ toolDetail: async (ref, id) => { calls.push([ref, id]); return { ok: true, tool: full }; } });
   f.details.activate(f.ctx, first.tool.id); await tick();
-  assert.deepEqual(calls, []);
+  assert.deepEqual(calls, [['test', 'first']], 'activate expands the command and fetches its receipt');
   second.open(); await tick();
-  assert.deepEqual(calls, [['test', 'second']]);
+  assert.deepEqual(calls, [['test', 'first'], ['test', 'second']]);
   assert.deepEqual(f.records, [full]);
-  assert.equal(f.ctx._openTool.size, 0);
-  assert.doesNotMatch(f.renderer._toolHtml(second.tool), /second command output|ntool-body/);
+  assert.equal(f.ctx._openTool.size, 1, 'first stays expanded while second stays collapsed');
+  assert.doesNotMatch(f.renderer._toolHtml(second.tool), /second command output/);
 });
 
 test('late command receipts cannot open another conversation or a newer revision of the record', async () => {

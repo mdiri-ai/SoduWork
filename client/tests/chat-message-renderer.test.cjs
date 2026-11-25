@@ -765,13 +765,23 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   };
   const command = { id: 'live-command', name: fileRead ? 'read' : 'bash', state: 'running', after: 0,
     args: fileRead ? { path: 'notes.md' } : { command: 'npm test' } };
-  for (const key of ['partial', 'result']) Object.defineProperty(command, key, {
-    get() { throw Error('Streaming summary must not read ' + key); },
-  });
+  if (fileRead) {
+    for (const key of ['partial', 'result']) Object.defineProperty(command, key, {
+      get() { throw Error('Streaming summary must not read ' + key); },
+    });
+  } else {
+    // Running rows short-circuit before reading result; done rows read it to decide expandability.
+    command.partial = undefined;
+    command.result = undefined;
+  }
   ctx._pending = ''; ctx._sessionOptions = {}; ctx._snap.tools = [command];
   renderer._render();
-  assert.match(list.innerHTML, fileRead ? /data-tool-side="1"/ : /正在运行命令/);
-  if (!fileRead) assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"|data-command-record/);
+  assert.match(list.innerHTML, fileRead ? /data-tool-side="1"/ : /执行中/);
+  if (!fileRead) {
+    // Running commands expand like done ones (点开看命令)，但无执行记录链接。
+    assert.match(list.innerHTML, /ntool-caret/);
+    assert.doesNotMatch(list.innerHTML, /data-command-record/);
+  }
   const before = renders;
   ctx._snap.usage = { input: 10, output: 20 };
   renderer._render();
@@ -780,9 +790,10 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   assert.ok(renders > before, 'the completed title must still update at settlement');
   if (fileRead) assert.match(list.innerHTML, /读取/);
   else {
-    assert.match(list.innerHTML, /运行了命令/);
-    assert.match(list.innerHTML, /data-command-record="live-command"/);
-    assert.doesNotMatch(list.innerHTML, /ntool-body|ntool-caret|npm test|data-tool="live-command"/);
+    assert.match(list.innerHTML, /执行/);
+    // 执行记录链接已移除，完成的命令行仍可展开看详情。
+    assert.doesNotMatch(list.innerHTML, /data-command-record/);
+    assert.match(list.innerHTML, /ntool-caret/);
   }
 });
 
