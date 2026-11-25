@@ -189,7 +189,8 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
   const agent = custom ? 'custom-acp' : requestedAgent;
   const accountScope = accountScopeKey(identity);
   const cacheKey = hub + '|' + String(identity.clientId || '') + '|' + accountScope + '|' + agent + '|' +
-    String(modelName || '') + '|' + (ignoreAgentPreference ? 'without-preference' : 'with-preference');
+    String(modelName || '') + '|' + (ignoreAgentPreference ? 'without-preference' : 'with-preference') + '|' +
+    String(options.providerId || '');
   const cacheable = fetchImpl === global.fetch && !!accountScope;
   if (cacheable && force) {
     _modelCache.delete(cacheKey);

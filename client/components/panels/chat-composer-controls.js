@@ -242,7 +242,10 @@
       // 同名模型（不同 key/显示名）可能并存：name 命中后再按显示名区分，避免两个条目同时标选中。
       const selectedLabel = selection.model?.label || '';
       const selectedProvider = selection.providerId || selection.model?.providerId || '';
-      const isPicked = row => row.name === selected && (row.providerId || '') === (selectedProvider || row.providerId || '') && (!selectedLabel || row.label === selectedLabel);
+      const sameNamed = rows.filter(row => row.name === selected);
+      const isPicked = row => row.name === selected
+        && (selectedProvider ? (row.providerId || '') === selectedProvider : sameNamed.length < 2)
+        && (!selectedLabel || row.label === selectedLabel);
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
       listNode.setAttribute('aria-busy', 'false');
