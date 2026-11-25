@@ -217,6 +217,7 @@
     const thinkingOn = canThink && (!canDisable || (selected.thinkingLevel && selected.thinkingLevel !== 'off'));
     const rows = enterpriseModels.map((item) => ({
         name: item.name,
+        providerName: item.providerName || '',
         label: item.label || item.name,
         sub: [item.providerName ? tx(item.providerName) : '', item.providerKind === 'anthropic' ? 'Anthropic' :
           item.providerKind === 'openai-compat' ? tx('OpenAI 兼容') : '',
@@ -224,6 +225,7 @@
       }));
     if (!cloud() && runtime().id === 'pi' && global.SoduWorkModelChoice) rows.push(...imageModels.map(item => ({
       name: SoduWorkModelChoice.imageKey(item), label: item.label || item.name,
+      providerName: item.providerName || '',
       sub: [tx('生成图片'), item.providerName ? tx(item.providerName) : '', item.keyFrom === 'mine' ? tx('自己的额度') : ''].filter(Boolean).join(' \u00b7 '),
     })));
     const thinkingLabel = !canThink
@@ -243,7 +245,7 @@
       '<div class="cp-model-scroll">' + rows.map((item) =>
         '<button type="button" class="cp-mrow' + (isPickedRow(item) ? ' on' : '') +
           '" aria-pressed="' + isPickedRow(item) + '" data-model="' + escape(item.name) + '"' +
-          (item.providerName ? ' data-model-provider="' + escape(item.providerName) + '"' : '') + '>' + check() +
+          (item.providerName ? ' data-model-provider="' + escape(encodeURIComponent(item.providerName)) + '"' : '') + '>' + check() +
           '<span class="cp-model-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span><span class="cp-mtxt"><b>' + escape(item.label) + '</b>' +
             (item.sub ? '<i>' + escape(item.sub) + '</i>' : '') + '</span></button>').join('') +
       emptyList() + '</div>' + (!selected.modelName && enterpriseDefaultErrors[runtime().id]
@@ -597,7 +599,9 @@
       }
       const model = event.target.closest('[data-model]');
       if (model) {
-        chooseModel(model.getAttribute('data-model'), model.getAttribute('data-model-provider'));
+        // Provider names double as locale keys: the DOM attribute stores the
+        // encoded form so the raw key never appears in markup; decode on click.
+        chooseModel(model.getAttribute('data-model'), model.getAttribute('data-model-provider') ? decodeURIComponent(model.getAttribute('data-model-provider')) : null);
         close();
         return;
       }
