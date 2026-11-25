@@ -216,6 +216,7 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const providerId = String(options.providerId || '').trim();
+    try { require('fs').appendFileSync(require('path').join(__dirname, '..', '..', 'debug-1434b.log'), new Date().toISOString() + ' fetchModel model=' + String(modelName) + ' providerId=[' + providerId + ']' + String.fromCharCode(10)); } catch (_) {}
     const query = '?agent=' + encodeURIComponent(agent) + (String(modelName || '').trim()
       ? '&model=' + encodeURIComponent(String(modelName).trim()) : '') +
       (providerId ? '&provider=' + encodeURIComponent(providerId) : '') +
