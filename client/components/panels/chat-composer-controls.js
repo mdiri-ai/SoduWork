@@ -339,7 +339,7 @@
             (!current.cloudHandoff || !deviceLocal(row));
           rows = (response.usable || []).filter(allowed)
             .sort((a, b) => Number(deviceLocal(b)) - Number(deviceLocal(a)))
-            .map(row => ({ name: row.name, label: row.label || row.name, subtitle: subtitle(row) }));
+            .map(row => ({ name: row.name, providerId: row.providerId || '', label: row.label || row.name, subtitle: subtitle(row) }));
           if (adapter === 'pi' && global.SoduWorkModelChoice) rows.push(...(response.mediaUsable?.image || []).filter(allowed).map(row => ({
             name: SoduWorkModelChoice.imageKey(row), label: '生成图片 · ' + (row.label || row.name), subtitle: subtitle(row),
           })));

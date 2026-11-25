@@ -597,9 +597,9 @@ async function createRunnerHandle(request, defaults, initialSession) {
   state.modelSelection = selectionModule.create({
     name: modelName, model: prepared.model,
     generation: accountModel ? undefined : models.generation,
-    async resolve(name) {
+    async resolve(name, providerId) {
       if (!accountModel) return models.fetchModel(identity, name, undefined, undefined, false, adapterId,
-        { app, allowLocal: true });
+        { app, allowLocal: true, providerId });
       if (adapterId !== 'codex') return { ok: false };
       const catalog = await require('./native-model-catalog').list(adapterId);
       const row = (catalog.models || []).find(model => model.id === name);
