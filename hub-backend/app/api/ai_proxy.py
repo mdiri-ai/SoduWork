@@ -549,12 +549,15 @@ async def proxy_config(
                 "reason": "此底座不使用企业模型配置，请检查执行底座"}
     # Match controlled dispatch: explicit choice > Agent preference > company
     # default. A removed preference is an actionable error, never a silent swap.
+    # The picker's explicit provider must be read from the request parameter
+    # BEFORE agent_choice: an explicit model override resets the stored
+    # preference's provider, so reading it afterwards always yields "".
+    requested_provider = str(provider or "").strip()
     want, provider = model_catalog.agent_choice(client, cli, model)
     # Explicit provider from the picker disambiguates same-named models across
     # providers (the billing account follows this id, not the bare name).
-    explicit_provider = str(provider or "").strip()
-    if explicit_provider and str(model or "").strip():
-        want, provider = str(model).strip(), explicit_provider
+    if requested_provider and str(model or "").strip():
+        want, provider = str(model).strip(), requested_provider
     # History recovery may discard an obsolete name-only preference. A provider
     # selection also identifies the account being billed and must survive recovery.
     if custom_acp or (ignore_preference and not provider):
