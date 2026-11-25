@@ -466,7 +466,6 @@
       const choice = event.target.closest('[data-model-name]');
       if (!choice || selecting) return;
       const ref = options.state().ref, adapterId = options.state().adapterId, name = choice.dataset.modelName, providerId = choice.dataset.modelProvider || '', epoch = effortEpoch;
-      try { options.say('TEMP-DEBUG: model=' + name + ' providerId=[' + providerId + ']'); } catch (_) {}
       const current = () => epoch === effortEpoch && ref === options.state().ref && adapterId === options.state().adapterId;
       selecting = true; pop.setAttribute('aria-busy', 'true');
       const request = (async () => { try {

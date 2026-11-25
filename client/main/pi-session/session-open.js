@@ -543,7 +543,6 @@ async function open(opts) {
           if (fresh) identity.session = fresh;
         } catch (_) { /* fetchSelection will perform the bounded secret fallback */ }
       }
-      try { require('fs').appendFileSync(require('path').join(__dirname, '..', '..', 'debug-1434b.log'), new Date().toISOString() + ' session-resolve model=' + String(name) + ' providerId=[' + String(providerId || '') + ']' + String.fromCharCode(10)); } catch (_) {}
       return modelConfig.fetchSelection(identity, name, 8000, global.fetch, false, 'pi', { app, providerId });
     },
     persist: name => piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name }),
