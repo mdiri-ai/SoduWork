@@ -29,7 +29,7 @@ from app.schema_migrations import (
 
 OLD_MERGE = "0067_merge_release_account_ownership"
 CANONICAL_MERGE = "0067_merge_account_ownership"
-CURRENT_HEAD = "0093_schedule_session_mode"
+CURRENT_HEAD = "0097_model_account_allowlist"
 
 
 class IntegratedMigrationHistoryTests(unittest.TestCase):
