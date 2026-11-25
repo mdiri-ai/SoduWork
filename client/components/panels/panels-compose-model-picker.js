@@ -47,7 +47,7 @@
 
   function state(id) {
     const key = (cloud() ? 'cloud:' : 'local:') + String(id || 'pi');
-    if (!states.has(key)) states.set(key, { modelName: '', reasoningEffort: '', thinkingLevel: '', modelChosen: false });
+    if (!states.has(key)) states.set(key, { modelName: '', providerName: '', reasoningEffort: '', thinkingLevel: '', modelChosen: false });
     return states.get(key);
   }
 
@@ -96,8 +96,17 @@
     }
     const image = imageModels.find(item => global.SoduWorkModelChoice?.imageKey(item) === selected.modelName);
     if (image) return '生成图片 · ' + (image.label || image.name);
-    const model = enterpriseModels.find((item) => item.name === selected.modelName);
+    const model = pickedModel(selected);
     return model ? (model.label || model.name) : tx('选择模型');
+  }
+
+  // Identical model names across providers are distinct rows: match both fields
+  // so only the picked provider's row highlights, instead of every twin. Fall
+  // back to a name-only match when the directory renamed or moved the provider.
+  function pickedModel(selected) {
+    return enterpriseModels.find((item) => item.name === selected.modelName &&
+      (item.providerName || '') === (selected.providerName || '')) ||
+      enterpriseModels.find((item) => item.name === selected.modelName) || null;
   }
 
   function clearStaleManagedSelection(row) {
@@ -126,7 +135,12 @@
       // device-owned models first. Valid current choices stay unchanged.
       const next = available[0];
       selected.unavailable = !next;
-      if (next) { selected.modelName = next; selected.modelChosen = false; }
+      if (next) {
+        const fallback = enterpriseModels.find((item) => item.name === next);
+        selected.modelName = next;
+        selected.providerName = fallback?.providerName || '';
+        selected.modelChosen = false;
+      }
       selected.thinkingLevel = '';
     } else selected.unavailable = false;
   }
@@ -223,10 +237,13 @@
       '<span class="cp-thinking-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5v3m0 9v3M2.5 10h3m9 0h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.2"/></svg></span>' +
       '<span class="cp-thinking-copy"><b>\u601d\u8003\u6a21\u5f0f</b><i>' + thinkingLabel + '</i><small>' + thinkingHint + '</small></span>' +
       '<button type="button" class="cp-thinking-switch" role="switch" aria-checked="' + (thinkingOn ? 'true' : 'false') + '" data-thinking-toggle' + (canThink && canDisable ? '' : ' disabled') + '><span></span><em class="sr-only">\u5207\u6362\u601d\u8003\u6a21\u5f0f</em></button></div>';
+    const pickedProvider = selected.providerName || '';
+    const isPickedRow = (item) => item.name === selected.modelName && (item.providerName || '') === pickedProvider;
     return heading(runtime().id === 'pi' && imageModels.length ? '对话与图片模型 · 用于本次会话' : '用于本次会话') +
       '<div class="cp-model-scroll">' + rows.map((item) =>
-        '<button type="button" class="cp-mrow' + (item.name === selected.modelName ? ' on' : '') +
-          '" aria-pressed="' + (item.name === selected.modelName) + '" data-model="' + escape(item.name) + '">' + check() +
+        '<button type="button" class="cp-mrow' + (isPickedRow(item) ? ' on' : '') +
+          '" aria-pressed="' + isPickedRow(item) + '" data-model="' + escape(item.name) + '"' +
+          (item.providerName ? ' data-model-provider="' + escape(item.providerName) + '"' : '') + '>' + check() +
           '<span class="cp-model-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span><span class="cp-mtxt"><b>' + escape(item.label) + '</b>' +
             (item.sub ? '<i>' + escape(item.sub) + '</i>' : '') + '</span></button>').join('') +
       emptyList() + '</div>' + (!selected.modelName && enterpriseDefaultErrors[runtime().id]
@@ -461,16 +478,16 @@
     }
   }
 
-  function chooseModel(id) {
+  function chooseModel(id, providerName) {
     global.ComposeDirectoryPreferences?.selectionCommitted?.();
     const row = runtime();
     const selected = state(row.id);
     selected.modelChosen = true;
     selected.unavailable = false;
     selected.modelName = String(id || '');
+    selected.providerName = String(providerName || '');
     if (row.id !== 'codex') {
-      const picked = enterpriseModels.find(item => item.name === selected.modelName) ||
-        (selected.modelName ? null : enterpriseModels[0]);
+      const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
       if (!info.supported) selected.thinkingLevel = '';
       else if (!info.canDisable) selected.thinkingLevel = fixedThinkingLevel(info, selected.thinkingLevel);
@@ -568,7 +585,7 @@
       const thinkingToggle = event.target.closest('[data-thinking-toggle]');
       if (thinkingToggle) {
         const selected = state(runtime().id);
-        const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
+        const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
         const info = thinkingProfile(picked);
         if (info.supported && info.canDisable) {
           global.ComposeDirectoryPreferences?.selectionCommitted?.();
@@ -580,7 +597,7 @@
       }
       const model = event.target.closest('[data-model]');
       if (model) {
-        chooseModel(model.getAttribute('data-model'));
+        chooseModel(model.getAttribute('data-model'), model.getAttribute('data-model-provider'));
         close();
         return;
       }
@@ -700,7 +717,7 @@
       return { modelName: selected.modelName, reasoningEffort: selected.reasoningEffort };
     }
     if (row.modelMode === 'managed') {
-      const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
+      const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
       return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
         ? fixedThinkingLevel(info, selected.thinkingLevel) : (selected.thinkingLevel || '') };
