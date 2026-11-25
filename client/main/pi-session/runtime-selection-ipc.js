@@ -44,7 +44,7 @@ function install({ app, ipcMain, session, identityOf, memories, cloud, publish }
   ipcMain.handle('pi-session-select-model', async (event, ref, name, providerId) => {
     try {
       const handle = await current(event, ref);
-      if (cloud.guard(handle)) return await cloud.selectExecution(handle, { modelName: name });
+      if (cloud.guard(handle)) return await cloud.selectExecution(handle, { modelName: name, providerId });
       if (typeof handle.selectModel !== 'function') return { ok: false, reason: '当前会话暂不支持切换模型，请更新客户端后重试' };
       return await handle.selectModel(name, providerId);
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }

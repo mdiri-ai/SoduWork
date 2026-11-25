@@ -44,7 +44,8 @@ function create({ app, read, save, guard, identity, request, view, notify, busy 
         throw Error('云端暂不支持本地模型，请选择云端可用模型');
       }
       if (catalog.runtime(next.agentId).modelMode === 'managed') {
-        const result = await models.fetchModel(current, next.modelName, undefined, undefined, false, next.agentId);
+        const result = await models.fetchModel(current, next.modelName, undefined, undefined, false, next.agentId,
+          { providerId: input.providerId });
         if (!result?.ok) throw Error(result?.reason || '当前账号无法使用所选模型');
       }
       // Recheck after network work; another window may have submitted meanwhile.
