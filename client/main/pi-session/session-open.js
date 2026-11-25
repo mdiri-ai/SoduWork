@@ -533,7 +533,7 @@ async function open(opts) {
   const modelSelection = require('../conversation/model-selection').create({
     name: modelName, model: prep.model,
     generation: modelConfig.generation,
-    resolve: async name => {
+    resolve: async (name, providerId) => {
       // Keep strict Hub deployments usable after the 30-minute device session
       // expires.  The fallback request still handles older compatibility
       // deployments, but renewing here avoids sending a stale session at all.
@@ -543,7 +543,7 @@ async function open(opts) {
           if (fresh) identity.session = fresh;
         } catch (_) { /* fetchSelection will perform the bounded secret fallback */ }
       }
-      return modelConfig.fetchSelection(identity, name, 8000, global.fetch, false, 'pi', { app });
+      return modelConfig.fetchSelection(identity, name, 8000, global.fetch, false, 'pi', { app, providerId });
     },
     persist: name => piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name }),
     changed: () => _emit({ kind: 'model-selection' }),

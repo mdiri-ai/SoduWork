@@ -241,13 +241,14 @@
       const selected = selection.name || selection.model?.id || state.model?.id || '';
       // 同名模型（不同 key/显示名）可能并存：name 命中后再按显示名区分，避免两个条目同时标选中。
       const selectedLabel = selection.model?.label || '';
-      const isPicked = row => row.name === selected && (!selectedLabel || row.label === selectedLabel);
+      const selectedProvider = selection.providerId || selection.model?.providerId || '';
+      const isPicked = row => row.name === selected && (row.providerId || '') === (selectedProvider || row.providerId || '') && (!selectedLabel || row.label === selectedLabel);
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
       listNode.setAttribute('aria-busy', 'false');
       listNode.innerHTML = visible.length ? visible.map(row =>
         '<button type="button" role="option" aria-selected="' + isPicked(row) +
-        '" data-model-name="' + esc(row.name) + '"><span class="nmodel-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span>' +
+        '" data-model-name="' + esc(row.name) + '"' + (row.providerId ? ' data-model-provider="' + esc(row.providerId) + '"' : '') + '><span class="nmodel-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span>' +
         '<span class="nmodel-row-copy"><b data-user-content>' + esc(row.label) + '</b>' +
         (row.subtitle ? '<small class="nmodel-row-subtitle" data-user-content>' + esc(row.subtitle) + '</small>' : '') + '</span>' +
         '<i class="nmodel-tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></i></button>').join('') :
@@ -371,7 +372,7 @@
             const request = (async () => {
               const result = latest.draftOnly
                 ? await options.draft.selectModel(target.name, target.label)
-                : await global.soduWorkAPI.conversationSession.selectModel(latest.ref, target.name);
+                : await global.soduWorkAPI.conversationSession.selectModel(latest.ref, target.name, target.providerId);
               if (lifecycle.signal.aborted || scope !== modelScope() || !result?.ok) return false;
               const live = options.state(), liveName = live.selection?.name || live.selection?.model?.id || live.model?.id || '';
               if (liveName !== selected && liveName !== target.name) return false;
@@ -461,14 +462,14 @@
       }
       const choice = event.target.closest('[data-model-name]');
       if (!choice || selecting) return;
-      const ref = options.state().ref, adapterId = options.state().adapterId, name = choice.dataset.modelName, epoch = effortEpoch;
+      const ref = options.state().ref, adapterId = options.state().adapterId, name = choice.dataset.modelName, providerId = choice.dataset.modelProvider || '', epoch = effortEpoch;
       const current = () => epoch === effortEpoch && ref === options.state().ref && adapterId === options.state().adapterId;
       selecting = true; pop.setAttribute('aria-busy', 'true');
       const request = (async () => { try {
         if ((effortRequest && !await effortRequest) || !current()) return false;
         const result = options.state().draftOnly
           ? await options.draft.selectModel(name, rows.find(row => row.name === name)?.label)
-          : await global.soduWorkAPI.conversationSession.selectModel(ref, name);
+          : await global.soduWorkAPI.conversationSession.selectModel(ref, name, providerId);
         if (!current()) return false;
         if (!result || !result.ok) { options.say(result && result.reason || '\u6a21\u578b\u5207\u6362\u5931\u8d25\uff0c\u5f53\u524d\u8bbe\u7f6e\u672a\u6539\u53d8'); return false; }
         options.modelSelected(result.selection);

@@ -88,7 +88,7 @@ const conversationSession = {
   updateQueue: (ref, id, action, value) => ipcRenderer.invoke('pi-session-queue-update', ref, id, action, value),
   selectAgent: (ref, agentId, selection) => ipcRenderer.invoke('pi-session-select-agent', ref, agentId, selection),
   conversationRuntimes: (ref, options) => ipcRenderer.invoke('pi-session-conversation-runtimes', ref, options || {}),
-  selectModel: (ref, name) => ipcRenderer.invoke('pi-session-select-model', ref, name),
+  selectModel: (ref, name, providerId) => ipcRenderer.invoke('pi-session-select-model', ref, name, providerId),
   setThinking: (ref, value) => ipcRenderer.invoke('pi-session-set-thinking', ref,
     typeof value === 'string' ? value : Boolean(value)),
   setAccessMode: (ref, mode, expectedRevision, options) => ipcRenderer.invoke('pi-session-set-access-mode', ref, mode, expectedRevision, options || {}),

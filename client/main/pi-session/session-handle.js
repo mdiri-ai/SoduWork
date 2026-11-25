@@ -205,11 +205,11 @@ historyRow(existingSnapshot) {
         status: snap.status, live: true,
       };
     },
-selectModel(name) {
+selectModel(name, providerId) {
       if (require('./image-model').imageChoice(name) && (ctx.goalVisible || ctx.handle.taskRef)) {
         return { ok: false, reason: '直接生图请使用普通对话；目标和需求可通过图片插件生成图片' };
       }
-      return ctx.modelSelection.select(name);
+      return ctx.modelSelection.select(name, providerId);
     },
 setThinkingMode(enabled) { const result = thinkingCapabilities.set(ctx.piSession, enabled); if (result.ok) ctx._emit({ kind: 'thinking-level', level: result.thinking.level }); return result; },
 submit(text, turnAttachments, sendOptions) {

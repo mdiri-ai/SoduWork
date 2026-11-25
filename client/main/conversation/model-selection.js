@@ -40,7 +40,7 @@ function publicModel(model) {
 // Queue items capture a name, not credentials. The runtime changes only at a turn boundary.
 function create({ name = '', model, resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
   name = canonicalName(name, model);
-  let selected = name, active = name, selectedModel = model, activeModel = model;
+  let selected = name, active = name, selectedModel = model, activeModel = model, selectedProvider = '';
   let selecting = false;
   let appliedGeneration = generation();
   const needsApply = name => name !== active || generation() !== appliedGeneration ||
@@ -49,23 +49,23 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
   return {
     capture: () => selected,
     needsApply: name => needsApply(name === undefined ? selected : name),
-    view: () => ({ name: selected, activeName: active, model: publicModel(selectedModel),
+    view: () => ({ name: selected, providerId: selectedProvider, activeName: active, model: publicModel(selectedModel),
       activeModel: publicModel(activeModel), pending: needsApply(selected) }),
-    async select(name) {
+    async select(name, providerId) {
       if (typeof name !== 'string' || name.length > require('../../core/model-choice').nameLimit(name) || /[\r\n\0]/.test(name))
         return { ok: false, reason: '模型名称无效' };
       name = name.trim();
       if (selecting) return { ok: false, reason: '正在更新模型，请稍候' };
       selecting = true;
       try {
-        const resolved = await resolve(name);
+        const resolved = await resolve(name, providerId);
         if (!resolved || !resolved.ok || !resolved.model) return { ok: false,
           reason: require('../../core/token-quota').detail(resolved)
             ? '当前 AI 使用额度暂不可用，请查看额度详情' : '该模型当前不可用，请刷新模型列表后重试',
           ...require('../../core/token-quota').fields(resolved) };
         name = canonicalName(name, resolved.model);
         await persist(name);
-        selected = name; selectedModel = resolved.model; changed();
+        selected = name; selectedModel = resolved.model; selectedProvider = String(providerId || '').trim(); changed();
         return { ok: true, selection: this.view() };
       } catch (_) { return { ok: false, reason: '模型设置未保存，请重试；当前模型未改变' }; }
       finally { selecting = false; }

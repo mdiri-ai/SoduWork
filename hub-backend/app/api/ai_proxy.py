@@ -529,6 +529,7 @@ def _protocol_guidance(conf):
 async def proxy_config(
     model: str = "",
     agent: str = "pi",
+    provider: str = "",
     ignore_preference: bool = False,
     client: Client = Depends(current_model_client),
     session: AsyncSession = Depends(get_session),
@@ -549,6 +550,11 @@ async def proxy_config(
     # Match controlled dispatch: explicit choice > Agent preference > company
     # default. A removed preference is an actionable error, never a silent swap.
     want, provider = model_catalog.agent_choice(client, cli, model)
+    # Explicit provider from the picker disambiguates same-named models across
+    # providers (the billing account follows this id, not the bare name).
+    explicit_provider = str(provider or "").strip()
+    if explicit_provider and str(model or "").strip():
+        want, provider = str(model).strip(), explicit_provider
     # History recovery may discard an obsolete name-only preference. A provider
     # selection also identifies the account being billed and must survive recovery.
     if custom_acp or (ignore_preference and not provider):
