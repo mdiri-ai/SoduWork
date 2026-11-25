@@ -272,7 +272,9 @@ _WANT_COLUMNS = {
     ],
     "model_def": [
         # Accounts (User IDs) allowed to use the model; an empty list means every account may use it.
-        ("allowed_user_ids", "{json} NOT NULL DEFAULT '[]'"),
+        # Literal JSON, not {json}: that placeholder renders TEXT on SQLite, which would
+        # drift from the ORM's JSON declaration under Alembic's type comparison.
+        ("allowed_user_ids", "JSON NOT NULL DEFAULT '[]'"),
     ],
     "integration": [
         ("last_pull_at", "{ts}"),
