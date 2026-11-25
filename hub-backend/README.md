@@ -8,6 +8,44 @@ Hub provides identity, authorization, execution governance, plugins, shared mate
 
 The first-chat checklist combines the available model catalog with the signed-in administrator’s latest desktop report. The device sends two readiness flags for its runtime and model selection. After five minutes without a fresh report, the Hub shows those steps as awaiting the desktop.
 
+## Task completion receipts
+
+A completion with a requester produces one stored receipt. Retrying that completion reuses the receipt. Reopening the task and completing it again produces a separate receipt. Live notifications use at-least-once delivery. The admin receipts list defaults to 50 records per page and allows up to 200.
+
+Creating or editing a task through the tasks API accepts up to 200 characters for the title, 64 for the requester name, 200 for contact details and 36 for the requester ID. An over-limit field returns HTTP 422 with its name. When an existing task exceeds these limits, the receipt and notice show shortened titles and names with an ellipsis. They omit over-limit contacts and IDs to avoid directing a reply to the wrong recipient. The optional `fieldWarnings` object identifies each affected field with `truncated` or `omitted`. The completion response exposes the same warnings under `receiptFieldWarnings` and retains the original task values.
+
+## Register client installers
+
+With `client.update`, send one `installer` multipart file to
+`POST /api/v1/admin/client-releases/upload`. Optional `channel` is `stable` or
+`beta`; omitted uses `SODUWORK_PUBLIC_DOWNLOAD_CHANNEL` if configured, otherwise
+beta for a `-beta.N` version and stable for a plain version. Hub reads the packaged
+version and native architecture, checks the filename, hashes the original bytes,
+signs the update manifest and registers a disabled release. Success means registration
+finished. Identical retries return the original record without changing its enabled
+state; different bytes for the same channel/version/artifact identity return 409.
+Each package is independent; no GitHub integration or six-package batch is required.
+
+Configure `CLIENT_UPDATE_SIGNING_KEY_FILE` and `CLIENT_UPDATE_SIGNING_KEY_ID` once
+per publishing environment. The file contains one canonical Base64-encoded 32-byte
+Ed25519 seed, readable by the Hub account, with POSIX mode 0400 or 0600 (equivalent
+restricted ACLs on Windows). Mount it read-only in containers, whose service runs
+as UID/GID 10001. Its public key must match Hub's trust store and already be trusted
+by installed clients. Never generate a key at startup or include private keys in
+images, source, API responses or installers. Missing, unreadable or untrusted
+signing configuration rejects publication with 503; existing downloads still work.
+
+Desktop inspection needs a maintained `7zz` or `7z` on PATH, or an executable path
+in `CLIENT_UPDATE_ARCHIVE_TOOL`; APK inspection needs `aapt` on PATH. The self-host
+image includes both in its `deps` stage. When reusing `HUB_BASE_IMAGE`, rebuild that
+dependency image to include these tools, or use `HUB_BASE_IMAGE=deps`; the runtime
+build rejects bases missing either tool. EXE, DMG, ZIP, DEB, RPM, tar.gz and AppImage inspection never
+executes uploaded code. Temporary extraction is bounded by time, size and nesting.
+APKs use Android manifest metadata. Preserve original package names. The optional
+`bundle` field still accepts offline-signed installers without server signing
+configuration; deployment-run uploads are unchanged. Selecting beta does not rewrite
+the version: plain versions in beta are for manual installation, not automatic updates.
+
 ## Start locally
 
 For a first session, use `sh start.sh` from the repository root; it creates an isolated database, environment, and administrator.
@@ -131,6 +169,12 @@ Process creation runs outside the shared session lock. Cancellation retains the 
 Model metadata carries its privacy classification from snapshot capture to remote projection. Switching to a Hub model while a read is pending cannot expose an older local model identity or its token counts. Attachment reads and follow-up workers also retain cancellation ownership until the underlying operation finishes.
 
 Run `python3 -m unittest test_runner_local_rpc test_runner_remote_rpc test_runner_event_delivery test_runner_usage_receipts test_runner_input_cleanup test_local_process_cleanup test_task_goal_stop_races` in the backend test environment. The private-pipe test uses a real Runner process and durable queue with synthetic discovery; process-cleanup tests use isolated operating-system children. These checks do not establish real-provider or Windows acceptance when run on another platform.
+
+## Plugin governance counts
+
+`GET /api/v1/admin/plugins/governance` counts distinct visible plugins in `summary.pendingReview` and `summary.attention`. A plugin with an older quarantined version still counts as pending review after a newer version is approved.
+
+`counts.review` and `summary.pendingReviewVersions` count individual versions. `summary.attentionItems` is the sum of all action counts. Each entry in `pluginCounts` gives that plugin's pending version count (`review`) and action count (`attention`). Totals are computed before each queue preview is limited to 30 items. Review actions retain their individual `versionId`. The existing query limits of 1,000 evaluations and 500 runs in the last 30 days still apply to the corresponding action counts.
 
 ## Offline quality gate
 

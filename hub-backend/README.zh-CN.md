@@ -11,6 +11,38 @@ FastAPI + SQLAlchemy(async) + PostgreSQL（本地开发可回退 SQLite）。
 
 首次对话清单根据可用模型目录和当前管理员最近一次桌面端报告显示进度。设备上报底座和模型选择是否就绪。五分钟内未收到新报告时，Hub 会将这两步显示为等待桌面端报告。
 
+## 任务办结回执
+
+有请求人的任务每次办结只保存一条回执。重试同一次办结会复用该回执。重新打开任务并再次办结会产生独立回执。实时通知采用至少一次投递语义。管理端回执列表默认每页 50 条，最多 200 条。
+
+通过 tasks API 新建或编辑任务时，允许标题 200 字符、请求人姓名 64 字符、联系方式 200 字符、请求人 ID 36 字符。字段超限时返回 HTTP 422 并指出字段名。如果已有任务超过这些限制，回执和通知用省略号标明缩短的标题或姓名，超长联系方式和 ID 会省略，以免将回复发给错误的收件人。可选的 `fieldWarnings` 对象会为受影响字段标记 `truncated` 或 `omitted`。办结响应在 `receiptFieldWarnings` 中返回相同提示，并保留任务原值。
+
+## 登记客户端安装包
+
+拥有 `client.update` 权限的管理员向 `POST /api/v1/admin/client-releases/upload`
+提交一个 multipart 文件 `installer` 即可。可选 `channel` 为 `stable` 或 `beta`；
+省略时优先使用环境配置 `SODUWORK_PUBLIC_DOWNLOAD_CHANNEL`，否则带 `-beta.N`
+的版本进入 beta，普通版本进入 stable。Hub 读取包内版本和主程序架构、核对文件名、
+计算原始文件哈希、签署更新清单并登记为停用状态。成功表示登记已完成。
+重复上传相同内容返回原记录并保留启停状态；同通道、版本、安装包名称的不同内容返回 409。
+每个包独立处理，不依赖 GitHub 集成，也不要求一次凑齐六个包。
+
+各发布环境一次性配置 `CLIENT_UPDATE_SIGNING_KEY_FILE` 和 `CLIENT_UPDATE_SIGNING_KEY_ID`。
+文件包含规范 Base64 编码的 32 字节 Ed25519 seed，由 Hub 账号读取；POSIX 权限为
+0400 或 0600，Windows 使用等效的受限 ACL。容器中以只读方式挂载，服务运行账号为
+UID/GID 10001。对应公钥须与 Hub 信任配置匹配，且已被已安装的客户端信任。
+不得在启动时生成新密钥，或将私钥放入镜像、源码、接口返回值及安装包。
+配置缺失、不可读或不受信任时，发布返回 503；既有下载继续可用。
+
+桌面包解析需要 PATH 上受维护的 `7zz` 或 `7z`，也可通过 `CLIENT_UPDATE_ARCHIVE_TOOL`
+指定可执行文件路径；APK 解析需要 PATH 上的 `aapt`。自托管镜像的 `deps` 阶段已包含两者。
+复用 `HUB_BASE_IMAGE` 时需重建包含这两个工具的依赖镜像，或使用 `HUB_BASE_IMAGE=deps`；
+运行镜像构建会拒绝缺少任一工具的基础镜像。
+EXE、DMG、ZIP、DEB、RPM、tar.gz 和 AppImage 解析不执行上传的代码；临时解包受时间、
+大小和嵌套层数限制。APK 从 Android manifest 读取元数据。请保留安装包原始文件名。
+可选 `bundle` 字段继续兼容离线签名上传，无需配置服务器签名；部署任务上传接口不变。
+选择 beta 通道不会改写包内版本：无 beta 后缀的包仅供手动安装，不作为自动升级目标。
+
 ## 快速开始（本地 SQLite，零配置）
 
 ```bash
@@ -110,6 +142,12 @@ Runner 重启后，恢复终端仍绑定原执行的会话历史，不恢复模�
 模型元数据从快照采集到远程投影始终携带当时的隐私分类。在读取期间切换到 Hub 模型，不会使旧本地模型标识或 token 统计被上传。附件读取和补充消息的后台线程也会保留取消归属，直到实际操作结束。
 
 在后端测试环境运行 `python3 -m unittest test_runner_local_rpc test_runner_remote_rpc test_runner_event_delivery test_runner_usage_receipts test_runner_input_cleanup test_local_process_cleanup test_task_goal_stop_races`。私有管道测试使用真实 Runner 进程和持久队列，底座检测为模拟；进程清理测试使用隔离的操作系统子进程。在其他平台运行这些检查，不代表已完成真实模型或 Windows 验收。
+
+## 插件治理统计口径
+
+`GET /api/v1/admin/plugins/governance` 的 `summary.pendingReview` 和 `summary.attention` 分别统计当前用户可见的待审核插件数和需要处理的插件数。同一插件只计一次。即使新版本已经批准，只要旧版本仍在隔离区，该插件仍计入待审核。
+
+`counts.review` 和 `summary.pendingReviewVersions` 统计待审核版本数。`summary.attentionItems` 是各类待办事项数之和。`pluginCounts` 按插件给出待审核版本数（`review`）和待办事项数（`attention`）。接口先统计，再为每类队列返回最多 30 条预览。每条审核待办保留独立的 `versionId`。评测事项的统计范围仍为最近 1,000 条评测，运行事项的统计范围仍为近 30 天内最近 500 次运行。
 
 ## 质量门禁
 

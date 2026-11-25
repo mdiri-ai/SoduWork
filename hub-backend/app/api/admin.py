@@ -64,6 +64,7 @@ from ..services import (
     email_auth,
     poller,
     rbac,
+    receipts,
     repository_catalog,
     storage,
     work_catalog,
@@ -230,8 +231,9 @@ async def create_org(
             session, body.name, body.parentId, body.sort, actor=user, data_source=body.dataSource)
     except rbac.OrgMutationError as exc:
         raise _org_mutation_error(exc) from exc
-    await audit.log(session, user, "org.create", "org", created["id"],
-                    created["name"], {"parentId": created.get("parentId"), "dataSource": created["dataSource"]})
+    audit.add(session, user, "org.create", "org", created["id"],
+              created["name"], {"parentId": created.get("parentId"), "dataSource": created["dataSource"]})
+    await session.commit()
     return created
 
 
@@ -686,7 +688,8 @@ async def create_domain(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="领域名称必须为 1 到 64 个字符") from exc
-    await audit.log(session, user, "domain.create", "domain", r["id"], r["name"], {})
+    audit.add(session, user, "domain.create", "domain", r["id"], r["name"], {})
+    await session.commit()
     return r
 
 
@@ -2210,6 +2213,9 @@ async def put_alert_config(
 ):
     from ..services import notify
     from ..services.model_runtime import lock_setting
+
+    if not user.is_super:
+        raise HTTPException(status_code=403, detail="平台级告警配置仅超级管理员可修改")
     url = body.get("url")
     if url is None or url == _HIDDEN_ALERT_URL:
         row = await session.get(models.AppSetting, notify.ALERT_URL_KEY)
@@ -2234,7 +2240,17 @@ async def test_alert_config(
     session: AsyncSession = Depends(get_session),
 ):
     """Send a real test notification to the configured destination."""
-    from ..services import notify
+    from ..services import client_access, notify
+
+    # The configured channel is shared by all administrators.
+    try:
+        await email_auth.take_limits(session, [
+            (f"alert-test:user:{user.id}", 1, 30),
+            ("alert-test:configured-channel", 1, 30),
+        ])
+    except client_access.ClientAccessError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc),
+                            headers={"Retry-After": str(exc.meta.get("retryAfter", 30))}) from exc
     sent = await notify.alert(
         session, "这是一条测试告警：配好了，交付出事时会用这个通道叫人。")
     return {"ok": bool(sent),
@@ -2622,13 +2638,14 @@ async def list_receipts(
     rows = await session.execute(query)
     out = []
     for e, title, status in rows:
-        d = e.detail or {}
+        d = receipts.bounded_detail(e.detail or {}, fallback_title=title)
         out.append({
             "id": e.id,
             "taskId": e.task_id,
-            "title": d.get("title") or title or "",
+            "title": d.get("title") or "",
             "requesterName": d.get("to") or "",
             "contact": d.get("contact") or "",
+            **({"fieldWarnings": d["fieldWarnings"]} if "fieldWarnings" in d else {}),
             "external": bool(d.get("external")),
             "via": d.get("via") or "",           # box: notify requester; self: self-completion; relay: notify registrar; recorded: retain only.
             "status": status or "",
