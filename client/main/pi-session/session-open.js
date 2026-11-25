@@ -153,6 +153,9 @@ async function open(opts) {
     }
   }
   let modelName = explicitModel ? opts.modelName : savedModel?.data?.name || archivedLocalModel;
+  // 持久化的选择带 providerId：同名模型（不同 provider 或显示名）时恢复态需要它做精确匹配，
+  // 旧 entry 没有该字段时保持空串并回退既有行为。
+  const savedProviderId = String(savedModel?.data?.providerId || '').trim();
   const localChoice = name => String(name || '').startsWith('local:') ||
     require('./image-model').imageChoice(name)?.name.startsWith('local:');
   if (require('./image-model').imageChoice(modelName) && ((goal.intent === 'goal' && restoredMode.visible) || opts.taskRef)) {
@@ -531,7 +534,7 @@ async function open(opts) {
     }
   }
   const modelSelection = require('../conversation/model-selection').create({
-    name: modelName, model: prep.model,
+    name: modelName, model: prep.model, providerId: savedProviderId,
     generation: modelConfig.generation,
     resolve: async (name, providerId) => {
       // Keep strict Hub deployments usable after the 30-minute device session
@@ -545,7 +548,8 @@ async function open(opts) {
       }
       return modelConfig.fetchSelection(identity, name, 8000, global.fetch, false, 'pi', { app, providerId });
     },
-    persist: name => piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name }),
+    persist: (name, providerId) => piSession.sessionManager.appendCustomEntry('soduwork.model.selection',
+      { name, ...(String(providerId || '').trim() ? { providerId: String(providerId).trim() } : {}) }),
     changed: () => _emit({ kind: 'model-selection' }),
     async apply(next) {
       if (next.modality === 'image') {

@@ -595,7 +595,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   };
 
   state.modelSelection = selectionModule.create({
-    name: modelName, model: prepared.model,
+    name: modelName, model: prepared.model, providerId: savedSelection.providerId || '',
     generation: accountModel ? undefined : models.generation,
     async resolve(name, providerId) {
       if (!accountModel) return models.fetchModel(identity, name, undefined, undefined, false, adapterId,
@@ -605,10 +605,10 @@ async function createRunnerHandle(request, defaults, initialSession) {
       const row = (catalog.models || []).find(model => model.id === name);
       return row || !name ? { ok: true, model: { id: name, label: row && row.label || '默认模型' } } : { ok: false };
     },
-    persist: name => {
+    persist: (name, providerId) => {
       if (state.disposed) throw Error('会话已关闭');
       const next = adapterId === 'codex' ? require('./codex-thinking').profile(name, state.thinking?.level) : null;
-      modelPreference.write(name, next?.level);
+      modelPreference.write(name, next?.level, providerId);
     },
     changed: () => {
       if (adapterId === 'codex' && state.modelChoicePending)

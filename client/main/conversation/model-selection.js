@@ -38,9 +38,10 @@ function publicModel(model) {
 
 // A choice belongs to future submissions, never to the currently streaming turn.
 // Queue items capture a name, not credentials. The runtime changes only at a turn boundary.
-function create({ name = '', model, resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
+function create({ name = '', model, providerId = '', resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
   name = canonicalName(name, model);
-  let selected = name, active = name, selectedModel = model, activeModel = model, selectedProvider = '';
+  let selected = name, active = name, selectedModel = model, activeModel = model,
+    selectedProvider = String(providerId || '').trim();
   let selecting = false;
   let appliedGeneration = generation();
   const needsApply = name => name !== active || generation() !== appliedGeneration ||
@@ -64,7 +65,7 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
             ? '当前 AI 使用额度暂不可用，请查看额度详情' : '该模型当前不可用，请刷新模型列表后重试',
           ...require('../../core/token-quota').fields(resolved) };
         name = canonicalName(name, resolved.model);
-        await persist(name);
+        await persist(name, providerId, resolved.model);
         selected = name; selectedModel = resolved.model; selectedProvider = String(providerId || '').trim(); changed();
         return { ok: true, selection: this.view() };
       } catch (_) { return { ok: false, reason: '模型设置未保存，请重试；当前模型未改变' }; }
@@ -99,23 +100,26 @@ function preference(app, ref) {
       value = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (_) { return {}; }
     return { ...(typeof value.name === 'string' ? { name: canonicalName(value.name) } : {}),
-      ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}) };
+      ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}),
+      ...(typeof value.providerId === 'string' ? { providerId: value.providerId } : {}) };
   };
   return {
     read() { return readSelection().name; },
     readSelection,
-    write(name, reasoningEffort = readSelection().reasoningEffort) {
+    write(name, reasoningEffort = readSelection().reasoningEffort, providerId = readSelection().providerId) {
       if (!file) return;
       name = canonicalName(name);
       // Reopening a conversation must not rewrite an unchanged saved choice.
       // A transient destination lock may block new choices, but not restoration.
       const current = readSelection();
-      if (current.name === name && current.reasoningEffort === reasoningEffort) return;
+      if (current.name === name && current.reasoningEffort === reasoningEffort &&
+        current.providerId === providerId) return;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = file + '.' + crypto.randomUUID() + '.tmp';
       try {
         fs.writeFileSync(tmp, JSON.stringify({ name,
-          ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}) }), { mode: 0o600, flag: 'wx' });
+          ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}),
+          ...(typeof providerId === 'string' && providerId ? { providerId } : {}) }), { mode: 0o600, flag: 'wx' });
         replaceFileSync(tmp, file);
       } catch (cause) {
         const error = new Error('会话模型设置未能保存，请检查本机存储后重试；当前 Agent 和对话已保留', { cause });

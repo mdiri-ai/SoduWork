@@ -243,9 +243,12 @@
       const selectedLabel = selection.model?.label || '';
       const selectedProvider = selection.providerId || selection.model?.providerId || '';
       const sameNamed = rows.filter(row => row.name === selected);
-      const isPicked = row => row.name === selected
+      // 唯一选中：多条同 name（+同 providerId、label 不足区分，如恢复态丢失 label）时只标第一个，
+      // 保证任何数据/恢复场景下都不会出现两个条目同时打钩。
+      const pickedRow = rows.find(row => row.name === selected
         && (selectedProvider ? (row.providerId || '') === selectedProvider : sameNamed.length < 2)
-        && (!selectedLabel || row.label === selectedLabel);
+        && (!selectedLabel || row.label === selectedLabel)) || null;
+      const isPicked = row => row === pickedRow;
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
       listNode.setAttribute('aria-busy', 'false');
