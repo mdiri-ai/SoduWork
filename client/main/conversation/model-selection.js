@@ -74,7 +74,10 @@ function create({ name = '', model, providerId = '', resolve, apply, persist = (
     async applyForTurn(name = selected) {
       if (!needsApply(name)) return;
       const applyingGeneration = generation();
-      const resolved = await resolve(name);
+      // The queued provider id belongs to the selected row. A different name in
+      // the queue predates the current picker choice; resolving it with the new
+      // provider could pair an old name with the wrong provider credential.
+      const resolved = await resolve(name, name === selected ? selectedProvider : '');
       if (!resolved || !resolved.ok || !resolved.model) throw Object.assign(
         new Error(require('../../core/token-quota').detail(resolved)
           ? '当前 AI 使用额度暂不可用，请查看额度详情' : '本轮所选模型不可用，队列已暂停，请调整模型后重试'),

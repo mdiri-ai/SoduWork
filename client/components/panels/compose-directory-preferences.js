@@ -21,7 +21,11 @@
   function pair(value) {
     if (!value || typeof value !== 'object' || !/^[a-z][a-z0-9._-]{0,47}$/.test(value.adapterId || '')) return null;
     if (typeof value.modelName !== 'string' || value.modelName.length > 2048) return null;
+    // The provider identity is part of the pair: identical model names across
+    // providers are distinct rows, so the saved selection must keep it.
     return { adapterId: value.adapterId, modelName: value.modelName,
+      providerId: String(value.providerId || '').slice(0, 128),
+      providerName: String(value.providerName || '').slice(0, 128),
       reasoningEffort: String(value.reasoningEffort || '').slice(0, 24), thinkingLevel: String(value.thinkingLevel || '').slice(0, 24) };
   }
   function read(storageKey) {

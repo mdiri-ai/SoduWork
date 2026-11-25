@@ -163,7 +163,14 @@ async function open(opts) {
   }
   let resetSavedModel = false;
   const allowHistoricalModel = Boolean(opts.resumePath || opts.resumedConversation);
-  let prep = await modelConfig.prepare(app, identity, modelName, { allowHistorical: allowHistoricalModel });
+  // Identical model names across providers are distinct picker rows. An explicit
+  // composer pick carries the picked provider id; a resumed selection reuses its
+  // persisted provider so the restore matches the same row instead of a
+  // name-only lookup that can land on another provider's model.
+  const prepProviderId = explicitModel ? String(opts.modelProviderId || '').trim() : savedProviderId;
+  let prep = await modelConfig.prepare(app, identity, modelName, {
+    allowHistorical: allowHistoricalModel, providerId: prepProviderId,
+  });
   _openTiming('model-prepared', openStarted);
   // A conversation can outlive a personal model.  Its historical selection
   // must not make the whole conversation unopenable after that model is
@@ -308,7 +315,11 @@ async function open(opts) {
     piSession.sessionManager.appendCustomEntry('soduwork.access.policy', access.policy);
   }
   if (resetSavedModel || ((explicitModel || prep.model.localOnly) && savedModel?.data?.name !== modelName)) {
-    piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name: modelName });
+    // An explicit picker pick persists its provider as a pair; identical model
+    // names across providers would restore as name-only rows otherwise.
+    piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name: modelName,
+      ...(explicitModel && modelName && !prep.model.localOnly && prepProviderId
+        ? { providerId: prepProviderId } : {}) });
   } else if (require('./image-model').imageChoice(modelName) && !savedModel) {
     piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name: modelName });
   }
@@ -534,7 +545,7 @@ async function open(opts) {
     }
   }
   const modelSelection = require('../conversation/model-selection').create({
-    name: modelName, model: prep.model, providerId: savedProviderId,
+    name: modelName, model: prep.model, providerId: prepProviderId,
     generation: modelConfig.generation,
     resolve: async (name, providerId) => {
       // Keep strict Hub deployments usable after the 30-minute device session

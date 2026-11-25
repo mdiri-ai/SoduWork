@@ -716,14 +716,22 @@
   function value() {
     const row = runtime();
     const selected = state(row.id);
-    if (cloud()) return { modelName: row.modelMode === 'managed' ? selected.modelName : '', reasoningEffort: '', thinkingLevel: '' };
+    if (cloud()) {
+      // Cloud sessions resolve their model through the same Hub proxy, so the
+      // picked row's providerId must travel with the name: identical names
+      // across providers would otherwise send with the wrong provider ticket.
+      const picked = row.modelMode === 'managed' ? pickedModel(selected) : null;
+      return { modelName: row.modelMode === 'managed' ? selected.modelName : '',
+        providerId: picked?.providerId || '',
+        reasoningEffort: '', thinkingLevel: '' };
+    }
     if (row.id === 'codex') {
       return { modelName: selected.modelName, reasoningEffort: selected.reasoningEffort };
     }
     if (row.modelMode === 'managed') {
       const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
-      return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
+      return { modelName: selected.modelName, providerId: picked?.providerId || '', reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
         ? fixedThinkingLevel(info, selected.thinkingLevel) : (selected.thinkingLevel || '') };
     }
     return { modelName: '', reasoningEffort: '' };
@@ -749,6 +757,10 @@
     selected.modelName = String(saved.modelName || '');
     selected.reasoningEffort = String(saved.reasoningEffort || '');
     selected.thinkingLevel = String(saved.thinkingLevel || '');
+    // The saved pair carries the provider identity too: without it pickedModel
+    // falls back to a name-only match and paints another twin row's label.
+    selected.providerId = String(saved.providerId || '');
+    selected.providerName = String(saved.providerName || '');
     selected.directoryPreference = true;
     selected.modelChosen = false;
     if (row.modelMode === 'managed') {
