@@ -18,6 +18,7 @@
 | Report a security issue | [Security reporting](../SECURITY.md) |
 | Read component and integration contracts | [Desktop](../client/README.md), [backend](../hub-backend/README.md), [management UI](../hub-frontend/README.md), [H5 SDK](../client/sdk/README.md), [OAuth](../hub-backend/CONNECTOR_OAUTH.en.md) |
 | Understand automated checks and credential detection | [GitHub configuration](../.github/CI.md), [secret scanning](../tools/security/README.md) |
+| See a full delivery walkthrough from requirement to acceptance (in Chinese) | [Requirement-to-acceptance walkthrough](case-studies/requirement-to-acceptance.md) |
 
 The overview, startup, development, component, plugin, H5 SDK, OAuth, security, and distribution guides have paired Chinese and English versions. Switch languages at the top of each page. Runtime skill instructions retain their original language. Follow the [translation conventions](development.en.md#documentation-and-translations) when adding another language.
 

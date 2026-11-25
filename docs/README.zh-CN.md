@@ -18,6 +18,7 @@
 | 报告安全问题 | [安全报告](security.zh-CN.md) |
 | 查看工程、SDK 与 OAuth 协议 | [桌面](../client/README.zh-CN.md)、[后端](../hub-backend/README.zh-CN.md)、[管理端](../hub-frontend/README.zh-CN.md)、[H5 SDK](../client/sdk/README.zh-CN.md)、[OAuth](../hub-backend/CONNECTOR_OAUTH.md) |
 | 了解自动检查与敏感信息扫描 | [GitHub 配置](../.github/CI.md)、[扫描说明](../tools/security/README.md) |
+| 看一次从需求到验收的完整实战记录 | [需求到验收实战](case-studies/requirement-to-acceptance.md) |
 
 首页、启动、开发、三个工程说明、插件协议、H5 SDK、OAuth、安全与分发指南均提供中英文配对版本，可在页面顶部切换。运行时技能指令等内容保持原语言。补充其他语言请遵循[翻译约定](development.md#文档与翻译)。
 
