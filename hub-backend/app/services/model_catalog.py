@@ -323,23 +323,27 @@ def _p_api(p, *, with_secret: bool = False) -> dict:
     return d
 
 
-def _m_api(m) -> dict:
+def _m_api(m, *, with_allowlist: bool = False) -> dict:
     modality = normalize_modality(getattr(m, "modality", "chat"))
     resolved = context_window.resolve({
         "contextWindow": getattr(m, "ctx_window", 0),
         "modelName": getattr(m, "name", ""),
         "providerId": getattr(m, "provider_id", ""),
     })
-    return {"revision": model_config_guard.revision(m), "id": m.id,
-            "providerId": m.provider_id, "name": m.name,
-            "label": m.label or m.name, "builtin": bool(m.builtin),
-            "enabled": bool(m.enabled), "ctxWindow": resolved["contextWindow"],
-            "contextWindowKnown": resolved["contextWindowKnown"],
-            "contextWindowEstimated": resolved["contextWindowEstimated"],
-            "contextWindowSource": resolved["contextWindowSource"],
-            "modality": modality,
-            "config": model_config(getattr(m, "config", {}), modality),
-            "note": m.note}
+    d = {"revision": model_config_guard.revision(m), "id": m.id,
+         "providerId": m.provider_id, "name": m.name,
+         "label": m.label or m.name, "builtin": bool(m.builtin),
+         "enabled": bool(m.enabled), "ctxWindow": resolved["contextWindow"],
+         "contextWindowKnown": resolved["contextWindowKnown"],
+         "contextWindowEstimated": resolved["contextWindowEstimated"],
+         "contextWindowSource": resolved["contextWindowSource"],
+         "modality": modality,
+         "config": model_config(getattr(m, "config", {}), modality),
+         "note": m.note}
+    if with_allowlist:
+        # Account allowlists stay administrator-only; client-facing reads never see account IDs.
+        d["allowedAccounts"] = model_accounts(m)
+    return d
 
 
 def _personal_provider_rows(client) -> list[dict]:
@@ -447,11 +451,29 @@ def provider_key(p: dict, client) -> tuple[str, str]:
     return (org, "org") if org else ("", "")
 
 
-async def catalog(session: AsyncSession, client=None) -> dict:
+def model_accounts(m) -> list[str]:
+    """Accounts (User IDs) allowed to use this model; empty means every account."""
+    ids = getattr(m, "allowed_user_ids", None)
+    if not isinstance(ids, list):
+        return []
+    return [str(v).strip() for v in ids if isinstance(v, str) and str(v).strip()]
+
+
+def account_allowed(m, client) -> bool:
+    """Per-model account allowlist. An empty list stays unrestricted, and internal callers
+    without a device are not subject to account restrictions. A restricted model blocks the
+    account entirely, including the same model name re-added with a personal key."""
+    allowed = model_accounts(m)
+    if not allowed or client is None:
+        return True
+    return str(getattr(client, "user_ref", "") or "") in allowed
+
+
+async def catalog(session: AsyncSession, client=None, *, admin: bool = False) -> dict:
     """Return the masked model catalog for administration."""
     ps = (await session.execute(select(models.ModelProvider))).scalars().all()
     ms = (await session.execute(select(models.ModelDef))).scalars().all()
-    rows = [_m_api(m) for m in ms]
+    rows = [_m_api(m, with_allowlist=admin) for m in ms]
     await model_capabilities.enrich(session, rows, await effective_provider_map(session, client), client)
     return {"providers": [_p_api(p) for p in ps], "models": rows}
 
@@ -466,6 +488,7 @@ async def usable(session: AsyncSession, client=None, modality: str = "chat") -> 
     ms = list((await session.execute(select(models.ModelDef))).scalars().all())
     out: list[dict] = []
     seen = set()
+    blocked: set[str] = set()
     for m in ms:
         if normalize_modality(getattr(m, "modality", "chat")) != wanted:
             continue
@@ -473,6 +496,11 @@ async def usable(session: AsyncSession, client=None, modality: str = "chat") -> 
         if p is None or not p["enabled"] or not p["baseUrl"]:
             continue
         if not m.enabled:
+            continue
+        if not account_allowed(m, client):
+            # A model restricted to specific accounts also blocks the same model name
+            # re-added with a personal key, so no account can bypass the allowlist.
+            blocked.add(canonical_model_name(m.name))
             continue
         _, key_from = provider_key(p, client)
         if not key_from:
@@ -489,6 +517,9 @@ async def usable(session: AsyncSession, client=None, modality: str = "chat") -> 
         # Personal models must still respect the provider's enabled state.
         # Disabling a provider applies to all models using it.
         if not nm or p is None or not p.get("personal") or not p["enabled"] or not p["baseUrl"] or (pid, nm) in seen:
+            continue
+        if canonical_model_name(nm) in blocked:
+            # The account cannot restore a restricted organization model under a personal key.
             continue
         _, key_from = provider_key(p, client)
         if not key_from:

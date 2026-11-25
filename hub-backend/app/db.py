@@ -270,6 +270,10 @@ _WANT_COLUMNS = {
         ("positions", "{json}"),
         ("domains", "{json}"),
     ],
+    "model_def": [
+        # Accounts (User IDs) allowed to use the model; an empty list means every account may use it.
+        ("allowed_user_ids", "{json} NOT NULL DEFAULT '[]'"),
+    ],
     "integration": [
         ("last_pull_at", "{ts}"),
         ("last_pull_ok", "BOOLEAN"),

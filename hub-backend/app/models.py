@@ -129,6 +129,9 @@ class ModelDef(Base):
     # Media invocation path and defaults; credentials remain on the provider.
     config: Mapped[dict] = mapped_column(
         JSON, default=dict, server_default="{}", nullable=False)
+    # Accounts (User IDs) allowed to use this model; an empty list means every account may use it.
+    allowed_user_ids: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False)
     note: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

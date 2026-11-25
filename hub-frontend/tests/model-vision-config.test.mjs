@@ -20,7 +20,7 @@ test('editing a model preserves native vision and unrelated config; both routing
     exportName: 'ModelForm', privateExports: ['ModelForm'],
     props: { providerId: 'company', initial: { name: 'vision-alias', label: 'Vision', enabled: true, revision: 'original',
       config: { imageRouting: 'native', thinkingMode: 'controllable', thinkingFormat: 'qwen', thinkingLevelMap: { high: 'high' } } }, onClose() {}, onSaved() {} },
-    dependencies: { '../api.js': { api: { saveModelDef: async data => saved.push(data) } }, '../ui.jsx': ui,
+    dependencies: { '../api.js': { api: { saveModelDef: async data => saved.push(data), modelAccounts: async () => ({ accounts: [] }) } }, '../ui.jsx': ui,
       './ModelProviderDeletion.jsx': { __esModule: true, default: () => null },
       './LlmSettings.jsx': { default: () => null }, './ModelRuntime.jsx': { default: () => null }, './model-catalog-actions.css': {},
       './ModelCapabilities.jsx': capabilities, './model-capabilities.css': {} },
@@ -52,7 +52,7 @@ async function form(t, initial = null) {
   const page = await createComponentHarness(new URL('../src/screens/ModelCatalog.jsx', import.meta.url), {
     exportName: 'ModelForm', privateExports: ['ModelForm'],
     props: { providerId: 'company', initial, onClose() {}, onSaved() {} },
-    dependencies: { '../api.js': { api: { saveModelDef: async data => saved.push(data) } }, '../ui.jsx': { ...ui, toast: text => errors.push(text) },
+    dependencies: { '../api.js': { api: { saveModelDef: async data => saved.push(data), modelAccounts: async () => ({ accounts: [] }) } }, '../ui.jsx': { ...ui, toast: text => errors.push(text) },
       './ModelProviderDeletion.jsx': { __esModule: true, default: () => null },
       './LlmSettings.jsx': { default: () => null }, './ModelRuntime.jsx': { default: () => null }, './model-catalog-actions.css': {},
       './ModelCapabilities.jsx': capabilities, './model-capabilities.css': {} },
