@@ -283,6 +283,74 @@ def open_management_page(base: str) -> None:
     print(f"浏览器未自动打开，请手动访问 / Open this address in your browser: {base}", flush=True)
 
 
+def service_alive(host: str, port: int, timeout: float = 3.0) -> bool:
+    """True when a live Hub answers /healthz on this address."""
+    try:
+        with HTTP.open(f"http://{host}:{port}/healthz", timeout=timeout) as response:
+            return 200 <= response.status < 300
+    except (OSError, URLError):
+        return False
+
+
+def awaken_desktop(state: Path, client: Path, base: str) -> subprocess.Popen:
+    """Relaunch the desktop client against an already-running Hub.
+
+    A reopen must not depend on the launcher session's password environment:
+    the profile pointers and this instance's interpreter are all it needs. The
+    launcher exits right after spawning, so the child runs detached and its
+    stdin is /dev/null; a closed pipe would be read as a quit signal.
+    """
+    profile = desktop_profile(state)
+    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (profile / 'hub-endpoint.json').write_text(json.dumps({'hub': base}), encoding='utf-8')
+    config = profile / 'chat-config.json'
+    if not config.exists():
+        work = state / 'workspaces'
+        work.mkdir(parents=True, exist_ok=True)
+        with config.open('x', encoding='utf-8') as stream:
+            json.dump({'workDir': str(work)}, stream)
+    env = dict(os.environ)
+    bin_dir = state / 'venv' / ('Scripts' if os.name == 'nt' else 'bin')
+    runner = 'python.exe' if os.name == 'nt' else 'python'
+    env.update(SODUWORK_USER_DATA=str(profile), VIRTUAL_ENV=str(state / 'venv'),
+               HUB_PUBLIC_URL=base, SODUWORK_SOURCE_SESSION='1',
+               SODUWORK_SOURCE_RUNNER_PYTHON=str(bin_dir / runner))
+    env['PATH'] = str(bin_dir) + os.pathsep + env.get('PATH', '')
+    if sys.platform == 'darwin':
+        # The desktop owns the login session; only its profile stays isolated.
+        env['HOME'] = str(Path.home())
+    import shutil
+    output = (state / 'desktop.log').open('ab')
+    try:
+        return subprocess.Popen([shutil.which('node'), str(client / 'scripts/start-client.cjs')], cwd=client,
+                                env=env, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                                **spawn_options())
+    finally:
+        # The child owns the duplicated descriptor; drop this parent copy now
+        # because the launcher exits immediately after the reopen.
+        output.close()
+
+
+def reopen_running(state: Path, args) -> int:
+    """A live Hub owns this data directory: reopen a window instead of failing."""
+    base = f"http://{args.host}:{args.port}"
+    print("\nSoduWork 已在本机运行 / SoduWork is already running on this machine.", flush=True)
+    if args.desktop:
+        try:
+            client = prepare_desktop(state, state / 'startup.log')
+            awaken_desktop(state, client, base)
+            print("已重新唤起桌面端窗口；关闭桌面端不会停止后台服务。\n"
+                  "Reopened the desktop window; closing it does not stop the running service.", flush=True)
+            return 0
+        except (OSError, subprocess.SubprocessError):
+            print("桌面端未能自动唤起，请从任务栏打开已有窗口。\n"
+                  "Could not reopen the desktop automatically; open its window from the taskbar.", flush=True)
+    if not args.no_browser:
+        open_management_page(base)
+    print(f"管理页面 / Management page: {base}", flush=True)
+    return 0
+
+
 def serve(state: Path, config: dict, args) -> None:
     assert_available(args.host, args.port)
     initializing = not initialized(state)
@@ -528,6 +596,12 @@ def main(argv=None) -> int:
         if state.is_relative_to(ROOT) or state in ROOT.parents or state == Path.home():
             raise StartupError("Use a dedicated data directory outside the source checkout, not your home or repository root.")
         config = initialize(state, args.admin_user.strip())
+        if not args.prepare_only and service_alive(args.host, args.port):
+            # Issue #1378: a second start while the Hub is live must reopen a
+            # window instead of reporting a dead end the user cannot leave.
+            # A holding process always owns the lock, so the exclusive guard
+            # below is only reached when no live service exists on this port.
+            return reopen_running(state, args)
         with exclusive(state):
             print(f"数据目录 / Data directory: {state}\n详细日志 / Detailed log: {state / 'startup.log'}\n"
                   "首次启动需要联网下载依赖，可能需要数分钟。已完成的步骤会复用，请勿重复启动。\n"

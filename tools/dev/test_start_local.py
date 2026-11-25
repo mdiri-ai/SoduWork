@@ -75,6 +75,101 @@ class LocalStartupTests(unittest.TestCase):
         self.assertIn('unknown host', str(caught.exception))
         self.assertNotIn('already in use', str(caught.exception))
 
+    def test_second_start_reopens_desktop_when_hub_is_alive(self):
+        # Issue #1378: a held lock with a live Hub reopens a window, it does not
+        # strand the user behind "already running" with no window to use.
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize') as initialize, \
+                patch.object(start, 'service_alive', return_value=True), \
+                patch.object(start, 'exclusive') as exclusive, \
+                patch.object(start, 'prepare_desktop') as desktop, \
+                patch.object(start, 'awaken_desktop') as awaken, \
+                patch.object(start, 'open_management_page') as page, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(start.main(['--desktop', '--data-dir', str(self.state)]), 0)
+        exclusive.assert_not_called()
+        initialize.assert_called_once()
+        desktop.assert_called_once()
+        awaken.assert_called_once()
+        page.assert_not_called()
+
+    def test_second_start_without_desktop_opens_the_management_page(self):
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize'), \
+                patch.object(start, 'service_alive', return_value=True), \
+                patch.object(start, 'exclusive') as exclusive, \
+                patch.object(start, 'open_management_page') as page, \
+                patch.object(start, 'awaken_desktop') as awaken, \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(start.main(['--data-dir', str(self.state)]), 0)
+        exclusive.assert_not_called()
+        awaken.assert_not_called()
+        page.assert_called_once_with('http://127.0.0.1:18989')
+        self.assertIn('already running', output.getvalue())
+
+    def test_second_start_honors_no_browser_and_still_prints_the_address(self):
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize'), \
+                patch.object(start, 'service_alive', return_value=True), \
+                patch.object(start, 'open_management_page') as page, \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(start.main(['--no-browser', '--data-dir', str(self.state)]), 0)
+        page.assert_not_called()
+        self.assertIn('http://127.0.0.1:18989', output.getvalue())
+
+    def test_desktop_reopen_falls_back_to_the_management_page_on_failure(self):
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize'), \
+                patch.object(start, 'service_alive', return_value=True), \
+                patch.object(start, 'exclusive') as exclusive, \
+                patch.object(start, 'prepare_desktop'), \
+                patch.object(start, 'awaken_desktop', side_effect=OSError('spawn failed')), \
+                patch.object(start, 'open_management_page') as page, \
+                redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(start.main(['--desktop', '--data-dir', str(self.state)]), 0)
+        exclusive.assert_not_called()
+        page.assert_called_once()
+        self.assertIn('taskbar', output.getvalue())
+
+    def test_prepare_only_keeps_the_exclusive_guard_against_a_live_service(self):
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize'), \
+                patch.object(start, 'service_alive', return_value=True), \
+                patch.object(start, 'exclusive', return_value=nullcontext()) as exclusive, \
+                patch.object(start, 'prepare') as prepare, \
+                patch.object(start, 'prepare_desktop') as desktop, \
+                patch.object(start, 'reopen_running') as reopen, \
+                redirect_stdout(io.StringIO()):
+            self.assertEqual(start.main(['--prepare-only', '--data-dir', str(self.state)]), 0)
+        reopen.assert_not_called()
+        exclusive.assert_called_once()
+        prepare.assert_called_once()
+        desktop.assert_not_called()
+
+    def test_stale_lock_with_a_dead_hub_still_reports_the_error(self):
+        # A lock without a live service is not the reopen case; keep the guard.
+        with patch.object(start, 'check_dependencies'), \
+                patch.object(start, 'initialize'), \
+                patch.object(start, 'service_alive', return_value=False), \
+                patch.object(start, 'exclusive', side_effect=start.StartupError('already running')), \
+                redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()) as errors:
+            self.assertEqual(start.main(['--data-dir', str(self.state)]), 1)
+        self.assertIn('already running', errors.getvalue())
+
+    def test_awaken_desktop_points_the_profile_at_the_running_hub(self):
+        client = self.state / 'application/client'
+        with patch.object(start.subprocess, 'Popen') as popen:
+            start.awaken_desktop(self.state, client, 'http://127.0.0.1:18991')
+        profile = self.state / 'desktop-profile'
+        self.assertEqual(json.loads((profile / 'hub-endpoint.json').read_text(encoding='utf-8')),
+                         {'hub': 'http://127.0.0.1:18991'})
+        self.assertTrue((profile / 'chat-config.json').is_file())
+        kwargs = popen.call_args.kwargs
+        self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(kwargs['env'].get('HUB_PUBLIC_URL'), 'http://127.0.0.1:18991')
+        self.assertEqual(kwargs['env'].get('SODUWORK_USER_DATA'), str(profile))
+        self.assertEqual(kwargs['cwd'], client)
+
     def test_linux_root_desktop_fails_before_initialization_password_or_downloads(self):
         for options in ([], ['--prepare-only'], ['--check']):
             with self.subTest(options=options), patch.object(sys, 'platform', 'linux'), \
