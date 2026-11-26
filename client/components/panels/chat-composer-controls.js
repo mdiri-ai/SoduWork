@@ -146,6 +146,21 @@
         : (!canDisable ? '当前模型始终开启思考，不支持关闭'
           : '只对后续发送的消息生效，不会中断当前轮次');
     }
+    // 同名模型（不同 provider/显示名）并存时，按钮标签必须与浮窗勾选指向同一行：
+    // 仅按 name 匹配会把第一条同名行的 label 盖在会话实际选中的模型上。
+    function pickedModelRow(selection, modelFallbackId) {
+      const selected = selection.name || selection.model?.id || modelFallbackId || '';
+      if (!selected) return null;
+      const selectedLabel = selection.model?.label || '';
+      const selectedProvider = selection.providerId || selection.model?.providerId || '';
+      const sameNamed = rows.filter(row => row.name === selected);
+      // 唯一选中：多条同 name（+同 providerId、label 不足区分，如恢复态丢失 label）时只标第一个，
+      // 保证任何数据/恢复场景下都不会出现两个条目同时打钩。
+      const providerMatched = sameNamed.filter(row => selectedProvider ? (row.providerId || '') === selectedProvider : sameNamed.length < 2);
+      if (providerMatched.length <= 1 || !selectedLabel) return providerMatched[0] || null;
+      // label 仅用于多条同 name 同 provider 行间的消歧；唯一命中不因 label 漂移（如本地/恢复态 label=name）丢行。
+      return providerMatched.find(row => row.label === selectedLabel) || providerMatched[0];
+    }
     function render() {
       sessionControls?.render(); runtimePicker?.render();
       const state = options.state(), selection = state.selection || {};
@@ -161,7 +176,7 @@
       lastIdentity = identity;
       lastAdapter = state.adapterId;
       const selectedName = selection.name || selection.model?.id || state.model?.id || '';
-      const updated = catalogScope === modelScope() && rows.find(row => row.name === selectedName);
+      const updated = catalogScope === modelScope() && pickedModelRow(selection, state.model?.id);
       const selectedModel = selection.model || state.model;
       const label = (selectedModel?.unavailable ? selectedModel.label : updated?.label) || selectedModel?.label || selectedModel?.id || '选择模型';
       button.querySelector('span').textContent = label;
@@ -238,16 +253,9 @@
     function list(filter = '') {
       if (paintCatalogStatus()) return;
       const state = options.state(), selection = state.selection || {};
-      const selected = selection.name || selection.model?.id || state.model?.id || '';
-      // 同名模型（不同 key/显示名）可能并存：name 命中后再按显示名区分，避免两个条目同时标选中。
-      const selectedLabel = selection.model?.label || '';
-      const selectedProvider = selection.providerId || selection.model?.providerId || '';
-      const sameNamed = rows.filter(row => row.name === selected);
-      // 唯一选中：多条同 name（+同 providerId、label 不足区分，如恢复态丢失 label）时只标第一个，
-      // 保证任何数据/恢复场景下都不会出现两个条目同时打钩。
-      const pickedRow = rows.find(row => row.name === selected
-        && (selectedProvider ? (row.providerId || '') === selectedProvider : sameNamed.length < 2)
-        && (!selectedLabel || row.label === selectedLabel)) || null;
+      // 唯一选中：与按钮标签同一匹配规则（name+providerId+label），保证任何数据/恢复场景下
+      // 不会出现两个条目同时打钩，按钮标签与浮窗勾选也不会指向不同的行。
+      const pickedRow = pickedModelRow(selection, state.model?.id);
       const isPicked = row => row === pickedRow;
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
