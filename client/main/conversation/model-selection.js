@@ -62,14 +62,17 @@ function create({ name = '', model, providerId = '', resolve, apply, persist = (
       if (selecting) return { ok: false, reason: '正在更新模型，请稍候' };
       selecting = true;
       try {
-        const resolved = await resolve(name, providerId);
+        // Callers that omit the provider id keep the stored provider choice;
+        // an empty string switches back to the default provider row.
+        const pickedProvider = providerId === undefined ? selectedProvider : String(providerId || '').trim();
+        const resolved = await resolve(name, pickedProvider);
         if (!resolved || !resolved.ok || !resolved.model) return { ok: false,
           reason: require('../../core/token-quota').detail(resolved)
             ? '当前 AI 使用额度暂不可用，请查看额度详情' : '该模型当前不可用，请刷新模型列表后重试',
           ...require('../../core/token-quota').fields(resolved) };
         name = canonicalName(name, resolved.model);
-        await persist(name, providerId, resolved.model);
-        selected = name; selectedModel = resolved.model; selectedProvider = String(providerId || '').trim(); changed();
+        await persist(name, pickedProvider, resolved.model);
+        selected = name; selectedModel = resolved.model; selectedProvider = pickedProvider; changed();
         return { ok: true, selection: this.view() };
       } catch (_) { return { ok: false, reason: '模型设置未保存，请重试；当前模型未改变' }; }
       finally { selecting = false; }

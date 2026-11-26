@@ -1972,11 +1972,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
         acceptance: state.acceptance, maxSteps: state.maxSteps,
         budgetMinutes: state.budgetMinutes, paused: state.goalPaused };
     },
-    async selectModel(name) {
+    async selectModel(name, providerId) {
       if (state.disposed || state.modelChoicePending) return { ok: false, reason: '会话已关闭或正在切换模型，请稍候' };
       state.modelChoicePending = true;
       try {
-        const result = await state.modelSelection.select(name);
+        const result = await state.modelSelection.select(name, providerId);
         return state.thinking && result.ok ? { ...result, thinking: { ...state.thinking, levels: state.thinking.levels.slice() } } : result;
       } finally { state.modelChoicePending = false; }
     },

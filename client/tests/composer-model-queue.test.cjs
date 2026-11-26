@@ -178,3 +178,40 @@ test('switching between same-named rows with different providers still applies',
   assert.deepEqual(seen, ['p2', 'p2'], 'both the pick and the turn resolve with the picked provider id');
   assert.equal(selection.needsApply(), false, 'the applied provider must settle the pending state');
 });
+test('picking a model without a provider id keeps the stored provider choice', async () => {
+  const seen = [], saved = [];
+  const { selection, applied } = harness({ providerId: 'p1',
+    resolve: async (name, providerId) => { seen.push(providerId); return { ok: true, model: model(name) }; },
+    persist: (name, providerId) => saved.push(providerId) });
+  assert.equal((await selection.select('b')).ok, true, 'an omitted provider id keeps the stored choice');
+  assert.deepEqual(seen, ['p1'], 'the stored provider id resolves the pick');
+  assert.deepEqual(saved, ['p1']);
+  assert.equal(selection.view().providerId, 'p1');
+  await selection.applyForTurn('b');
+  assert.deepEqual(applied, ['b']);
+  assert.deepEqual(seen, ['p1', 'p1'], 'the turn also resolves with the stored provider id');
+  assert.equal(selection.needsApply(), false, 'the applied provider settles the pending state');
+});
+test('runner selectModel carries the picked provider id to the session resolution', async () => {
+  const { createRunnerRuntimeAdapter, getRunnerSessionDetails, _uuidV5 } = require('../main/agent-runtime/runner-adapter');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runner-pick-'));
+  const alias = 'pick-provider-test', ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':codex-harness');
+  const seen = []; let session;
+  const runtime = { async rpc(op, payload) {
+    if (op === 'job.dispatch') return { ok: true, data: { ref } };
+    if (op === 'job.comment') return { ok: true, data: { ok: true, state: 'running' } };
+    if (op === 'job.session') return { ok: true, data: { ok: true, status: 'done', items: [] } };
+    throw Error('Unexpected RPC ' + op);
+  } };
+  const adapter = createRunnerRuntimeAdapter({ runnerRuntime: runtime,
+    modelConfig: { fetchModel: async (_, name, __, ___, ____, _____, options) => {
+      seen.push(options?.providerId); return { ok: true, model: { ...model(name), baseUrl: 'http://model.invalid' } }; } } });
+  try {
+    session = await adapter.createSession({ runtimeId: 'test', identity: { clientId: 'test' },
+      native: { runner: { openOptions: { ref: alias, cwd: root, modelName: 'a', modelProviderId: 'p1' } } } });
+    const handle = getRunnerSessionDetails(session).handle;
+    assert.equal((await handle.selectModel('b', 'p2')).ok, true);
+    assert.equal(seen.at(-1), 'p2', 'the picker carries the picked provider id to the session resolution');
+    assert.equal(session.snapshot().modelSelection.providerId, 'p2');
+  } finally { if (session) await session.dispose(); fs.rmSync(root, { recursive: true, force: true }); }
+});
