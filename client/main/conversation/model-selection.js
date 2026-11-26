@@ -41,12 +41,15 @@ function publicModel(model) {
 function create({ name = '', model, providerId = '', resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
   name = canonicalName(name, model);
   let selected = name, active = name, selectedModel = model, activeModel = model,
-    selectedProvider = String(providerId || '').trim();
+    selectedProvider = String(providerId || '').trim(), activeProvider = String(providerId || '').trim();
   let selecting = false;
   let appliedGeneration = generation();
+  // Two catalog rows can share a name while pointing at different provider
+  // credentials. A switch between them keeps the name unchanged, so the stored
+  // provider ids must be compared too before a turn reuses the applied runtime.
   const needsApply = name => name !== active || generation() !== appliedGeneration ||
-    (name === selected && (selectedModel?.runtimeRevision || selectedModel?.configRevision) !==
-      (activeModel?.runtimeRevision || activeModel?.configRevision));
+    (name === selected && ((selectedModel?.runtimeRevision || selectedModel?.configRevision) !==
+      (activeModel?.runtimeRevision || activeModel?.configRevision) || selectedProvider !== activeProvider));
   return {
     capture: () => selected,
     needsApply: name => needsApply(name === undefined ? selected : name),
@@ -85,6 +88,7 @@ function create({ name = '', model, providerId = '', resolve, apply, persist = (
       try { await apply(resolved.model, name); }
       catch (_) { throw new Error('模型未能切换，队列已暂停，原会话与历史已保留'); }
       active = canonicalName(name, resolved.model); activeModel = resolved.model;
+      activeProvider = name === selected ? selectedProvider : '';
       appliedGeneration = applyingGeneration;
       if (selected === name) selectedModel = resolved.model;
       changed();

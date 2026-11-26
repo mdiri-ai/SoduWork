@@ -478,6 +478,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
   const savedSelection = modelPreference.readSelection();
   const explicitModel = typeof opts.modelName === 'string';
   let modelName = explicitModel ? opts.modelName : modelPreference.read() || '';
+  // The queued name alone cannot pick a catalog row: two rows can share a name
+  // while pointing at different provider credentials. Carry the explicit turn's
+  // provider id, or the saved picker choice, into the Hub resolution.
+  const selectionProviderId = explicitModel ? String(opts.modelProviderId || '').trim()
+    : String(savedSelection.providerId || '').trim();
   if (accountModel && (String(modelName).startsWith('local:') ||
       require('../../core/model-choice').imageChoice(modelName)?.name.startsWith('local:'))) {
     throw new RuntimeContractError('RUNNER_MODEL_UNAVAILABLE', '账号型底座不能使用本地模型，请选择账号模型');
@@ -505,7 +510,8 @@ async function createRunnerHandle(request, defaults, initialSession) {
   let prepared = accountModel
     ? { ok: true, model: { id: modelName, name: modelName || displayName, baseUrl: '', key: '' } }
     : await models.fetchModel(identity, modelName, undefined, undefined, false, adapterId,
-      { app, allowLocal: true, allowHistorical: Boolean(resumedRef || opts.resumedConversation) });
+      { app, allowLocal: true, allowHistorical: Boolean(resumedRef || opts.resumedConversation),
+        providerId: selectionProviderId });
   // A Runner archive can outlive the model catalog just like a native Pi archive.
   // Historical model names are hints, not a reason to make the whole conversation
   // unreadable. Retry only resumed conversations with the current default; new
@@ -595,7 +601,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   };
 
   state.modelSelection = selectionModule.create({
-    name: modelName, model: prepared.model, providerId: savedSelection.providerId || '',
+    name: modelName, model: prepared.model, providerId: selectionProviderId,
     generation: accountModel ? undefined : models.generation,
     async resolve(name, providerId) {
       if (!accountModel) return models.fetchModel(identity, name, undefined, undefined, false, adapterId,
