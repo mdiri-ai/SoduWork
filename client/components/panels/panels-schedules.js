@@ -522,6 +522,7 @@ function _schFormHtml(s) {
              assigneeId: _schDefaultAgentId(), modelName: '', repoId: '', flow: false,
              pluginBindingId: '', personalPluginKey: '', pluginInputs: {},
              requiredCapabilities: [], retryLimit: 2, retryDelayMinutes: 5,
+             sessionMode: 'fresh',
              timeZone: _schBrowserTimeZone(), enabled: true };
   const mode = 'direct';
   const opt = (list, cur) => list.map(([k, l]) =>
@@ -595,6 +596,12 @@ function _schFormHtml(s) {
     (Number(s.retryDelayMinutes || 0) === 2 ? ' selected' : '') + '>间隔 2 分钟</option><option value="5"' +
     (Number(s.retryDelayMinutes || 5) === 5 ? ' selected' : '') + '>间隔 5 分钟</option><option value="10"' +
     (Number(s.retryDelayMinutes || 0) === 10 ? ' selected' : '') + '>间隔 10 分钟</option></select></span></div>' +
+    '<div class="sch-retry-row">' +
+    '<label class="sch-f-lbl" for="schSessionMode">会话模式<em>复用模式每轮在同一会话里继续</em></label>' +
+    '<span id="schSessionModeWrap"><select class="sch-in" id="schSessionMode">' +
+    '<option value="fresh"' + (s.sessionMode !== 'reuse' ? ' selected' : '') + '>每轮新开会话</option>' +
+    '<option value="reuse"' + (s.sessionMode === 'reuse' ? ' selected' : '') + '>延续同一会话</option>' +
+    '</select></span></div>' +
     '<label class="sch-chk" id="schFlowWrap" hidden style="display:none"><input type="checkbox" id="schFlow">按基础研发流程走</label></div>' +
     '<div class="sch-exec-block" id="schPluginBlock" hidden style="display:none"><div id="schPluginConfig">' +
     _schPluginConfigHtml(s.repoId, s.pluginBindingId, s.pluginInputs || {}) + '</div></div>' +
@@ -674,6 +681,9 @@ function _wireSchForm() {
       retryLimit: mode === 'direct' && document.getElementById('schRetry').checked
         ? Number(document.getElementById('schRetryLimit').value || 2) : 0,
       retryDelayMinutes: Number(document.getElementById('schRetryDelay').value || 5),
+      /* Reuse runs continue one conversation; the Hub rejects reuse for
+       * one-off, workflow, and personal-plugin schedules. */
+      sessionMode: document.getElementById('schSessionMode')?.value || 'fresh',
       enabled: document.getElementById('schEnabled').checked,
     };
   };

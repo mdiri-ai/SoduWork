@@ -96,7 +96,12 @@ async function _schLaunchDirectConversation(launched, scope) {
     return false;
   }
   if (scope !== _schScope) return false;
+  // Reuse-mode runs continue one conversation; the run response carries the
+  // shared pointer, never conversationId, so a fresh open can continue it.
+  const recurringId = String(launched && launched.recurringConversationId ||
+    input.recurringConversationId || '').trim();
   const options = {
+    ...(recurringId ? { chatId: recurringId } : {}),
     adapterId: String(input.adapterId || 'pi'), modelName: String(input.modelName || ''),
     cwd: String(input.cwd || ''), intent: 'chat', sessionTitle: conversationTitle,
     ...(input.projectId ? { projectId: String(input.projectId).trim() } : {}),
@@ -114,6 +119,17 @@ async function _schLaunchDirectConversation(launched, scope) {
     opened = await open(options);
   }
   catch (_) { return false; }
+  // When the shared conversation has disappeared (archived or cleaned up),
+  // retry once without the chat id so the runtime recreates it.
+  let recreated = false;
+  if ((!opened || opened.ok === false) && options.chatId &&
+      (opened?.notFound ||
+       String(opened?.reason || '').includes('这条对话找不到了（存档可能已被清理）'))) {
+    const { chatId, ...freshOptions } = options;
+    try { opened = await open(freshOptions); }
+    catch (_) { return false; }
+    recreated = !!(opened && opened.ok !== false && opened.ref);
+  }
   if (scope !== _schScope || !opened || opened.ok === false || !opened.ref) return false;
   const chatId = String(opened.sessionId || opened.conversationId || '');
   let settled = false;
@@ -136,6 +152,7 @@ async function _schLaunchDirectConversation(launched, scope) {
         (settled && ['starting', 'running'].includes(state))) return Promise.resolve();
     return SoduWorkAPI.acknowledgeScheduleRun(runId, {
       instanceId, conversationId: chatId, state, error,
+      ...(recreated ? { conversationRecreated: true } : {}),
     }).catch(() => {});
   };
   const acceptReceipt = receipt => {

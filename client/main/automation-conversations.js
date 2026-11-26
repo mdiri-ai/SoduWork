@@ -90,6 +90,7 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
         instanceId: workerId,
         conversationId: record.conversationId || '', state: record.state,
         error: record.error || '',
+        ...(record.conversationRecreated ? { conversationRecreated: true } : {}),
       });
     } catch (error) {
       if (isAuthError(error)) throw error;
@@ -198,8 +199,13 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
       if (stopped || !modelIdentity || identityKey(modelIdentity) !== identityKey(identity)) {
         throw Error('客户端停止或连接环境已切换，本次会话未创建');
       }
+      const recurringId = String(claimed.recurringConversationId || '').trim();
       const options = {
-        ...(record && record.conversationId ? { chatId: record.conversationId } : {}),
+        // A journal chat recorded earlier in this run still wins; the reuse
+        // pointer only seeds a fresh run that has not opened the shared
+        // conversation yet. Never claim the pointer as conversationId.
+        ...(record && record.conversationId ? { chatId: record.conversationId }
+          : recurringId ? { chatId: recurringId } : {}),
         ...(input.conversationTitle ? { sessionTitle: String(input.conversationTitle).trim().slice(0, 240) } : {}),
         ...(input.projectId ? { projectId: String(input.projectId).trim().slice(0, 160) } : {}),
         ...(input.repoId ? { repoId: String(input.repoId).trim().slice(0, 160) } : {}),
@@ -213,9 +219,21 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
         ...(plugin ? { pluginLock: plugin } : {}),
       };
       if (record?.accessChoice && claimed.trigger !== 'manual') throw Error('本次自动化授权来源已变化，请重新运行');
-      const opened = record?.accessChoice
-        ? await conversation.openAutomation(options, identity, record.accessChoice, row.id)
-        : await conversation.open(options, identity);
+      const openOnce = opts => record?.accessChoice
+        ? conversation.openAutomation(opts, identity, record.accessChoice, row.id)
+        : conversation.open(opts, identity);
+      let opened = await openOnce(options);
+      // Reuse runs continue one conversation. When the shared chat has
+      // disappeared (archived or cleaned up), retry once without the chat id
+      // so the runtime recreates it instead of failing the occurrence.
+      let recreated = false;
+      if ((!opened || !opened.ok) && options.chatId &&
+          (opened?.notFound ||
+           String(opened?.reason || '').includes('这条对话找不到了（存档可能已被清理）'))) {
+        const { chatId, ...freshOptions } = options;
+        opened = await openOnce(freshOptions);
+        recreated = !!(opened && opened.ok);
+      }
       if (!opened || !opened.ok) throw Error(String(opened && opened.reason || '自动化任务未能启动，请检查当前底座、模型与工作目录后重试'));
       const available = new Set((opened.capabilities || []).map(item => item.id));
       if ((input.capabilities || []).some(id => !available.has(id))) {
@@ -226,7 +244,8 @@ function createWorker({ identityOf, request, journal, conversation, catalog, loc
       // and streamed there; the prompt itself is still persisted before the
       // running acknowledgement is sent.
       record = save(key, { ...record, phase: 'created', state: 'running', workerId: instanceId,
-        conversationId: opened.sessionId });
+        conversationId: opened.sessionId,
+        ...(recreated ? { conversationRecreated: true } : {}) });
       await acknowledge(identity, row.id, { ...record, state: 'starting' });
       const currentIdentity = await identityOf();
       if (stopped || !currentIdentity || identityKey(currentIdentity) !== identityKey(identity)) throw Error('客户端停止或连接环境已切换，本次消息未发送');
