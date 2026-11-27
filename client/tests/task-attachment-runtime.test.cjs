@@ -180,6 +180,60 @@ test('downloads preserve bytes, cancellation is silent, and missing system apps 
   const count=h.state.fetched.length;h.state.cancel=true;assert.deepEqual(await h.api.downloadAttachment({url,filename:'报告.html'}),{ok:false,canceled:true});assert.equal(h.state.fetched.length,count);
 });
 
+for (const existing of [true, false]) {
+  test(`failed attachment writes ${existing ? 'preserve the old file' : 'leave no partial destination'}`, async t => {
+    const h = harness(t), target = path.join(h.root, 'saved.bin');
+    const previous = Buffer.from('original document');
+    if (existing) fs.writeFileSync(target, previous);
+    const write = fs.writeFileSync;
+    t.mock.method(fs, 'writeFileSync', (file, bytes, options) => {
+      write(file, Buffer.from(bytes).subarray(0, 3), options);
+      throw Object.assign(Error('synthetic full disk'), {code: 'ENOSPC'});
+    });
+    await assert.rejects(h.api.downloadAttachment({url, filename:'报告.txt'}), {code: 'ENOSPC'});
+    if (existing) assert.deepEqual(fs.readFileSync(target), previous);
+    else assert.equal(fs.existsSync(target), false);
+    assert.deepEqual(fs.readdirSync(h.root), existing ? ['saved.bin'] : []);
+  });
+}
+
+test('a refused attachment replacement preserves the destination and removes its staging file', async t => {
+  const h = harness(t), target = path.join(h.root, 'saved.bin');
+  fs.writeFileSync(target, 'original document');
+  t.mock.method(fs, 'renameSync', () => { throw Object.assign(Error('synthetic permission failure'), {code:'EACCES'}); });
+  await assert.rejects(h.api.downloadAttachment({url, filename:'报告.txt'}), {code:'EACCES'});
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original document');
+  assert.deepEqual(fs.readdirSync(h.root), ['saved.bin']);
+});
+
+test('attachment staging does not remove a file it could not create exclusively', async t => {
+  const h = harness(t), target = path.join(h.root, 'saved.bin');
+  fs.writeFileSync(target, 'original document');
+  const open = fs.openSync;
+  let collision;
+  t.mock.method(fs, 'openSync', (file, flags, mode) => {
+    if (flags !== 'wx') return open(file, flags, mode);
+    collision = file;
+    fs.writeFileSync(file, 'existing staging file');
+    return open(file, flags, mode);
+  });
+  await assert.rejects(h.api.downloadAttachment({url, filename:'报告.txt'}), {code:'EEXIST'});
+  assert.equal(fs.readFileSync(target, 'utf8'), 'original document');
+  assert.equal(fs.readFileSync(collision, 'utf8'), 'existing staging file');
+});
+
+test('completed attachment replacements retain exact bytes, empty files and long destination names', async t => {
+  const h = harness(t);
+  h.state.savePath = path.join(h.root, 'a'.repeat(220) + '.txt');
+  for (const bytes of [Buffer.from([0, 255, 42, 13, 10]), Buffer.alloc(0)]) {
+    fs.writeFileSync(h.state.savePath, 'old contents');
+    h.state.data = bytes;
+    assert.deepEqual(await h.api.downloadAttachment({url, filename:'报告.txt'}), {ok:true});
+    assert.deepEqual(fs.readFileSync(h.state.savePath), bytes);
+    assert.deepEqual(fs.readdirSync(h.root), [path.basename(h.state.savePath)]);
+  }
+});
+
 test('permission and disk failures have actionable messages without exposing local paths',()=>{
   const ui=renderer();
   for(const code of ['EPERM','EACCES','EBUSY'])assert.match(ui.taskAttachmentError(new Error(code+': open C:/private/file'),'fallback'),/目录权限|其他位置/);

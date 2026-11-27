@@ -211,6 +211,25 @@ async function fetchAttachment(url, identity, renew) {
   return { data, contentType: normalizedType(rawType), charset: charset ? charset[1] : 'utf-8' };
 }
 
+function saveAttachment(target, data, assertActive) {
+  // Finish writing beside the destination before replacing an existing user file.
+  const temporary = path.join(path.dirname(target), '.soduwork-attachment-' + require('node:crypto').randomUUID() + '.tmp');
+  let fd, owned = false;
+  try {
+    fd = fs.openSync(temporary, 'wx', 0o600);
+    owned = true;
+    fs.writeFileSync(fd, data);
+    fs.closeSync(fd); fd = undefined;
+    assertActive();
+    require('./verified-file-replace.cjs').replaceFileSync(temporary, target);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    if (owned) {
+      try { fs.unlinkSync(temporary); } catch (_) { /* Replacement consumes the staging file. */ }
+    }
+  }
+}
+
 async function saveArchive(response, target, assertActive) {
   // ZIP downloads can exceed IPC's binary limit. Stream to a sibling temporary
   // file and replace the destination only after the complete response is verified.
@@ -425,7 +444,7 @@ async function download(event, raw) {
   const source = idOnly ? await renew() : parsed;
   const result = await fetchAttachment(source.url, undefined, idOnly ? undefined : renew);
   assertCurrent(event, found);
-  fs.writeFileSync(picked.filePath, result.data);
+  saveAttachment(picked.filePath, result.data, () => assertCurrent(event, found));
   return { ok: true };
 }
 
