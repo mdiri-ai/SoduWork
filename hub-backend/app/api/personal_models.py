@@ -209,7 +209,7 @@ async def put_my_models(
             elif str(v).strip():
                 if pid not in valid_ids:
                     raise HTTPException(status_code=400, detail="模型服务不存在，请刷新后重试")
-                cur[pid] = str(v).strip()[:400]
+                cur[pid] = str(v).strip()[:4000]
     for pid in removed:
         cur.pop(pid, None)
     client.model_keys = cur
