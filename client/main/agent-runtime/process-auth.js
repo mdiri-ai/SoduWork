@@ -5,7 +5,7 @@
 const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const ID = '[A-Za-z0-9][A-Za-z0-9._:-]{0,159}';
 const RULES = [
-  ['GET', /^\/api\/v1\/ai-proxy\/config$/, ['agent', 'model']],
+  ['GET', /^\/api\/v1\/ai-proxy\/config$/, ['agent', 'model', 'provider']],
   ['GET', /^\/api\/v1\/ai-proxy\/media\/config$/, []],
   ['POST', /^\/api\/v1\/ai-proxy\/vision\/analyze$/, []],
   ['POST', new RegExp('^/api/v1/conversations/' + ID + '/images$'), []],
