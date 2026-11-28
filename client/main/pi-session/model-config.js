@@ -174,6 +174,7 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
       ...contextWindow.resolveContextWindow({ contextWindow: local.ctxWindow, advertisedContextWindow: local.advertisedContextWindow,
         modelName: local.name, provider: local.provider }),
       ...thinking,
+      ...(requestedAgent === 'armonel' ? { declaredThinking: thinkingCapabilities.declaration(config) } : {}),
       ...(['none', 'always', 'controllable'].includes(config.thinkingMode) ? { thinkingMode: config.thinkingMode } : {}),
       ...(typeof config.thinkingAlwaysOn === 'boolean' ? { thinkingAlwaysOn: config.thinkingAlwaysOn } : {}),
       ...(config.thinkingFormat || thinking.format ? { thinkingFormat: config.thinkingFormat || thinking.format } : {}),
@@ -278,6 +279,7 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
           thinkingAlwaysOn: d.thinkingAlwaysOn,
           thinkingLevelMap: d.thinkingLevelMap }),
         // Preserve declared policy separately from normalized capabilities.
+        ...(requestedAgent === 'armonel' ? { declaredThinking: thinkingCapabilities.declaration(d) } : {}),
         ...(['none', 'always', 'controllable'].includes(d.thinkingMode)
           ? { thinkingMode: d.thinkingMode } : {}),
         ...(typeof d.thinkingAlwaysOn === 'boolean' ? { thinkingAlwaysOn: d.thinkingAlwaysOn } : {}),

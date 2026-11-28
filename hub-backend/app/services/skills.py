@@ -659,7 +659,7 @@ def cli_args(skills: list[dict], cli: str) -> list[str]:
     return out
 
 
-def prompt_block(skills: list[dict], native: bool) -> str:
+def prompt_block(skills: list[dict], native: bool, *, agent: str = "") -> str:
     """Build prompt skill context. When loaded natively, mention availability without duplicating
     descriptions; otherwise include names and absolute paths for on-demand reading.
     """
@@ -678,8 +678,17 @@ def prompt_block(skills: list[dict], native: bool) -> str:
                 "、".join(s["name"] for s in valid) +
                 "。对上号了就按它说的做。\n")
     lines = ["\n【可用技能（SoduWork 给这条活配的）】",
-             "下面每一项都是一个技能目录，里面的 `SKILL.md` 写了完整做法。",
-             "**判断哪一项对得上这次的活，对上了就先 `read` 它的 SKILL.md 再照着做**；都对不上就正常干。"]
+             "下面每一项都是一个技能目录，里面的 `SKILL.md` 写了完整做法。"]
+    if agent == "armonel":
+        lines.append("请用 `read_host_text` 读取适用技能的 SKILL.md 绝对路径和技能目录中的文本资源。"
+                     "如果当前会话没有该工具，请说明无法读取技能。")
+    elif agent == "dsh":
+        lines.append("请用 `read` 的 `file_path` 参数直接读取适用技能的 SKILL.md 绝对路径和文本资源。"
+                     "SoduWork 提供的技能按文件路径读取，请勿按名称调用 DeepSeek Harness 的 `Skill` 工具。")
+    else:
+        lines.append("**判断哪一项对得上这次的活，对上了就先 `read` 它的 SKILL.md 再照着做**；都对不上就正常干。")
     for s in valid:
-        lines.append("- **%s**：%s\n  目录：%s" % (s["name"], s["description"], s["path"]))
+        entry = ("SKILL.md：" + os.path.join(s["path"], "SKILL.md")
+                 if agent in {"armonel", "dsh"} else "目录：" + s["path"])
+        lines.append("- **%s**：%s\n  %s" % (s["name"], s["description"], entry))
     return "\n".join(lines) + "\n"

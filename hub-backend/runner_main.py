@@ -689,31 +689,50 @@ class Runner:
         server = runner_local_rpc.Server(self._local_rpc_dispatch, self._write_local_rpc,
             LOCAL_RPC_PREFIX, on_failure=stopped.set if stopped is not None else None,
             pending=self._pending_rpc_requests, tails=self._pending_rpc_tails)
+        streams = (runner_local_rpc.SessionStreams(self._session_stream_owner)
+                   if getattr(self, "desktop_owned", False) else None)
+        self._session_streams = streams
+        stream_task = asyncio.create_task(streams.send(server)) if streams else None
         try:
-            async for line in parent_lines(sys.stdin.buffer):
-                if not line:
-                    if getattr(self, "desktop_owned", False):
-                        self._shutdown_event.set()
-                    return
-                text = line.decode("utf-8", "replace").rstrip("\r\n")
-                if not text.startswith(LOCAL_RPC_PREFIX):
-                    continue
-                rpc_id = ""
-                try:
-                    request = json.loads(text[len(LOCAL_RPC_PREFIX):])
-                    rpc_id = str(request.get("id") or "")[:80]
-                    await server.submit(rpc_id, dict(request.get("message") or {}))
-                except Exception as exc:  # noqa: BLE001
-                    server.reject(rpc_id, error=str(exc)[:600] or type(exc).__name__)
-                if server.failed:
-                    return
+            with runner_local_rpc.session_streams(streams):
+                async for line in parent_lines(sys.stdin.buffer):
+                    if not line:
+                        if getattr(self, "desktop_owned", False):
+                            self._shutdown_event.set()
+                        return
+                    text = line.decode("utf-8", "replace").rstrip("\r\n")
+                    if not text.startswith(LOCAL_RPC_PREFIX):
+                        continue
+                    rpc_id = ""
+                    try:
+                        request = json.loads(text[len(LOCAL_RPC_PREFIX):])
+                        rpc_id = str(request.get("id") or "")[:80]
+                        await server.submit(rpc_id, dict(request.get("message") or {}))
+                    except Exception as exc:  # noqa: BLE001
+                        server.reject(rpc_id, error=str(exc)[:600] or type(exc).__name__)
+                    if server.failed:
+                        return
         finally:
+            self._session_streams = None
+            if stream_task:
+                stream_task.cancel()
+                await asyncio.gather(stream_task, return_exceptions=True)
             await server.close()
 
     @staticmethod
     def _write_local_rpc(blob: str) -> None:
         sys.stdout.buffer.write(blob.encode("utf-8"))
         sys.stdout.buffer.flush()
+
+    def _session_stream_owner(self, ref):
+        from app.services import ai_local, runner_event_scope
+        item = self._admission.latest_for_ref(ref, include_terminal=True)
+        with ai_local._LOCK:
+            run = ai_local._RUNS.get(ref)
+            if (run and not runner_admission.owns_status(item, True)
+                    and runner_event_scope.is_local(run, ref)):
+                return run
+        return None
 
     async def _conversation_content_store(self, realm):
         import re
@@ -737,6 +756,9 @@ class Runner:
             store = await self._conversation_content_store(message.get("realm"))
             return await runner_local_rpc.to_thread(store.handle, {**message, "op": "content.read"})
         op = str(message.get("op") or "")
+        if op in {"job.session.subscribe", "job.session.unsubscribe"}:
+            streams = getattr(self, "_session_streams", None)
+            return streams.configure(message) if streams else {"ok": False, "error": "Session streams unavailable"}
         if op in {"agent.probe", "agent.job"}:
             if op == "agent.probe" and dict(message.get("llm") or {}).get("localOnly") is not True:
                 return {"ok": False, "error": "本机测试通道只接受本地模型配置"}

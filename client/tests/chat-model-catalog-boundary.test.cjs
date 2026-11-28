@@ -39,29 +39,35 @@ function fixture(settings = {}) {
     setAttribute() {}, removeAttribute() {}, focus() {}, contains: () => false, querySelector: () => null,
     getBoundingClientRect: () => ({ left: 200, right: 300, top: 500 }) });
   const queue = node(), pop = node(), button = node(), label = node(), wrap = node(), el = node(), field = node(), search = node();
+  const dshThinking = node(), dshThinkingDefault = node();
   search.value = '';
   let markup = '';
   Object.defineProperty(pop, 'innerHTML', { get: () => markup, set(value) {
     markup = value;
     field.innerHTML = value.match(/<div class="nmodel-options"[^>]*>([\s\S]*?)<\/div>/)?.[1] || '';
   } });
-  pop.querySelector = selector => selector === '.nmodel-options' ? field :
+  pop.querySelector = selector => selector === '[data-dsh-chat-thinking]' && markup.includes('data-dsh-chat-thinking ')
+    ? dshThinking : selector === '[data-dsh-chat-thinking-default]' && markup.includes('data-dsh-chat-thinking-default')
+      ? dshThinkingDefault : selector === '.nmodel-options' ? field :
     ['input', '[data-model-search]'].includes(selector) ? search : null;
   pop.querySelectorAll = () => [];
   button.querySelector = () => label;
   wrap.querySelector = selector => selector === 'button' ? button : selector === '.nmodel-pop' ? pop : null;
   el.querySelector = selector => selector === '#nchatQueue' ? queue : selector === '#nchatModel' ? wrap : null;
   const state = { ref: 'chat', adapterId: 'qwen', model: { id: 'selected', label: 'Selected' } };
-  const requests = [], calls = [], selections = [], runtimeCalls = [], statuses = [];
+  const requests = [], calls = [], selections = [], runtimeCalls = [], statuses = [], thinkingCalls = [];
   const window = { ...node(), innerWidth: 1000, innerHeight: 800, SoduWorkModelChoice: require('../core/model-choice'),
     setTimeout: settings.clock?.setTimeout || setTimeout, clearTimeout: settings.clock?.clearTimeout || clearTimeout,
+    ComposeModelPicker: { dshEffortOptions: levels => levels.map(level => '<option>' + level + '</option>').join('') },
     SoduWorkAPI: { taskStorageKey: () => owner, myModels: () => { const item = deferred(); requests.push(item); return item.promise; } },
     soduWorkAPI: { conversationSession: {
-      runtimes: async options => { runtimeCalls.push(options); return settings.runtimes ? settings.runtimes(options) : ({ ok: true, runtimes: [{ id: 'pi', modelMode: 'managed' }, { id: 'qwen', modelMode: 'managed' }, { id: 'codex', modelMode: 'account' }] }); },
+      runtimes: async options => { runtimeCalls.push(options); return settings.runtimes ? settings.runtimes(options) : ({ ok: true, runtimes: [{ id: 'pi', modelMode: 'managed' }, { id: 'qwen', modelMode: 'managed' }, { id: 'dsh', modelMode: 'managed' }, { id: 'codex', modelMode: 'account' }] }); },
       runtimeModels: async id => { calls.push(id); return { models: [{ id: 'account-choice' }] }; },
       selectModel: async (ref, name) => { selections.push({ ref, name });
         if (settings.selectModel) return settings.selectModel(ref, name);
         return { ok: true, selection: { name, model: { id: name, label: name } } }; },
+      setThinking: async (ref, level) => { thinkingCalls.push({ ref, level });
+        return { ok: true, thinking: { ...state.thinking, level } }; },
       onModelsChanged: fn => { changed = fn; return () => {}; },
     } } };
   if (settings.runtimeWait) window.ChatRuntimePicker = { create: () => ({
@@ -70,9 +76,11 @@ function fixture(settings = {}) {
   vm.runInNewContext(source, { window, SoduWorkModelChoice: window.SoduWorkModelChoice, document: node(), AbortController, Date: settings.clock?.Date || Date });
   const controls = window.ChatComposerControls.create(el, { state: () => state, say() {},
     catalogChanged: status => statuses.push(status),
+    thinkingChanged: value => { state.thinking = value; },
     modelSelected: selection => { state.selection = selection; },
     modelAvailabilityChanged: selection => { state.selection = selection; } }); controls.render();
-  return { state, requests, calls, selections, field, label, controls, pop, search, runtimeCalls, statuses, changed: () => changed(),
+  return { state, requests, calls, selections, field, label, controls, pop, search, runtimeCalls, statuses,
+    dshThinking, dshThinkingDefault, thinkingCalls, changed: () => changed(),
     owner: value => { owner = value; controls.render(); },
     open: () => button.handlers.get('click')(),
     retry: () => pop.handlers.get('click')({ target: {
@@ -81,6 +89,35 @@ function fixture(settings = {}) {
   };
 }
 const catalog = { usable: [{ name: 'managed', label: 'Managed choice' }, { name: 'local:private', localOnly: true, label: 'Private choice' }] };
+
+test('the existing DSH chat applies only supported, idle next-turn thinking choices', async () => {
+  const f = fixture();
+  f.state.adapterId = 'dsh';
+  f.state.thinking = { supported: true, level: 'high', levels: ['off', 'low', 'high'] };
+  f.controls.render();
+  const opened = f.open(); await tick(); f.requests[0].resolve(catalog); await opened;
+  assert.equal(f.dshThinking.hidden, false);
+  assert.equal(f.dshThinkingDefault.hidden, true);
+  assert.equal(f.dshThinking.value, 'high');
+  assert.match(f.dshThinking.innerHTML, /<option>off<\/option>/);
+  assert.doesNotMatch(f.pop.innerHTML, /data-thinking-toggle/);
+  f.dshThinking.matches = selector => selector === '[data-dsh-chat-thinking]';
+  const change = async level => {
+    f.dshThinking.value = level;
+    await f.pop.handlers.get('change')({ target: f.dshThinking });
+  };
+  await change('off');
+  await change('medium');
+  assert.deepEqual(f.thinkingCalls, [{ ref: 'chat', level: 'off' }]);
+  assert.equal(f.state.thinking.level, 'off');
+  f.state.busy = true; f.controls.render();
+  assert.equal(f.dshThinking.disabled, true);
+  await change('low'); assert.equal(f.thinkingCalls.length, 1);
+  f.state.busy = false;
+  f.state.thinking = { supported: false, levels: [] }; f.controls.render();
+  assert.equal(f.dshThinking.hidden, true);
+  assert.equal(f.dshThinkingDefault.hidden, false);
+});
 
 test('existing local managed conversations show both model sources while committed cloud conversations exclude device models', async () => {
   for (const cloud of [false, true]) {

@@ -55,6 +55,15 @@ test('cloud and other adapters cannot mutate a local Codex effort setting', asyn
   assert.deepEqual(f.calls, [['boolean', true]]);
 });
 
+test('a DSH next-turn thinking option uses the same trusted string boundary', async t => {
+  const f = fixture(t);
+  f.handle.adapterId = 'dsh';
+  assert.deepEqual(await f.send('off'), { ok: true, thinking: { level: 'off' } });
+  assert.deepEqual(await f.send(''), { ok: true, thinking: { level: '' } });
+  f.cloud(true); assert.equal((await f.send('high')).ok, false);
+  assert.deepEqual(f.calls, [['level', 'off'], ['level', '']]);
+});
+
 test('Agent selection forwards only the explicit model choice and keeps authorization inside main', async t => {
   const f = fixture(t);
   assert.equal((await f.select('qwen', { modelName: 'chosen-model', identity: 'untrusted', allowLocal: true })).ok, true);

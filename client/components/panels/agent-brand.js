@@ -5,6 +5,7 @@
 
   const MONOGRAMS = Object.freeze({
     pi: 'PI',
+    armonel: 'AR',
     'codex-harness': '',
     opencode: 'OC',
     codex: '',
@@ -15,6 +16,7 @@
   // Brand artwork is local and pinned by client/assets/agent-brands/sources.json.
   const ICONS = Object.freeze({
     pi: 'assets/agent-brands/pi.svg',
+    armonel: 'assets/agent-brands/armonel.png',
     'codex-harness': 'assets/agent-brands/codex.svg',
     opencode: 'assets/agent-brands/opencode.svg',
     codex: 'assets/agent-brands/codex.svg',
@@ -29,6 +31,7 @@
 
   const LABELS = Object.freeze({
     pi: 'Pi',
+    armonel: 'Armonel',
     'codex-harness': 'Codex Harness',
     opencode: 'OpenCode',
     codex: 'Codex',
@@ -53,6 +56,7 @@
     }
     const text = _text(value).replace(/[ _]+/g, '-');
     if (!text) return 'custom';
+    if (/(^|[-:./])armonel($|[-:./])/.test(text)) return 'armonel';
     if (/codex[-:./]*harness|harness[-:./]*codex/.test(text)) return 'codex-harness';
     if (/deepseek|(^|[-:./])dsh($|[-:./])/.test(text)) return 'dsh';
     if (/open[-:./]*code/.test(text)) return 'opencode';

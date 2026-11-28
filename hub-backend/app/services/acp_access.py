@@ -20,6 +20,14 @@ class AccessError(RuntimeError):
     pass
 
 
+class ApprovalTimeout(AccessError):
+    pass
+
+
+class ApprovalCancelled(AccessError):
+    code = -32800
+
+
 class BridgeAccess:
     def __init__(self, raw: str | None = None, *, agent_name: str = ""):
         self.agent_name = agent_name
@@ -67,7 +75,9 @@ class BridgeAccess:
     def call(self, path: str, payload: dict) -> dict:
         if not self.channel:
             raise AccessError("No permission channel")
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=910)
+        window = self.channel.get("permissionTimeoutMs")
+        timeout = window / 1000 + 10 if type(window) is int and 0 < window <= 0xffffffff else 910
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         try:
             connection.request("POST", path, json.dumps(payload).encode(), {
                 "Authorization": "Bearer " + str(self.channel.get("token") or ""),
@@ -84,7 +94,7 @@ class BridgeAccess:
 
     def approve(self, action: str, target: str, arguments: dict,
                 *, title: str = "", kind: str = "", operation_id: str = "",
-                locations=None, tool: str = "", allow_session=True) -> bool:
+                locations=None, tool: str = "", allow_session=True, expires_at_ms=None) -> bool:
         encoded = json.dumps(arguments, sort_keys=True, ensure_ascii=False).encode("utf-8")
         # A large edit still needs an exact grant, but does not need to copy a
         # complete document or binary payload into the confirmation UI.
@@ -104,11 +114,16 @@ class BridgeAccess:
                 } for row in changes[:12] if isinstance(row, dict)]
             arguments = summary
         response = self.call("/request", {
+            **({"permissionExpiresAtMs": expires_at_ms} if type(expires_at_ms) is int else {}),
             "operationId": operation_id or uuid.uuid4().hex,
             "action": action, "target": target, "arguments": arguments,
             "title": title or action, "kind": kind, "locations": locations or [],
             "tool": tool, "allowSession": bool(allow_session),
             "reason": "This operation needs permission beyond the current automatic allowance."})
+        if self.agent_name == "armonel" and response.get("reason") == "tool_approval_timeout":
+            raise ApprovalTimeout("Tool approval timed out")
+        if response.get("decision") == "cancelled":
+            raise ApprovalCancelled("The user stopped this turn")
         return response.get("decision") == "once"
 
     def automatic_path(self, workspace: str, value: str, *, write=False) -> bool:
@@ -367,7 +382,9 @@ class BridgeAccess:
                             title=str(call.get("title") or call.get("kind") or "Agent operation"),
                             kind=str(call.get("kind") or "other"),
                             operation_id=str(call.get("toolCallId") or ""), locations=locations,
-                            tool=tool, allow_session=allow_session)
+                            tool=tool, allow_session=allow_session,
+                            expires_at_ms=(params.get("_meta") or {}).get("armonel/permissionExpiresAtMs")
+                            if self.agent_name == "armonel" and isinstance(params.get("_meta"), dict) else None)
 
     def terminal_program(self, command, args, cwd, env):
         root = str(self.policy.get("workspaceRoot") or "")
@@ -399,7 +416,18 @@ class BridgeAccess:
         # OpenCode uses a concrete deny/ask/allow map injected by the trusted
         # host. Its ACP 'modes' select agents, not permission levels.
         native_mode = "permission-map"
-        if bridge.agent_name == "opencode":
+        if bridge.agent_name == "armonel":
+            # Armonel configures tool availability at process launch and asks
+            # for permission on each native write or command. Policy changes
+            # use the Runner's restart-and-resume path.
+            readonly = "--read-only" in bridge.argv
+            effectful = {"--allow-write", "--allow-exec"}.intersection(bridge.argv)
+            if (readonly != (bridge.permission == "readonly") or
+                    (self.mode == "readonly" and not readonly) or
+                    (readonly and effectful) or (not readonly and len(effectful) != 2)):
+                raise AccessError("ACCESS_POLICY_UNSUPPORTED: Armonel tool flags do not match the access policy")
+            native_mode = "read-only" if readonly else "tool-approval"
+        elif bridge.agent_name == "opencode":
             available = {str(item.get("value"))
                          for option in session.get("configOptions", [])
                          if option.get("id") == "mode"

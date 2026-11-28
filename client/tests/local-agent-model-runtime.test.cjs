@@ -17,13 +17,42 @@ test('all local managed runtimes inherit device defaults without sending them to
   t.mock.method(defaults, 'fromIdentity', (_, agent) => { selections.push(agent); return { configured: true, modelName: reference }; });
   t.mock.method(localModels, 'resolve', name => name === reference ? model : null);
   const network = () => { throw Error('Must not contact Hub'); };
-  for (const agent of ['pi', 'qwen', 'opencode', 'dsh', 'kimi', 'codex-harness']) {
+  const agents = ['pi', 'armonel', 'qwen', 'opencode', 'dsh', 'kimi', 'codex-harness'];
+  for (const agent of agents) {
     const result = await config.fetchModel(null, '', 1000, network, false, agent, { allowLocal: true });
     assert.equal(result.ok, true, agent);
     assert.equal(result.model.id, reference, agent);
     assert.equal(result.model.localOnly, true, agent);
   }
-  assert.equal(selections.length, 6);
+  assert.deepEqual(selections, agents);
+});
+
+test('Armonel Runner distinguishes explicit model restrictions from inferred display defaults', async t => {
+  const runner = require('../main/agent-runtime/runner-config.cjs');
+  let declaration;
+  t.mock.method(localModels, 'resolve', () => ({ ...model, config: declaration }));
+  for (declaration of [{}, { reasoning: false }, { supportsReasoningEffort: false },
+    { thinkingLevelMap: { off: null, high: 'high', low: null } }]) {
+    const resolved = await config.fetchModel(null, reference, 1000, undefined, false, 'armonel', { allowLocal: true });
+    assert.equal(resolved.ok, true);
+    const identity = { hub: 'http://localhost', clientId: 'fixture', secret: 'fixture' };
+    const fetchModel = async () => ({ ok: true, status: 200,
+      json: async () => ({ ok: true, model: 'alias', key: 'fixture', ...declaration }) });
+    const managed = await config.fetchModel(identity, 'alias', 1000, fetchModel, false, 'armonel');
+    assert.equal(managed.ok, true);
+    for (const selected of [resolved.model, managed.model]) {
+      const { llm } = runner.create(selected, 'armonel');
+      for (const key of ['reasoning', 'supportsReasoningEffort', 'thinkingLevelMap']) {
+        assert.deepEqual(llm[key], declaration[key]);
+      }
+      if (llm.thinkingLevelMap) {
+        llm.thinkingLevelMap.low = 'low';
+        assert.equal(runner.create(selected, 'armonel').llm.thinkingLevelMap.low, null);
+      }
+    }
+    const other = await config.fetchModel(null, reference, 1000, undefined, false, 'qwen', { allowLocal: true });
+    assert.equal(Object.hasOwn(other.model, 'declaredThinking'), false);
+  }
 });
 
 test('deleted or unreadable local defaults cannot fall back to a Hub model', async t => {

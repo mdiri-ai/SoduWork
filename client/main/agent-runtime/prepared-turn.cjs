@@ -1,4 +1,11 @@
 'use strict';
+const skillReaders = {
+  armonel: '请用 `read_host_text` 读取这些绝对路径的 SKILL.md 及技能目录中的文本资源。'
+    + '如果当前会话没有该工具，请说明无法读取技能。',
+  dsh: '请用 `read` 的 `file_path` 参数直接读取这些 SKILL.md 的绝对路径及适用的文本资源。'
+    + 'SoduWork 提供的技能按文件路径读取，请勿按名称调用 DeepSeek Harness 的 `Skill` 工具。',
+};
+
 // Share plugin, skill, and on-demand connector preparation with Runner; credentials live only for the executing turn.
 async function send(context) {
   const { state, opts, next, skillTurn, pluginTurn, emit, invalidateObservation,
@@ -50,11 +57,13 @@ async function send(context) {
       }
     }
     const materialPrompt = materialUnderstanding.eligible ? materialUnderstanding.prompt : '';
+    const reading = selectedSkills.skills.length ? skillReaders[state.adapterId] : '';
+    const skillPrompt = [selectedSkills.prompt, reading].filter(Boolean).join('\n');
     const options = { ...next.options, plugins: prepared.badges,
       [TURN_SKILLS]: skillTurn.runnerRows(skillRows(state.selectedSkills), selectedSkills),
       [pluginTurn.RESOURCE_BUNDLES]: prepared.resourceBundles,
       promptText: prepared.augment([materialPrompt, next.options.promptText || conversationPrompt(next.text, current),
-        selectedSkills.prompt].filter(Boolean).join('\n\n')) };
+        skillPrompt].filter(Boolean).join('\n\n')) };
     appendUser(next.text, next.attachments, prepared.badges, next.options.sentAt, next.options.submissionId);
     emit('turn-dequeued', { queueId: next.id, taskId: next.options.taskId || '' });
     return await (state.started ? continueTurn(next.text, next.attachments, options)

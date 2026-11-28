@@ -5,6 +5,7 @@ the rest of the execution stack must only know the stable profile contract.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -22,6 +23,13 @@ CATALOG: dict[str, dict] = acp_specs()
 def find_bin(key: str) -> str | None:
     """Find an installed ACP agent without mistaking SoduWork itself for one."""
     spec = CATALOG.get(key) or {}
+    if key == "armonel":
+        executable = Path(os.environ.get("SODUWORK_BUNDLED_ARMONEL") or "")
+        name = "armonel.exe" if os.name == "nt" else "armonel"
+        if (executable.is_absolute() and executable.name.lower() == name
+                and executable.is_file() and os.access(executable, os.X_OK)):
+            return str(executable)
+        return None
     override = os.environ.get("SODUWORK_AGENT_%s_BIN" % key.upper().replace("-", "_"))
     if override:
         path = os.path.abspath(os.path.expanduser(override))
@@ -80,6 +88,52 @@ def _metadata(args: list[str]) -> tuple[str, str]:
     return session, mode
 
 
+def _armonel_thinking(llm: dict) -> str:
+    from .model_definition_contracts import THINKING_LEVELS
+    from .model_thinking import can_disable_reasoning
+
+    level = llm.get("thinkingLevel")
+    levels = llm.get("thinkingLevelMap")
+    # Armonel's chat transport sends reasoning_effort. Other provider formats
+    # may need a separate enable/disable field and must keep their defaults.
+    if not (llm.get("kind") in (None, "", "openai-compat")
+            and llm.get("thinkingFormat") == "openai" and llm.get("reasoning") is True
+            and llm.get("supportsReasoningEffort") is True and llm.get("thinkingMode") != "none"
+            and isinstance(levels, dict) and level in THINKING_LEVELS):
+        return ""
+    if level == "off":
+        return "off" if can_disable_reasoning(llm) else ""
+    effort = levels.get(level)
+    return effort if effort in THINKING_LEVELS[1:] else ""
+
+
+def _armonel_recovery_format(llm: dict) -> str:
+    from .model_thinking import can_disable_reasoning
+
+    if llm.get("reasoning") is True and can_disable_reasoning(llm):
+        return llm["thinkingFormat"]
+    # A private gateway can route the same public alias differently. Resolve
+    # a tested wire format by the exact endpoint and model in the Runner's
+    # device configuration, independently of normal-turn reasoning settings.
+    root = os.environ.get("SODUWORK_DATA_ROOT")
+    levels = llm.get("thinkingLevelMap") or {}
+    if (not root or not os.path.isabs(root) or llm.get("thinkingMode") not in (None, "", "auto")
+            or llm.get("thinkingAlwaysOn") is True or llm.get("reasoning") is False
+            or llm.get("thinkingFormat") not in (None, "", "openai")
+            or llm.get("supportsReasoningEffort") is False
+            or not isinstance(levels, dict) or levels.get("off", "none") != "none"):
+        return ""
+    path = Path(root) / ".armonel" / "recovery-profiles.json"
+    try:
+        with path.open(encoding="utf-8") as stream:
+            profiles = json.load(stream)
+    except (OSError, ValueError):
+        return ""
+    base = str(llm.get("base") or "").rstrip("/")
+    models = profiles.get(base) if isinstance(profiles, dict) else None
+    return "openai" if isinstance(models, dict) and models.get(llm.get("model")) == "openai" else ""
+
+
 def _agent_args(key: str, cfg: dict) -> list[str]:
     spec = CATALOG.get(key) or {}
     args = ["acp"] if key == "opencode" else list(spec.get("acp") or ())
@@ -91,11 +145,32 @@ def _agent_args(key: str, cfg: dict) -> list[str]:
     if key == "dsh" and llm.get("base") and llm.get("model"):
         from . import dsh_gateway
         args = [*args, *dsh_gateway.bundle_args()]
+    if key == "armonel" and llm.get("base") and llm.get("model"):
+        from . import context_window, runtime_images
+        # ACP otherwise uses the harness defaults of 32,768 context and
+        # 60,000 cumulative tokens, counting the history again on every call.
+        native_limit = 2_000_000
+        context = context_window.resolve(llm)
+        source = llm.get("contextWindowSource") or context["contextWindowSource"]
+        # An unknown gateway's display estimate does not establish capacity.
+        window = 32_768 if source == "safe-default" else min(native_limit, context["contextWindow"])
+        output = min(window - 256, runtime_images.model_fields(llm).get("maxOutputTokens", 8192))
+        args += ["--context-window", str(window), "--max-tokens", str(output)]
+        if thinking := _armonel_thinking(llm):
+            args += ["--thinking", thinking]
+    if key == "armonel":
+        # The window constrains each request. History is billed again on each
+        # request, so cumulative usage cannot tell us when to stop a task.
+        args += ["--max-total-tokens", "0", "--max-tool-calls", "0"]
     return args
 
 
 def executable_command(key: str, executable: str) -> list[str]:
     """Use one validated Node/entry pair for npm probes and actual ACP launches."""
+    if key == "armonel":
+        if executable != find_bin(key):
+            raise RuntimeError("找不到 SoduWork 随附的 Armonel 执行程序。")
+        return [executable]
     from .agent_installation import selected_node_entry
     spec = CATALOG.get(key) or {}
     entry, engine = selected_node_entry(spec.get('pkg', ''), executable)
@@ -113,6 +188,9 @@ def command_argv(key: str, exe: str, args: list[str], ws: str,
     session, mode = _metadata(args)
     policy = dict((cfg or {}).get("accessPolicy") or {})
     permission = "readonly" if policy.get("mode") == "readonly" or mode == "plan" else "workspace"
+    if key == "armonel" and policy.get("mode") not in {"standard", "readonly", "full"}:
+        # Legacy dispatches have no permission broker available to approve native tools.
+        permission = "readonly"
     entry = ([sys.executable, "--acp-bridge"]
              if getattr(sys, "frozen", False)
              else [sys.executable, _bridge_path()])
@@ -125,11 +203,33 @@ def command_argv(key: str, exe: str, args: list[str], ws: str,
     if session:
         bridge += ["--session", session]
     command = executable_command(key, exe)
-    return [*bridge, "--", *command, *_agent_args(key, cfg or {})]
+    agent_args = _agent_args(key, cfg or {})
+    if key == "armonel":
+        agent_args.extend(["--workspace", os.path.abspath(ws), "--no-memory"])
+        agent_args.extend(["--read-only"] if permission == "readonly" else ["--allow-write", "--allow-exec"])
+        # Older bundled executables predate command isolation. The deployment
+        # opts in after it provisions project directories and updates the bundle.
+        if permission == "workspace" and policy.get("mode") == "standard":
+            sandbox = os.environ.get("SODUWORK_ARMONEL_COMMAND_SANDBOX", "").strip()
+            if sandbox == "workspace-write":
+                agent_args.extend(["--command-sandbox", sandbox])
+            elif sandbox not in ("", "trusted"):
+                raise ValueError("Unknown SODUWORK_ARMONEL_COMMAND_SANDBOX mode")
+    return [*bridge, "--", *command, *agent_args]
 
 
 def runtime_issue(key: str, *, probe: bool = False) -> str:
     """Return a human-readable runtime defect before a task is created."""
+    if key == "armonel":
+        from .agent_setup_runtime import _short
+        from .agent_version_probe import probe as version_probe
+        exe = find_bin(key)
+        if not exe:
+            return "此 SoduWork 安装包或执行机未提供 Armonel。"
+        expected = str(CATALOG[key]["version"])
+        if version_probe(exe, ["--version"], run=_short) != "armonel " + expected:
+            return f"随附的 Armonel 启动自检失败，需要 SoduWork 内置版本 {expected}。请修复或更新 SoduWork。"
+        return ""
     if key != "dsh":
         return ""
     exe = find_bin(key) or ""
@@ -141,7 +241,8 @@ def runtime_issue(key: str, *, probe: bool = False) -> str:
     return dsh_runtime.runtime_issue(expected_version=expected, executable=exe)
 
 
-def home_env(key: str, env: dict, work_root: str, *, installation_root: str | None = None) -> None:
+def home_env(key: str, env: dict, work_root: str, *, installation_root: str | None = None,
+             runtime_ref: str = "") -> None:
     """Keep private agent state under the Runner's managed data root.
 
     DSH's Windows encryption-filter compatibility is installed by apply_env;
@@ -153,6 +254,10 @@ def home_env(key: str, env: dict, work_root: str, *, installation_root: str | No
         return
     folder = declaration["folder"]
     home = os.path.join(os.path.abspath(os.path.expanduser(work_root)), folder)
+    if key == "armonel" and runtime_ref:
+        # Separate concurrent conversations and keep the same journal root for
+        # every ACP subprocess belonging to this durable SoduWork execution.
+        home = os.path.join(home, hashlib.sha256(runtime_ref.encode()).hexdigest())
     try:
         os.makedirs(home, exist_ok=True)
     except OSError:
@@ -182,6 +287,30 @@ def inject_llm_env(key: str, env: dict, llm: dict, *, mode: str = "work") -> Non
     local_only = (llm or {}).get("localOnly") is True
     if not (base and model and (secret or local_only)):
         return
+    if key == "armonel":
+        if llm.get("kind") not in {None, "", "openai-compat"}:
+            raise RuntimeError("Armonel 需要 OpenAI 兼容模型。")
+        # A local profile can name tools, model headers or a writable state
+        # directory. Only this execution's reviewed settings may reach ACP.
+        for name in list(env):
+            if name.upper().startswith(("EVOLVE_HARNESS_", "ARMONEL_")):
+                del env[name]
+        env.pop("SODUWORK_BUNDLED_ARMONEL", None)
+        env.pop("SODUWORK_LLM_KEY", None)
+        if recovery_format := _armonel_recovery_format(llm):
+            env["ARMONEL_CHAT_THINKING_OFF"] = recovery_format
+        # Model settings map UI levels to wire efforts. Limit the native retry
+        # to supported wire values. The off switch is negotiated separately.
+        levels = llm.get("thinkingLevelMap")
+        if (llm.get("supportsReasoningEffort") is False or llm.get("reasoning") is False
+                or llm.get("thinkingMode") == "none"):
+            env["ARMONEL_CHAT_RECOVERY_EFFORTS"] = "[]"
+        elif isinstance(levels, dict):
+            from .model_definition_contracts import THINKING_LEVELS
+            mapped = {levels[level] for level in THINKING_LEVELS[1:] if isinstance(levels.get(level), str)}
+            allowed = [effort for effort in THINKING_LEVELS[1:]
+                       if effort in mapped]
+            env["ARMONEL_CHAT_RECOVERY_EFFORTS"] = json.dumps(allowed)
     if key == "kimi":
         from . import context_window, runtime_images
         # Kimi's plain KIMI_API_KEY is a config-file key, not a shell override.

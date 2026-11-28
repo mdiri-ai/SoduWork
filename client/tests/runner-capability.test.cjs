@@ -110,6 +110,7 @@ test('embedded runner does not inherit chat-only model directories or temporary 
     SODUWORK_BUNDLED_OPENCODE: 'C:/chat/opencode.exe',
     SODUWORK_BUNDLED_PI_CLI: 'C:/chat/pi/cli.js',
     SODUWORK_BUNDLED_NODE: 'C:/chat/node.exe',
+    SODUWORK_BUNDLED_ARMONEL: 'C:/chat/armonel.exe',
     SODUWORK_BUNDLED_SHELL: 'C:/chat/shell',
     NODE_OPTIONS: '--require C:/electron/bootstrap.js',
     ELECTRON_RUN_AS_NODE: '1',

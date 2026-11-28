@@ -41,6 +41,47 @@ class DshGatewayTests(unittest.TestCase):
         self.assertEqual(profile["models"][0]["maxTokens"], 2048)
         self.assertEqual(env["DSH_MAX_TOKENS"], "2048")
 
+    def test_explicit_thinking_uses_the_native_profile_without_persisting_preferences(self):
+        for wire_format, mode, level, mapping in (
+            ("openai", "controllable", "off", {"off": "none", "low": "low"}),
+            ("zai", "always", "low", {"low": "low", "high": "high"}),
+            ("deepseek", "always", "high", {"low": "low", "high": "high"}),
+        ):
+            with self.subTest(wire_format=wire_format, level=level):
+                env = {}
+                dsh_gateway.inject_env(env, {**self.llm, "reasoning": True,
+                    "thinkingMode": mode, "thinkingFormat": wire_format,
+                    "supportsReasoningEffort": True, "thinkingLevel": level,
+                    "thinkingLevelMap": {**mapping, "medium": None, "unrecognized": "guess"}})
+                profile = json.loads(env[dsh_gateway.PROFILE_ENV])[dsh_gateway.PROVIDER]
+                self.assertEqual(profile["reasoning"], level)
+                self.assertEqual(profile["models"][0]["reasoningEfforts"], mapping)
+                self.assertEqual(profile["compat"]["thinkingFormat"], wire_format)
+                self.assertTrue(profile["compat"]["supportsReasoningEffort"])
+                self.assertNotIn("DSH_REASONING_EFFORT", env)
+                self.assertEqual(json.loads(env[dsh_gateway.REASONING_ENV]),
+                                 {"provider": dsh_gateway.PROVIDER, "model": self.llm["model"], "level": level})
+
+    def test_unsupported_thinking_leaves_the_provider_request_defaults_alone(self):
+        configured = {**self.llm, "reasoning": True, "thinkingMode": "controllable",
+                      "thinkingFormat": "openai", "supportsReasoningEffort": True,
+                      "thinkingLevelMap": {"off": "none", "low": "low"}, "thinkingLevel": "off"}
+        for override in ({"thinkingLevel": None}, {"thinkingLevel": "high"},
+                         {"thinkingLevelMap": {"off": "none"}}, {"thinkingMode": "always"},
+                         {"thinkingAlwaysOn": True}, {"thinkingFormat": "qwen"},
+                         {"supportsReasoningEffort": False}, {"reasoning": False}, {"kind": "anthropic"}):
+            with self.subTest(override=override):
+                env = {}
+                dsh_gateway.inject_env(env, {**configured, **override})
+                profile = json.loads(env[dsh_gateway.PROFILE_ENV])[dsh_gateway.PROVIDER]
+                self.assertNotIn("reasoning", profile)
+                self.assertNotIn("reasoningEfforts", profile["models"][0])
+                self.assertFalse(profile.get("compat", {}).get("supportsReasoningEffort"))
+                if override.get("thinkingLevel", "off") is None:
+                    self.assertEqual(json.loads(env[dsh_gateway.REASONING_ENV])["level"], "")
+                else:
+                    self.assertNotIn(dsh_gateway.REASONING_ENV, env)
+
     def test_native_compaction_budgets_leave_room_for_summary_and_recent_history(self):
         cases = ((32000, 8192, 8192), (128000, 16384, 16384),
                  (64000, 16384, 16384), (1024, 1024, 512),

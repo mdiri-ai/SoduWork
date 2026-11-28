@@ -35,9 +35,12 @@ class Channel:
         self.denials: set[str] = set()
         from .local_base import _RUNS
         run = _RUNS.get(ref) or {}
+        self.owner = run.get("_workerIdentity")
         self.grants.update(run.get("_accessSessionGrants") or [])
         self.denials.update(run.get("_accessSessionDenials") or [])
         self.closed = False
+        self.control_connected = False
+        self.stop_requested = False
         channel = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -86,6 +89,7 @@ class Channel:
 
     def _publish(self):
         from .local_base import _LOCK, _RUNS
+        from .runner_local_rpc import session_changed
         with _LOCK:
             run = _RUNS.get(self.ref)
             if run is not None:
@@ -93,6 +97,7 @@ class Channel:
                 run["permissionWaiting"] = bool(self.pending)
                 # Resume normal idle timing after a human has answered.
                 run["lastOut"] = time.time()
+                session_changed(self.ref, run)
 
     def applied(self, value: dict) -> dict:
         if value.get("mode") != self.policy["mode"]:
@@ -115,6 +120,9 @@ class Channel:
         with self.condition:
             if self.closed:
                 return {"requested": False}
+            self.control_connected = True
+            if self.stop_requested:
+                return {"requested": False, "stopRequested": True}
             result = access_transition.control(self.ref, self.policy, payload)
             policy = result.get("policy")
             if result.get("requested") and payload.get("stage") == "in-process-ready" and policy:
@@ -185,6 +193,8 @@ class Channel:
         with self.condition:
             from . import access_transition
             from .local_base import _RUNS
+            if self.stop_requested or (_RUNS.get(self.ref) or {}).get("stopping"):
+                return "cancelled"
             if access_transition.active(_RUNS.get(self.ref) or {}):
                 return {"decision": "deny"} if question else "deny"
             if self.closed and question:
@@ -201,6 +211,10 @@ class Channel:
                 return "once"
             request_id = uuid.uuid4().hex
             now = time.time()
+            expires = now + _TIMEOUT_S
+            requested_ms = operation.get("permissionExpiresAtMs")
+            if self.agent == "armonel" and type(requested_ms) is int and 0 < requested_ms <= 2**53 - 1:
+                expires = min(expires, requested_ms / 1000)
             row = {"requestId": request_id, "ref": self.ref, "agent": self.agent,
                    "policyRevision": self.policy["revision"],
                    "operationId": str(operation.get("operationId") or uuid.uuid4().hex),
@@ -214,7 +228,7 @@ class Channel:
                    "argsDigest": digest, "createdAt": now,
                    "grantDigest": grant_digest,
                    "sessionScope": {"kind": scope["kind"]} if scope else None,
-                   "expiresAt": now + _TIMEOUT_S,
+                   "expiresAt": expires,
                    "allowSession": not question and bool(operation.get("allowSession", True))}
             if question:
                 row["options"] = options
@@ -222,16 +236,22 @@ class Channel:
             self._publish()
             self._audit(row, "requested")
             try:
-                while request_id not in self.decisions and not self.closed:
+                while request_id not in self.decisions and not self.closed and not self.stop_requested:
                     from .local_base import _RUNS
                     run = _RUNS.get(self.ref) or {}
                     if run.get("state") != "running" or run.get("stopping") or access_transition.active(run):
                         break
                     remaining = row["expiresAt"] - time.time()
                     if remaining <= 0:
+                        if self.agent == "armonel" and not question:
+                            self._audit(row, "timeout")
+                            return {"decision": "deny", "reason": "tool_approval_timeout"}
                         break
                     self.condition.wait(min(1, remaining))
                 answer = self.decisions.pop(request_id, "deny")
+                if self.stop_requested or (_RUNS.get(self.ref) or {}).get("stopping"):
+                    self._audit(row, "cancelled")
+                    return "cancelled"
                 if self.closed:
                     answer = "deny"
                 if question:
@@ -253,7 +273,7 @@ class Channel:
             from .local_base import _RUNS
             run = _RUNS.get(self.ref) or {}
             from . import access_transition
-            if (access_transition.active(run) or self.closed or not row or request_id in self.decisions
+            if (access_transition.active(run) or self.closed or self.stop_requested or not row or request_id in self.decisions
                     or run.get("state") != "running" or run.get("stopping")
                     or row["expiresAt"] <= time.time()):
                 return {"ok": False, "code": "PERMISSION_REQUEST_EXPIRED",
@@ -307,6 +327,14 @@ class Channel:
         self.server.shutdown()
         self.server.server_close()
 
+    def request_stop(self) -> bool:
+        with self.condition:
+            if self.closed or not self.control_connected:
+                return False
+            self.stop_requested = True
+            self.condition.notify_all()
+            return True
+
 
 def attach(ref: str, cfg: dict, env: dict) -> Channel | None:
     policy = cfg.get("accessPolicy")
@@ -326,6 +354,7 @@ def attach(ref: str, cfg: dict, env: dict) -> Channel | None:
     with _LOCK:
         read_scope = channel_scope(_RUNS.get(ref) or {}).payload()
     env["SODUWORK_APPROVAL_CHANNEL"] = json.dumps({"url": channel.url,
+                                              "permissionTimeoutMs": int(_TIMEOUT_S * 1000),
                                               "readScope": read_scope,
                                               "token": channel.token,
                                               "policy": policy})
@@ -349,8 +378,17 @@ def wake(ref: str):
             channel.condition.notify_all()
 
 
-def close(ref: str):
+def request_stop(ref: str, owner) -> Channel | None:
     with _CHANNEL_LOCK:
-        channel = _CHANNELS.pop(ref, None)
+        channel = _CHANNELS.get(ref)
+    return channel if channel and channel.owner is owner and channel.request_stop() else None
+
+
+def close(ref: str, expected: Channel | None = None):
+    with _CHANNEL_LOCK:
+        channel = _CHANNELS.get(ref)
+        if expected is not None and channel is not expected:
+            return
+        _CHANNELS.pop(ref, None)
     if channel:
         channel.close()

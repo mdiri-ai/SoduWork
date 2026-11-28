@@ -85,6 +85,69 @@ test('native start owns execution time while independent conversations and same-
   assert.equal(calls.find(row=>row.op==='job.comment').input.text,'Ordered follow-up');
 });
 
+test('restored DSH output exhaustion is incomplete and preserves its reason', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-incomplete-'));
+  let session;
+  t.after(async () => { await session?.dispose(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime('dsh'),
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'fixture' } }) },
+    runnerRuntime: { async rpc(op) {
+      if (op === 'job.session') return { ok: true, data: { ok: true, status: 'failed',
+        error: 'Fixture output exhausted', failureKind: 'execution_incomplete', items: [] } };
+      if (op === 'runtime.detect' || op === 'job.stop') return { ok: true, data: {} };
+      throw Error('Unexpected fixture operation: ' + op);
+    } } });
+  session = await adapter.resumeSession({ native: { runner: { openOptions: { cwd: directory, resumePath: 'fixture' } } } });
+  await until(() => session.snapshot().execution.terminalConfirmed);
+  assert.equal(session.snapshot().status, 'incomplete');
+  assert.equal(session.snapshot().statusText, 'Fixture output exhausted');
+});
+
+test('Runner settles a confirmed clean stop without pausing the conversation queue', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runner-stopped-'));
+  let session, ref, reads = 0, continuations = 0;
+  let native = { status: 'running', items: [] };
+  t.after(async () => { await session?.dispose(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime('armonel'),
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'synthetic', key: 'synthetic' } }) },
+    runnerRuntime: { async rpc(op, input) {
+      if (op === 'runtime.detect') return { ok: true, data: {} };
+      if (op === 'job.dispatch') {
+        ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', input.dispatchId);
+        return { ok: true, data: { ref, state: 'running' } };
+      }
+      if (op === 'job.session') {
+        reads++;
+        return { ok: true, data: { ref, ...native } };
+      }
+      if (op === 'job.comment') {
+        continuations++;
+        native = { status: 'done', items: [] };
+        return { ok: true, data: { ok: true, state: 'running' } };
+      }
+      if (op === 'job.stop') return { ok: true, data: { ok: true } };
+      throw Error('Unexpected fixture operation: ' + op);
+    } },
+  });
+  session = await adapter.createSession({ native: { runner: { openOptions: { cwd: directory } } } });
+  const handle = getRunnerSessionDetails(session).handle;
+  const outcomes = [];
+  const first = handle.submit('First turn', [], { afterTurn: status => outcomes.push(status) });
+  await until(() => reads > 0);
+  const second = handle.submit('Queued follow-up', []);
+  assert.equal(second.queued, true);
+  native = { status: 'stopped', error: '', items: [] };
+
+  const result = await first.completion;
+  assert.equal(result.ok, true);
+  assert.equal(result.cancelled, true);
+  assert.equal(result.manualStop, undefined);
+  assert.equal(result.snapshot.status, 'aborted');
+  assert.deepEqual(outcomes, ['stopped']);
+  assert.equal((await second.completion).ok, true);
+  assert.equal(continuations, 1);
+});
+
 for (const unit of ['seconds','milliseconds']) test(unit+': restoring prelaunch admission does not invent its wait duration or reuse archive submission time as execution', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(),'soduwork-restored-queue-'));
   let session, data = {status:'queued',executionStartedAt:0,queuePosition:1,firstStarted:0,items:[]};

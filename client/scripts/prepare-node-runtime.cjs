@@ -51,17 +51,22 @@ function downloadLabel(url) {
   return parsed.origin + parsed.pathname;
 }
 
-async function downloadFile(url, target, { timeoutMs = 300000, get = https.get, log = console.error } = {}) {
+async function downloadFile(url, target, { timeoutMs = 300000, responseTimeoutMs, get = https.get, log = console.error } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(Error('Runtime download exceeded total time limit')), timeoutMs);
   async function transfer(current, redirects = 0) {
     if (new URL(current).protocol !== 'https:' || redirects > 6) throw Error('Invalid runtime download redirect');
+    let responseTimer;
     const response = await new Promise((resolve, reject) => {
       const request = get(current, { signal: controller.signal,
         headers: { 'User-Agent': 'SoduWork-runtime-build' } }, resolve);
+      if (responseTimeoutMs) {
+        responseTimer = setTimeout(() => request.destroy(Object.assign(
+          Error('Runtime registry response timed out'), { code: 'ETIMEDOUT' })), responseTimeoutMs);
+      }
       request.setTimeout(60000, () => request.destroy(Error('Runtime download idle timeout')));
       request.on('error', reject);
-    });
+    }).finally(() => clearTimeout(responseTimer));
     if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
       response.destroy();
       return transfer(new URL(response.headers.location, current).href, redirects + 1);

@@ -65,6 +65,8 @@ def usage(value):
 def billed_event(m):
     """Never treat a context watermark or a replayed partial as consumption."""
     kind = m.get("type")
+    if kind == "acp_prompt_usage":
+        return m.get("usage"), "prompt"
     if kind == "step_finish" and not m.get("contextOnly"):
         part = m.get("part") or {}
         tokens = part.get("tokens")

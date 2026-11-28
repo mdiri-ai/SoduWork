@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { validateRuntimeManifest } = require('../main/runtime-manifest.cjs');
+const armonel = require('../main/armonel-runtime.cjs');
 
 function readManifest(root) {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'runtime-manifest.json'), 'utf8'));
@@ -14,19 +15,21 @@ function runnerPath(root, platform = process.platform) {
   if (!relative) throw Error('Unsupported client platform: ' + platform);
   return path.join(root, ...relative.split('/'));
 }
-function requiredFiles(manifest, platform) {
+function requiredFiles(manifest, platform, arch = process.arch) {
   const runner = manifest.bundled.runner.relativePaths[platform];
   if (!runner) throw Error('Unsupported client platform: ' + platform);
   const common = [runner.replace(/^resources\//, ''),
     'generated_image.py', 'pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js', 'skills/office/SKILL.md'];
-  return [...common, ...(platform === 'win32'
+  const release = armonel.selectRelease(platform, arch);
+  const agent = release ? [release.executable, ...armonel.noticeNames].map(name => 'armonel/' + name) : [];
+  return [...common, ...agent, ...(platform === 'win32'
     ? ['node/node.exe', 'node/node_modules/npm/bin/npm-cli.js', 'python/python.exe', 'shell/bin/bash.exe', 'shell/cmd/git.exe']
     : ['node/bin/node', 'node/lib/node_modules/npm/bin/npm-cli.js', 'python/bin/python3'])];
 }
 function verify(root = path.resolve(__dirname, '..'), platform = process.platform,
-  { packaged = false, resourcesPath = path.join(root, 'resources') } = {}) {
+  { packaged = false, resourcesPath = path.join(root, 'resources'), arch = process.arch } = {}) {
   const manifest = readManifest(packaged ? resourcesPath : root);
-  const files = requiredFiles(manifest, platform);
+  const files = requiredFiles(manifest, platform, arch);
   if (packaged) for (const relative of files) {
     const file = path.join(resourcesPath, ...relative.split('/'));
     if (!fs.existsSync(file) || !fs.statSync(file).isFile() || fs.statSync(file).size === 0) {
@@ -37,13 +40,20 @@ function verify(root = path.resolve(__dirname, '..'), platform = process.platfor
     hostPrerequisites: manifest.hostPrerequisites,
     zeroPrerequisiteTarget: manifest.zeroPrerequisitePlatforms.includes(platform) };
 }
-function verifyExecutables(resourcesPath, platform, arch) {
+async function verifyExecutables(resourcesPath, platform, arch) {
   const node = require('./prepare-node-runtime.cjs');
   const release = node.selectRelease(platform, arch);
   const result = node.verifyRuntime(path.join(resourcesPath, 'node'), release);
   // A cross-architecture package must pass the native release acceptance job.
   if (platform === process.platform && arch === process.arch) {
     require('./prepare-python-runtime.cjs').selfTest(path.join(resourcesPath, 'python'), platform, arch);
+  }
+  const agent = armonel.selectRelease(platform, arch);
+  const { canExecute, verifyExecutable } = require('./prepare-armonel-runtime.cjs');
+  if (agent && canExecute(platform, arch)) {
+    const executable = path.join(resourcesPath, 'armonel', agent.executable);
+    verifyExecutable(executable, agent);
+    await require('./check-armonel-acp.cjs').checkAcp(executable);
   }
   return { nativeSelfTest: result.executed };
 }

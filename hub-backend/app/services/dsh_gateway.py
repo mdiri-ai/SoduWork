@@ -15,6 +15,9 @@ PROVIDER = "soduwork"
 KEY_ENV = "SODUWORK_API_KEY"
 PROFILE_ENV = "SODUWORK_DSH_PROVIDERS"
 COMPACTION_ENV = "SODUWORK_DSH_COMPACTION"
+REASONING_ENV = "SODUWORK_DSH_MANAGED_REASONING"
+_THINKING_FORMATS = {"openai", "zai", "deepseek"}
+_THINKING_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _request_budgets(context_limit: int, requested_output: int) -> tuple[int, dict]:
@@ -43,6 +46,34 @@ def bundle_args() -> list[str]:
     return ["--bundle", str(bundle)]
 
 
+def _apply_reasoning(profile: dict, llm: dict) -> dict | None:
+    """Use the native process-local pi-ai profile for an explicitly selected level."""
+    mode = llm.get("thinkingMode")
+    wire_format = llm.get("thinkingFormat")
+    choices = llm.get("thinkingLevelMap")
+    level = llm.get("thinkingLevel")
+    if (mode not in ("always", "controllable") or llm.get("reasoning") is not True
+            or llm.get("supportsReasoningEffort") is not True
+            or not isinstance(wire_format, str) or wire_format not in _THINKING_FORMATS
+            or not isinstance(choices, dict)):
+        return None
+    declared = {key: choices[key].strip() for key in _THINKING_LEVELS
+                if isinstance(choices.get(key), str) and choices[key].strip() not in ("", "none", "off")}
+    if not declared:
+        return None
+    if mode == "controllable" and llm.get("thinkingAlwaysOn") is not True and choices.get("off") == "none":
+        declared["off"] = "none"
+    if level is None or level == "":
+        # Reset a prior override from this managed session to provider defaults.
+        return {"provider": PROVIDER, "model": profile["models"][0]["id"], "level": ""}
+    if not isinstance(level, str) or level not in declared:
+        return None
+    profile["models"][0]["reasoningEfforts"] = declared
+    profile["reasoning"] = level
+    profile["compat"].update(supportsReasoningEffort=True, thinkingFormat=wire_format)
+    return {"provider": PROVIDER, "model": profile["models"][0]["id"], "level": level}
+
+
 def inject_env(env: dict, llm: dict) -> None:
     base, secret, model = (str(llm.get(key) or "") for key in ("base", "key", "model"))
     local_only = (llm or {}).get("localOnly") is True
@@ -62,9 +93,12 @@ def inject_env(env: dict, llm: dict) -> None:
     }
     if secret:
         profile["apiKeyEnv"] = KEY_ENV
+    env.pop(REASONING_ENV, None)
     if protocol == "openai-completions":
         profile["compat"] = {"supportsStore": False, "supportsDeveloperRole": False,
                              "supportsReasoningEffort": False, "maxTokensField": "max_tokens"}
+        if reasoning := _apply_reasoning(profile, llm):
+            env[REASONING_ENV] = json.dumps(reasoning, ensure_ascii=False)
     # A shared model service credential must not become the native DeepSeek search
     # credential, whose separate endpoint remains api.deepseek.com.
     for name in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL"):

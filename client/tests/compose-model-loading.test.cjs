@@ -22,7 +22,7 @@ function fixture() {
     SoduWorkAPI: { taskStorageKey: () => owner, myModels: options => request('managed', options) },
     SoduWorkModelChoice: require('../core/model-choice'),
     ComposeRuntime: { value: () => agent, location: () => location, catalog: () => [
-      { id: 'pi', modelMode: 'managed' }, { id: 'qwen', modelMode: 'managed' },
+      { id: 'pi', modelMode: 'managed' }, { id: 'qwen', modelMode: 'managed' }, { id: 'dsh', modelMode: 'managed' },
       { id: 'codex', modelMode: 'account' },
     ] },
     SoduWorkI18n: {
@@ -167,6 +167,34 @@ test('restored fixed-thinking selections retain valid high and max rather than r
     f.choose('glm-5.3');
     assert.equal(f.picker.value().thinkingLevel, expected);
   }
+});
+
+test('DSH exposes declared reasoning levels only on the local managed route', async () => {
+  const f = fixture(); f.agent('dsh'); f.start();
+  const declared = { name: 'explicit', config: { thinkingMode: 'controllable', thinkingFormat: 'openai',
+    supportsReasoningEffort: true, thinkingLevelMap: { off: 'none', low: 'low', high: 'high', medium: null } } };
+  const fixed = { ...declared, name: 'fixed', config: { ...declared.config, thinkingMode: 'always' } };
+  const inferred = { name: 'deepseek-unknown', config: { thinkingMode: 'auto' } };
+  const catalog = { usable: [declared, fixed, inferred], defaultModels: { dsh: declared.name } };
+  f.requests[0].resolve(catalog); await f.picker.ready();
+  assert.match(f.nodes.cpModelPop.innerHTML, /data-dsh-thinking-level/);
+  assert.match(f.nodes.cpModelPop.innerHTML, /option value="off"/);
+  assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /option value="medium"|data-thinking-toggle/);
+  assert.equal(f.picker.value().thinkingLevel, '');
+  const chooseLevel = value => f.nodes.cpModelPop.change({ target: {
+    value, matches: selector => selector === '[data-dsh-thinking-level]',
+  } });
+  chooseLevel('high'); assert.equal(f.picker.value().thinkingLevel, 'high');
+  chooseLevel('medium'); assert.equal(f.picker.value().thinkingLevel, 'high');
+  chooseLevel('off'); assert.equal(f.picker.value().thinkingLevel, 'off');
+  f.choose(fixed.name);
+  assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /option value="off"/);
+  assert.equal(f.picker.value().thinkingLevel, '');
+  f.choose(inferred.name);
+  assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /data-dsh-thinking-level|data-thinking-toggle/);
+  assert.equal(f.picker.value().thinkingLevel, '');
+  f.location('cloud'); const cloud = f.picker.refresh(); f.requests[1].resolve(catalog); await cloud;
+  assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /data-dsh-thinking-level|data-thinking-toggle/);
 });
 
 test('device-local models stay available to every local managed runtime and never enter cloud routes', async () => {

@@ -306,6 +306,233 @@ test('Runner admission queue is tracked as live work until resources start the A
   }
 });
 
+test('Armonel Runner polls faster while visible ACP deltas are arriving', { timeout: 5000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-stream-'));
+  const alias = 'armonel-stream-cadence';
+  const expectedRef = _uuidV5(NAMESPACE, 'chat:' + alias + ':armonel');
+  const pages = [
+    [],
+    [{ seq: 1, kind: 'step', text: '正在处理' }],
+    [{ seq: 2, kind: 'thinking', streamId: 'thought', delta: true, done: false, text: '梳理中…' }],
+    [{ seq: 3, kind: 'say', streamId: 'message', delta: true, done: false, text: '收到' }],
+    [],
+    [],
+    [{ seq: 4, kind: 'say', streamId: 'message', done: true, text: '收到' }],
+  ];
+  let polls = 0;
+  const adapter = createRunnerRuntimeAdapter({
+    runtimeSpec: runtimeCatalog.runtime('armonel'),
+    runnerRuntime: { async rpc(op) {
+      if (op === 'job.dispatch') return { ok: true, data: { ref: expectedRef } };
+      if (op === 'job.session') {
+        const items = pages[polls++];
+        return { ok: true, data: { status: polls === pages.length ? 'done' : 'running', round: 1, items } };
+      }
+      if (op === 'runtime.detect' || op === 'job.stop') return { ok: true };
+      throw new Error('unexpected rpc: ' + op);
+    } },
+    modelConfig: { fetchModel: async () => ({ ok: true, model: {
+      id: 'fixture-model', baseUrl: 'http://model.invalid', key: 'fixture-key',
+    } }) },
+  });
+  let session;
+  try {
+    session = await adapter.createSession({
+      runtimeId: 'test', identity: { clientId: 'test' },
+      native: { runner: { openOptions: { ref: alias, cwd: root } } },
+    });
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+    const sent = session.send({ text: '测试流式输出' });
+    while (!polls) await new Promise(setImmediate);
+    await new Promise(setImmediate);
+    for (const delay of [420, 420, 140, 140, 140, 420]) {
+      const before = polls;
+      t.mock.timers.tick(delay - 1);
+      assert.equal(polls, before);
+      t.mock.timers.tick(1);
+      await new Promise(setImmediate);
+      assert.equal(polls, before + 1);
+    }
+    assert.equal((await sent.completion).ok, true);
+    assert.deepEqual(session.snapshot().messages.flatMap(row => row.blocks || [])
+      .map(({ kind, text }) => [kind, text]), [['thinking', '梳理中…'], ['text', '收到']]);
+    t.mock.timers.tick(840);
+    assert.equal(polls, pages.length);
+  } finally {
+    if (session) await session.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Armonel Runner coalesces push hints during reads and retains a watchdog', { timeout: 5000 }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-hints-'));
+  const alias = 'armonel-push-cadence';
+  const expectedRef = _uuidV5(NAMESPACE, 'chat:' + alias + ':armonel');
+  let hint, releaseFirstRead;
+  const firstRead = new Promise(resolve => { releaseFirstRead = resolve; });
+  const cursors = [];
+  const adapter = createRunnerRuntimeAdapter({
+    runtimeSpec: runtimeCatalog.runtime('armonel'),
+    runnerRuntime: {
+      supportsSessionEvents: () => true,
+      subscribeSessionChanges(ref, observer) {
+        assert.equal(ref, expectedRef);
+        assert.equal(hint, undefined);
+        hint = observer;
+        return () => { hint = undefined; };
+      },
+      async rpc(op, payload) {
+        if (op === 'job.dispatch') return { ok: true, data: { ref: expectedRef } };
+        if (op === 'job.session') {
+          cursors.push(payload.since);
+          if (cursors.length === 1) await firstRead;
+          const items = cursors.length === 2
+            ? [{ seq: 1, kind: 'say', streamId: 'message', delta: true, done: false, text: '收到' }] : [];
+          return { ok: true, data: { status: cursors.length === 4 ? 'done' : 'running', round: 1, items } };
+        }
+        if (op === 'runtime.detect' || op === 'job.stop') return { ok: true };
+        throw new Error('unexpected rpc: ' + op);
+      },
+    },
+    modelConfig: { fetchModel: async () => ({ ok: true, model: {
+      id: 'fixture-model', baseUrl: 'http://model.invalid', key: 'fixture-key',
+    } }) },
+  });
+  let session;
+  try {
+    session = await adapter.createSession({
+      runtimeId: 'test', identity: { clientId: 'test' },
+      native: { runner: { openOptions: { ref: alias, cwd: root } } },
+    });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const sent = session.send({ text: '测试流式通知' });
+    while (!cursors.length) await new Promise(setImmediate);
+    hint();
+    hint();
+    t.mock.timers.tick(0);
+    assert.deepEqual(cursors, [0]);
+    releaseFirstRead();
+    await new Promise(setImmediate);
+    t.mock.timers.tick(0);
+    await new Promise(setImmediate);
+    assert.deepEqual(cursors, [0, 0]);
+    t.mock.timers.tick(1999);
+    assert.deepEqual(cursors, [0, 0]);
+    t.mock.timers.tick(1);
+    await new Promise(setImmediate);
+    assert.deepEqual(cursors, [0, 0, 1]);
+    hint();
+    hint();
+    t.mock.timers.tick(0);
+    assert.equal((await sent.completion).ok, true);
+    assert.deepEqual(cursors, [0, 0, 1, 1]);
+    assert.equal(hint, undefined);
+    t.mock.timers.tick(2000);
+    assert.equal(cursors.length, 4);
+  } finally {
+    releaseFirstRead();
+    if (session) await session.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a starting admission reported as running waits for native ownership before subscribing', async t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-admission-subscribe-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const alias = 'admission-stream-ownership';
+  const ref = _uuidV5(NAMESPACE, 'chat:' + alias + ':dsh');
+  const reads = [];
+  let publish;
+  const runtime = {
+    subscribeSessionUpdates(id, since, observer) {
+      assert.equal(id, ref);
+      assert.equal(since, 1);
+      publish = observer;
+      return () => { publish = null; };
+    },
+    async rpc(op, payload) {
+      if (op === 'job.dispatch') return { ok: true, data: { ref, state: 'queued' } };
+      if (op === 'runtime.detect' || op === 'job.stop') return { ok: true };
+      assert.equal(op, 'job.session');
+      reads.push(payload.since);
+      const data = { status: 'running', executionStartedAt: 0, seq: 0, items: [] };
+      if (reads.length === 2) Object.assign(data, { ref, seq: 1, items: [{ seq: 1, kind: 'step' }] });
+      return { ok: true, data };
+    },
+  };
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: runtimeCatalog.runtime('dsh'), runnerRuntime: runtime,
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', baseUrl: 'http://model.invalid',
+      key: 'fixture-key' } }) } });
+  const session = await adapter.createSession({ runtimeId: 'test', identity: { clientId: 'test' },
+    native: { runner: { openOptions: { ref: alias, cwd } } } });
+  t.after(() => session.dispose());
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const sent = session.send({ text: 'Run.' });
+  while (!reads.length) await new Promise(setImmediate);
+  await new Promise(setImmediate);
+  assert.equal(publish, undefined);
+  t.mock.timers.tick(419);
+  assert.deepEqual(reads, [0]);
+  t.mock.timers.tick(1);
+  await new Promise(setImmediate);
+  assert.equal(typeof publish, 'function');
+  t.mock.timers.tick(5000);
+  publish({ kind: 'update', since: 1, data: { ref, status: 'done', last: 1, seq: 1, items: [] } });
+  assert.equal((await sent.completion).ok, true);
+  assert.deepEqual(reads, [0, 0]);
+  assert.equal(publish, null);
+});
+
+test('Runner content subscriptions stream pages and repair a cursor gap from the last applied item', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-content-stream-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const alias = 'stream-recovers-gap';
+  const ref = _uuidV5(NAMESPACE, 'chat:' + alias + ':dsh');
+  let observer, disposals = 0;
+  const reads = [];
+  const runtime = {
+    subscribeSessionUpdates(_ref, since, callback) {
+      assert.equal(_ref, ref);
+      assert.equal(since, 0);
+      observer = callback;
+      return () => { disposals++; };
+    },
+    async rpc(op, payload) {
+      if (op === 'job.dispatch') return { ok: true, data: { ref } };
+      if (op === 'runtime.detect' || op === 'job.stop') return { ok: true };
+      assert.equal(op, 'job.session');
+      reads.push(payload.since);
+      if (reads.length === 1) return { ok: true, data: { ref, status: 'running', items: [], seq: 0 } };
+      return { ok: true, data: { ref, status: 'done', items: [{ seq: 3, kind: 'say', text: 'Recovered' }], seq: 3 } };
+    },
+  };
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: runtimeCatalog.runtime('dsh'), runnerRuntime: runtime,
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', baseUrl: 'http://model.invalid',
+      key: 'fixture-key' } }) } });
+  const session = await adapter.createSession({ runtimeId: 'test', identity: { clientId: 'test' },
+    native: { runner: { openOptions: { ref: alias, cwd: root } } } });
+  t.after(() => session.dispose());
+  const sent = session.send({ text: 'Run.' });
+  await until(() => observer);
+  const receive = (since, item, seq = item.seq) => observer({ kind: 'update', since,
+    data: { ref, status: 'running', seq, last: item.seq, items: [item] } });
+  const transcript = () => session.snapshot().messages.flatMap(row => row.blocks || []).map(b => b.text);
+  receive(0, { seq: 1, kind: 'thinking', text: 'Working' }, 2);
+  await until(() => transcript().includes('Working'));
+  assert.deepEqual(reads, [0], 'the remaining pushed page does not require a history read');
+  receive(1, { seq: 2, kind: 'say', text: 'Response' });
+  await until(() => transcript().includes('Response'));
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  t.mock.timers.tick(10000);
+  assert.deepEqual(reads, [0], 'a healthy stream has no periodic session RPC');
+  receive(3, { seq: 4, kind: 'say', text: 'Gap' });
+  receive(2, { seq: 3, kind: 'say', text: 'Stale socket' });
+  assert.equal((await sent.completion).ok, true);
+  assert.equal(disposals, 1);
+  assert.deepEqual(reads, [0, 2]);
+  assert.deepEqual(transcript(), ['Working', 'Response', 'Recovered']);
+});
+
 test('Runner polling reconnects after a transient transport break without losing output', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-harness-reconnect-'));
   const alias = 'reconnect-contract';
@@ -772,13 +999,19 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
     const expectedRef = _uuidV5(NAMESPACE, 'chat:' + alias + ':' + runtimeSpec.id);
     const calls = [];
     let modelFetches = 0;
+    let publish;
     const runtime = {
+      subscribeSessionUpdates(ref, since, observer) {
+        assert.equal(ref, expectedRef);
+        assert.equal(since, 0);
+        publish = observer;
+        return () => { publish = null; };
+      },
       async rpc(op, payload) {
         calls.push({ op, payload });
         if (op === 'job.dispatch') return { ok: true, data: { ref: expectedRef } };
         if (op === 'job.session') return { ok: true, data: {
-          ok: true, status: 'done', round: 1,
-          items: [{ seq: 1, kind: 'say', text: 'RUNTIME_OK' }],
+          ok: true, ref: expectedRef, status: 'running', round: 1, items: [], seq: 0, last: 0,
         } };
         if (op === 'job.stop') return { ok: true, data: { ok: true } };
         throw new Error('unexpected rpc: ' + op);
@@ -802,7 +1035,19 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
         runtimeId: 'test', identity: { clientId: 'test' },
         native: { runner: { openOptions: { ref: alias, cwd: root } } },
       });
-      assert.equal((await timeout(session.send({ text: 'RUN' }).completion)).ok, true);
+      const sent = session.send({ text: 'RUN' });
+      await until(() => publish);
+      const page = { kind: 'update', since: 0, data: { ref: expectedRef, status: 'running', round: 1,
+        seq: 1, last: 1, items: [{ seq: 1, kind: 'say', text: 'RUNTIME_OK' }] } };
+      publish(page);
+      publish(page);
+      publish({ kind: 'update', since: 1, data: { ref: expectedRef, status: 'done', round: 1,
+        seq: 1, last: 1, items: [] } });
+      assert.equal((await timeout(sent.completion)).ok, true);
+      assert.equal(publish, null);
+      assert.deepEqual(session.snapshot().messages.flatMap(row => row.blocks || []).map(block => block.text),
+        ['RUNTIME_OK']);
+      assert.equal(calls.filter(row => row.op === 'job.session').length, 1);
       const dispatched = calls.find((row) => row.op === 'job.dispatch').payload;
       assert.equal(dispatched.cli, runtimeSpec.id);
       assert.equal(dispatched.cfg.local_cli, runtimeSpec.id);

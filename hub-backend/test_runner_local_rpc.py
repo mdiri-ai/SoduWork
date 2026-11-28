@@ -11,7 +11,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from app.services import agent_setup, ai_local, local_stream, runner_admission
+from app.services import agent_setup, ai_local, local_base, local_stream, runner_admission
 from app.services import runner_local_rpc as rpc
 from runner_main import LOCAL_RPC_PREFIX, Runner
 
@@ -364,6 +364,177 @@ class LocalRpcTests(unittest.IsolatedAsyncioTestCase):
             if task and not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    async def test_desktop_pipe_coalesces_owned_armonel_session_change_hints(self):
+        machine = self.runner()
+        machine.desktop_owned = True
+        machine._shutdown_event = asyncio.Event()
+        incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+
+        async def lines(stream):
+            while line := await incoming.get():
+                yield line
+            yield b""
+
+        def write(blob):
+            self.assertTrue(blob.startswith(LOCAL_RPC_PREFIX))
+            self.loop.call_soon_threadsafe(outgoing.put_nowait, json.loads(blob[len(LOCAL_RPC_PREFIX):]))
+
+        def generate_updates():
+            for ref in ("owned", "remote", "other-agent"):
+                for _ in range(5):
+                    local_base._record_event(ref, {"kind": "say", "text": "fixture-private-content"})
+
+        machine._write_local_rpc = write
+        runs = {
+            "owned": {"cli": "armonel", "eventDestination": "local", "state": "running"},
+            "remote": {"cli": "armonel", "eventDestination": "hub", "state": "running"},
+            "other-agent": {"cli": "qwen", "eventDestination": "local", "state": "running"},
+        }
+        with tempfile.TemporaryDirectory() as directory, patch.object(local_base, "_STORE", directory), \
+                patch.dict(local_base._RUNS, runs), patch("app.services.runner_lifecycle.parent_lines", side_effect=lines):
+            task = asyncio.create_task(machine._local_rpc_loop())
+            try:
+                self.assertEqual(await asyncio.wait_for(outgoing.get(), 3), {"kind": "session-events-ready", "version": 2})
+                await asyncio.to_thread(generate_updates)
+                self.assertEqual(await asyncio.wait_for(outgoing.get(), 3),
+                                 {"kind": "session-changed", "refs": ["owned"]})
+                self.assertEqual([row["seq"] for row in local_base._read_events("owned")], [1, 2, 3, 4, 5])
+
+                # Some control/settlement updates change metadata only.
+                runs["owned"]["state"] = "stopped"
+                await asyncio.to_thread(local_base._save_meta, "owned")
+                self.assertEqual(await asyncio.wait_for(outgoing.get(), 3),
+                                 {"kind": "session-changed", "refs": ["owned"]})
+                await incoming.put(b"")
+                await asyncio.wait_for(task, 3)
+            finally:
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_session_stream_discards_stale_reads_and_paginates_by_delivered_cursor(self):
+        owner = {"cli": "dsh", "eventDestination": "local"}
+        streams = rpc.SessionStreams(lambda _: owner)
+        reading, release = asyncio.Event(), asyncio.Event()
+        packets = asyncio.Queue()
+        remote = False
+        rows = [{"seq": n, "kind": "say", "text": "x" * 65000} for n in range(1, 9)]
+
+        class Pipe:
+            send_packet = packets.put
+
+            @staticmethod
+            async def dispatch(request):
+                reading.set()
+                await release.wait()
+                page = rows[request["since"]:]
+                return {"ok": True, "data": {"ok": True, "ref": "test", "last": 8, "seq": 8,
+                        "status": "done", "eventDestination": "hub" if remote else "local", "items": page}}
+
+        def configure(op, identity, since=0):
+            return streams.configure({"op": "job.session." + op, "ref": "test",
+                                      "subscriptionId": identity, "since": since})["ok"]
+
+        sender = asyncio.create_task(streams.send(Pipe()))
+        try:
+            await asyncio.wait_for(packets.get(), 3)
+            self.assertTrue(configure("subscribe", "old"))
+            await asyncio.wait_for(reading.wait(), 3)
+            self.assertTrue(configure("unsubscribe", "old"))
+            self.assertTrue(configure("subscribe", "new"))
+            release.set()
+            cursor = 0
+            while cursor < 8:
+                packet = await asyncio.wait_for(packets.get(), 3)
+                self.assertEqual((packet["subscriptionId"], packet["since"]), ("new", cursor))
+                page = packet["data"]["items"]
+                self.assertLess(len(page), 8)
+                self.assertEqual([item["seq"] for item in page], list(range(cursor + 1, cursor + 1 + len(page))))
+                cursor = page[-1]["seq"]
+                self.assertEqual(packet["data"]["last"], cursor)
+            # Ref ownership is verified on both the captured snapshot and the
+            # current run. A captured foreign page must never reach stdout.
+            remote = True
+            streams.publish("test")
+            self.assertEqual(await asyncio.wait_for(packets.get(), 3),
+                             {"kind": "session-reset", "ref": "test", "subscriptionId": "new"})
+        finally:
+            sender.cancel()
+            await asyncio.gather(sender, return_exceptions=True)
+
+    async def test_subscribed_local_sessions_push_the_same_pages_and_metadata_as_job_session(self):
+        machine = self.runner()
+        streams = rpc.SessionStreams(machine._session_stream_owner)
+        machine._session_streams = streams
+        packets = asyncio.Queue()
+
+        class Pipe:
+            dispatch = machine._local_rpc_dispatch
+            send_packet = packets.put
+
+        async def receive():
+            return await asyncio.wait_for(packets.get(), 3)
+
+        async def subscribe(ref, identity, since=0):
+            return await machine._local_rpc_dispatch({"op": "job.session.subscribe", "ref": ref,
+                                                      "subscriptionId": identity, "since": since})
+
+        agents = ["armonel", "dsh", "qwen", "kimi", "codex-harness", "opencode", "codex"]
+        runs = {cli: {"cli": cli, "eventDestination": "local", "state": "running"} for cli in agents}
+        runs["hub-ref"] = {"cli": "dsh", "eventDestination": "hub", "state": "running"}
+        runs["unknown-ref"] = {"cli": "dsh", "state": "running"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(local_base, "_STORE", directory), \
+                patch.dict(local_base._RUNS, runs), rpc.session_streams(streams):
+            sender = asyncio.create_task(streams.send(Pipe()))
+            try:
+                self.assertEqual(await receive(), {"kind": "session-events-ready", "version": 2})
+                for bad in ["hub-ref", "unknown-ref", "missing"]:
+                    self.assertFalse((await subscribe(bad, "rejected"))["ok"])
+                for cli in agents:
+                    for row in [{"kind": "user", "text": "earlier"}, {"kind": "thinking", "text": "thinking"},
+                                {"kind": "say", "text": "answer"}, {"kind": "do", "tool": "Read"}]:
+                        local_base._record_event(cli, row)
+                    self.assertTrue((await subscribe(cli, "view-" + cli, 1))["ok"])
+                pages = {}
+                while len(pages) < len(agents):
+                    packet = await receive()
+                    if packet["kind"] == "session-changed":
+                        continue
+                    self.assertEqual(packet["kind"], "session-update")
+                    ref = packet["ref"]
+                    self.assertEqual(packet["subscriptionId"], "view-" + ref)
+                    self.assertEqual(packet["since"], 1)
+                    direct = await machine._local_rpc_dispatch({"op": "job.session", "ref": ref, "since": 1})
+                    self.assertEqual(packet["data"], direct["data"])
+                    self.assertEqual([i["kind"] for i in packet["data"]["items"]], ["thinking", "say", "do"])
+                    pages[ref] = packet
+                self.assertEqual(set(pages), set(agents))
+
+                # Metadata-only terminal update, without a new event sequence.
+                runs["dsh"]["state"] = "done"
+                local_base._save_meta("dsh")
+                done = await receive()
+                self.assertEqual((done["ref"], done["since"], done["data"]["status"], done["data"]["items"]),
+                                 ("dsh", 4, "done", []))
+                # Reusing the ref for another owner must terminate this binding,
+                # even if the stored cursor happens to match.
+                local_base._RUNS["qwen"] = {"cli": "qwen", "eventDestination": "hub", "state": "running"}
+                local_base._record_event("qwen", {"kind": "say", "text": "hub-private"})
+                self.assertEqual(await receive(), {"kind": "session-reset", "ref": "qwen", "subscriptionId": "view-qwen"})
+                await machine._local_rpc_dispatch({"op": "job.session.unsubscribe", "ref": "dsh",
+                                                   "subscriptionId": "view-dsh"})
+                local_base._record_event("dsh", {"kind": "say", "text": "offline"})
+                with self.assertRaises(asyncio.TimeoutError):
+                    await asyncio.wait_for(packets.get(), .08)
+                # Reconnect resumes from the last committed cursor.
+                self.assertTrue((await subscribe("dsh", "reopened", 4))["ok"])
+                resumed = await receive()
+                self.assertEqual(resumed["subscriptionId"], "reopened")
+                self.assertEqual([row["text"] for row in resumed["data"]["items"]], ["offline"])
+            finally:
+                sender.cancel()
+                await asyncio.gather(sender, return_exceptions=True)
 
 
 class RunnerPipeProcessTests(unittest.TestCase):

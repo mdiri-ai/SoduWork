@@ -195,6 +195,38 @@
     return info.levels?.includes(selected) ? selected : info.onLevel;
   }
 
+  function dshThinkingLevels(item) {
+    if (!item || cloud() || item.providerKind === 'anthropic') return [];
+    const config = item.config || {};
+    const mode = item.thinkingMode ?? config.thinkingMode;
+    const format = item.thinkingFormat ?? config.thinkingFormat;
+    const supportsEffort = item.supportsReasoningEffort ?? config.supportsReasoningEffort;
+    if (!['always', 'controllable'].includes(mode) || (item.reasoning ?? config.reasoning) === false ||
+        supportsEffort !== true || !['openai', 'zai', 'deepseek'].includes(format)) return [];
+    const map = item.thinkingLevelMap || config.thinkingLevelMap || {};
+    const enabled = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].filter(level =>
+      typeof map[level] === 'string' && !['', 'off', 'none'].includes(map[level].trim()));
+    const name = String(item.wireModelId || item.modelName || item.name || item.id || '');
+    const fixedGlm = /(?:^|\/)glm[-_]?5[._]3(?:[-_]?flash)?$/i.test(name);
+    const allowsOff = enabled.length > 0 && mode === 'controllable' &&
+      (item.thinkingAlwaysOn ?? config.thinkingAlwaysOn) !== true && map.off === 'none' && !fixedGlm;
+    return allowsOff ? ['off', ...enabled] : enabled;
+  }
+
+  function dshThinkingHtml(item, selected) {
+    const levels = dshThinkingLevels(item);
+    if (!levels.length) return '<div class="cp-model-summary"><span>思考模式</span><span>由服务决定</span></div>';
+    return '<label class="cp-model-summary"><span>推理强度</span><select data-dsh-thinking-level>' +
+      dshEffortOptions(levels, selected) + '</select></label>';
+  }
+
+  function dshEffortOptions(levels, selected) {
+    const active = levels.includes(selected) ? selected : '';
+    const choices = [['', '使用默认设置'], ...levels.map(level => [level, EFFORT_LABELS[level] || '关闭'])];
+    return choices.map(([value, label]) => '<option value="' + escape(value) + '"' +
+      (active === value ? ' selected' : '') + '>' + escape(tx(label)) + '</option>').join('');
+  }
+
   function managedHtml(selected) {
     const selectedModel = enterpriseModels.find(item => item.name === selected.modelName);
     const thinkingInfo = thinkingProfile(selectedModel);
@@ -218,7 +250,8 @@
         : (thinkingOn ? '\u5df2\u5f00\u542f \u00b7 \u4e2d\u7b49\u5f3a\u5ea6' : '\u5df2\u5173\u95ed \u00b7 \u66f4\u5feb\u54cd\u5e94'));
     const thinkingHint = !canThink ? '\u8bf7\u5207\u6362\u5230\u63a8\u7406\u6a21\u578b\u540e\u4f7f\u7528'
       : (!canDisable ? '\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301\u5173\u95ed\u601d\u8003' : '\u53ea\u5bf9\u672c\u6b21\u65b0\u5efa\u7684\u4f1a\u8bdd\u751f\u6548');
-    const thinking = !canThink ? '<div class="cp-model-summary"><span>思考模式</span><span>' +
+    const thinking = runtime().id === 'dsh' ? dshThinkingHtml(selectedModel, selected.thinkingLevel) :
+      !canThink ? '<div class="cp-model-summary"><span>思考模式</span><span>' +
       (thinkingInfo.unknown ? '由服务决定 · 未确认' : '不支持') + '</span></div>' : '<div class="cp-thinking' + (thinkingOn ? ' on' : '') + '">' +
       '<span class="cp-thinking-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5v3m0 9v3M2.5 10h3m9 0h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.2"/></svg></span>' +
       '<span class="cp-thinking-copy"><b>\u601d\u8003\u6a21\u5f0f</b><i>' + thinkingLabel + '</i><small>' + thinkingHint + '</small></span>' +
@@ -365,6 +398,7 @@
       start: active.selectionStart, end: active.selectionEnd,
       nativeModel: active.getAttribute('data-native-model'), model: active.getAttribute('data-model'),
       effort: active.matches('[data-effort-slider]'), reset: active.matches('[data-effort-reset]'), thinking: active.matches('[data-thinking-toggle]'),
+      dshThinking: active.matches('[data-dsh-thinking-level]'),
       nativeList: active.matches('[data-native-list]'), back: active.matches('[data-native-back]'),
       close: active.matches('[data-model-close]'),
     } : null;
@@ -382,6 +416,7 @@
           : focused.nativeList ? pop.querySelector('[data-native-list]')
           : focused.back ? pop.querySelector('[data-native-back]')
           : focused.thinking ? pop.querySelector('[data-thinking-toggle]')
+          : focused.dshThinking ? pop.querySelector('[data-dsh-thinking-level]')
             : focused.close ? pop.querySelector('[data-model-close]')
               : Array.from(pop.querySelectorAll('.cp-mrow')).find((item) =>
                 focused.nativeModel !== null ? item.getAttribute('data-native-model') === focused.nativeModel
@@ -471,9 +506,13 @@
     if (row.id !== 'codex') {
       const picked = enterpriseModels.find(item => item.name === selected.modelName) ||
         (selected.modelName ? null : enterpriseModels[0]);
-      const info = thinkingProfile(picked);
-      if (!info.supported) selected.thinkingLevel = '';
-      else if (!info.canDisable) selected.thinkingLevel = fixedThinkingLevel(info, selected.thinkingLevel);
+      if (row.id === 'dsh') {
+        if (!dshThinkingLevels(picked).includes(selected.thinkingLevel)) selected.thinkingLevel = '';
+      } else {
+        const info = thinkingProfile(picked);
+        if (!info.supported) selected.thinkingLevel = '';
+        else if (!info.canDisable) selected.thinkingLevel = fixedThinkingLevel(info, selected.thinkingLevel);
+      }
     }
     if (row.id === 'codex') { reconcileEffort(selected); nativeView = 'effort'; searchQuery = ''; }
     render();
@@ -600,6 +639,16 @@
       searchQuery = event.target.value;
       filterModels(pop);
     });
+    pop.addEventListener('change', (event) => {
+      if (!event.target.matches('[data-dsh-thinking-level]') || runtime().id !== 'dsh') return;
+      const selected = state('dsh');
+      const picked = enterpriseModels.find(item => item.name === selected.modelName);
+      const level = event.target.value;
+      if (level && !dshThinkingLevels(picked).includes(level)) return;
+      global.ComposeDirectoryPreferences?.selectionCommitted?.();
+      selected.thinkingLevel = level;
+      notify();
+    });
     pop.addEventListener('pointermove', previewEffort);
     pop.addEventListener('pointerover', previewEffort);
     pop.addEventListener('pointerout', leaveEffort);
@@ -622,7 +671,7 @@
         }
         event.preventDefault(); event.stopPropagation(); close(); button.focus?.(); return;
       }
-      if (event.target.matches('input[type="range"]')) return;
+      if (event.target.matches('input[type="range"], select')) return;
       const rows = Array.from(pop.querySelectorAll('.cp-mrow:not([hidden])'));
       const index = rows.indexOf(document.activeElement);
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -701,6 +750,8 @@
     }
     if (row.modelMode === 'managed') {
       const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
+      if (row.id === 'dsh') return { modelName: selected.modelName, reasoningEffort: '',
+        thinkingLevel: dshThinkingLevels(picked).includes(selected.thinkingLevel) ? selected.thinkingLevel : '' };
       const info = thinkingProfile(picked);
       return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
         ? fixedThinkingLevel(info, selected.thinkingLevel) : (selected.thinkingLevel || '') };
@@ -762,6 +813,7 @@
   }
 
   global.ComposeModelPicker = { bind, close, refresh, ready, value, modelReadiness, resetNewDraft, resetDirectory, restoreSelection, releasePreference,
+    dshEffortOptions,
     nativeEffort: { html: effortCard, paint: paintEffortCard, levels: effortChoices, defaultLevel: defaultEffort },
     label: () => currentLabel(runtime(), state(runtime().id)) };
   const scopeChanged = () => {

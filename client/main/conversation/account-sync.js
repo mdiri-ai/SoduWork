@@ -29,7 +29,7 @@ function syncState(value) {
   if (['streaming', 'running', 'queued', 'starting', 'dispatching', 'waiting-user', 'responding'].includes(state)) return 'responding';
   if (['completed', 'done'].includes(state)) return 'completed';
   if (['aborted', 'canceled', 'cancelled', 'interrupted'].includes(state)) return 'interrupted';
-  if (['unreachable', 'error', 'failed'].includes(state)) return 'failed';
+  if (['unreachable', 'incomplete', 'error', 'failed'].includes(state)) return 'failed';
   if (['stopped'].includes(state)) return 'stopped';
   return 'idle';
 }

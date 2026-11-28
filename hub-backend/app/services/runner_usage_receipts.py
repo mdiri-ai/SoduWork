@@ -166,7 +166,12 @@ def public_snapshot(value: dict, run: dict) -> dict:
                 elif private and key in model_keys:
                     result[key] = ""
                 elif key == "error" and field and private and (run or source_private):
-                    result[key] = "Local model execution failed; inspect the device model settings."
+                    from .local_turn_outcome import PUBLIC_INCOMPLETE_REASONS
+                    if (item.get("failureKind") == "execution_incomplete"
+                            and field in PUBLIC_INCOMPLETE_REASONS):
+                        result[key] = field
+                    else:
+                        result[key] = "Local model execution failed; inspect the device model settings."
                 else:
                     result[key] = clean(field, path + (key,), private, source_private)
             if path in {(), ("data",)}:

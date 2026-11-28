@@ -30,11 +30,14 @@ const conversationInputPreparation = require('../conversation/conversation-input
 const fileChangeJournal = require('../conversation/file-change-journal');
 const messageTime = require('../conversation/message-time');
 const agentSource = require('../conversation/agent-source.cjs');
-const _runnerConfig = require('./runner-config.cjs').create;
+const { create: _runnerConfig, dshThinking } = require('./runner-config.cjs');
 const executionModelId = model => String(model?.localOnly ? model.wireModelId || '' : model?.id || '');
 const ADAPTER_ID = 'codex-harness';
 const EXECUTION_NAMESPACE = '9af442c8-cd1d-4b91-a668-22da2b2635bf';
 const POLL_MS = 420;
+const ARMONEL_STREAM_POLL_MS = 140;
+const ARMONEL_STREAM_QUIET_MS = 2 * ARMONEL_STREAM_POLL_MS;
+const ARMONEL_STREAM_WATCHDOG_MS = 2000;
 const RECONNECT_GRACE_MS = 2 * 60 * 1000;
 const RECONNECT_MAX_DELAY_MS = 5000;
 const RECOVERY_POLL_MS = 10000;
@@ -154,13 +157,13 @@ function _title(value, fallback) {
   return clean ? clean.slice(0, 40) : String(fallback || 'Agent 工作会话');
 }
 
-function _status(value) {
+function _status(value, failureKind) {
   const raw = String(value || '');
   if (raw === 'waiting-permission') return 'waiting-user';
   if (raw === 'queued') return 'queued';
   if (raw === 'running' || raw === 'dispatching' || raw === 'starting' || raw === 'access-changing') return 'streaming';
   if (raw === 'completed' || raw === 'done') return 'idle';
-  if (raw === 'failed') return 'unreachable';
+  if (raw === 'failed') return failureKind === 'execution_incomplete' ? 'incomplete' : 'unreachable';
   if (raw === 'stopped' || raw === 'interrupted' || raw === 'cancelled' || raw === 'canceled') return 'aborted';
   return 'idle';
 }
@@ -317,7 +320,7 @@ function _snapshot(state) {
   const idleMs = executing ? Math.max(0, now - latestProgressAt) : 0;
   const queue = state.turnQueue ? state.turnQueue.view() : [];
   const goalPhase = state.goalPaused ? (state.taskGoal?.status === 'blocked' ? 'blocked' : 'paused') :
-    ['unreachable', 'aborted'].includes(state.status) && state.taskGoal?.status !== 'disabled' ? 'blocked' : state.taskGoal?.status;
+    ['unreachable', 'incomplete', 'aborted'].includes(state.status) && state.taskGoal?.status !== 'disabled' ? 'blocked' : state.taskGoal?.status;
   // Project settled native receipts using the same turn ownership as Pi.
   // Missing provider usage remains unknown for the presentation to estimate.
   const metrics = require('../pi-session/turn-metrics').collector(state, state._turnMetricsCache ||= {}, 0);
@@ -534,8 +537,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
   // Capture a device default as the conversation's actual immutable choice.
   // A later default edit must not retarget an archive that originally passed an empty name.
   if (prepared.model.localOnly) modelName = require('../pi-session/local-model-runtime-privacy.cjs').reference(prepared.model);
+  const initialDshThinking = adapterId === 'dsh' ? dshThinking(prepared.model,
+    savedSelection.name === modelName && typeof savedSelection.thinkingLevel === 'string'
+      ? savedSelection.thinkingLevel : opts.thinkingLevel) : null;
   if (explicitModel || resetSavedModel || prepared.model.localOnly) {
-    try { modelPreference.write(modelName, initialThinking?.level); }
+    try { modelPreference.write(modelName, initialThinking?.level, initialDshThinking?.level); }
     catch (error) {
       // Clearing a retired historical choice is a best-effort repair. A
       // filesystem/AV lock must not turn a recoverable conversation into an
@@ -564,7 +570,8 @@ async function createRunnerHandle(request, defaults, initialSession) {
     localUsageObserved: prepared.model.localOnly === true,
     agentExecution: _nativeExecution(adapterId, { ...opts, modelName,
       ...(initialThinking ? { reasoningEffort: initialThinking.level } : {}) }),
-    thinking: initialThinking,
+    thinking: initialThinking || initialDshThinking,
+    dshThinkingModel: initialDshThinking ? modelName : null,
     lastExecutionReasoningEffort: initialThinking?.level || '',
     title: require('../conversation/automatic-title').resolve(opts.sessionTitle), intent: String(opts.intent || ''), goal: String(opts.goal || ''),
     acceptance: String(opts.acceptance || ''), maxSteps: initialTaskGoal?.maxSteps ?? Number(opts.maxSteps || 0),
@@ -594,6 +601,9 @@ async function createRunnerHandle(request, defaults, initialSession) {
     initialSession: initialSession || null,
   };
 
+  const runnerModelConfig = () => _runnerConfig(state.model, adapterId, state.capabilityIds,
+    adapterId === 'dsh' ? (state.dshThinkingModel === state.modelSelection.view().activeName ? state.thinking.level : '')
+      : opts.thinkingLevel);
   state.modelSelection = selectionModule.create({
     name: modelName, model: prepared.model,
     generation: accountModel ? undefined : models.generation,
@@ -608,11 +618,18 @@ async function createRunnerHandle(request, defaults, initialSession) {
     persist: name => {
       if (state.disposed) throw Error('会话已关闭');
       const next = adapterId === 'codex' ? require('./codex-thinking').profile(name, state.thinking?.level) : null;
-      modelPreference.write(name, next?.level);
+      const dshLevel = adapterId === 'dsh' ? (name === state.dshThinkingModel ? state.thinking.level : '') : undefined;
+      modelPreference.write(name, next?.level, dshLevel);
     },
     changed: () => {
       if (adapterId === 'codex' && state.modelChoicePending)
         state.thinking = require('./codex-thinking').profile(state.modelSelection.capture(), state.thinking?.level);
+      if (adapterId === 'dsh') {
+        const name = state.modelSelection.capture();
+        const level = name === state.dshThinkingModel ? state.thinking.level : '';
+        state.thinking = dshThinking(state.modelSelection.choiceModel(), level);
+        state.dshThinkingModel = name;
+      }
       emit('model-selection');
     },
     apply(next, name) {
@@ -682,6 +699,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   }
 
   function settle(result) {
+    stopSessionObservation();
     for (const waiter of waiters) waiter(result);
     waiters.clear();
     if (state.status === 'idle' && turnQueue.size()) queueMicrotask(drainTurns);
@@ -705,6 +723,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   }
 
   function reconnect(reason) {
+    stopSessionObservation();
     const now = Date.now();
     state.recoveryRequired = true;
     state.terminalConfirmed = false;
@@ -973,9 +992,85 @@ async function createRunnerHandle(request, defaults, initialSession) {
   // UI's monotonic turn clock to an earlier user turn before replay catches up.
   let historyItems = [], historySince = null, submissionGeneration = 0, submissionFailed = false;
   let observationCancellation = 0, recoveryCheck = null, pollFinished = null, stopRequest = null;
+  let lastArmonelDeltaAt = -Infinity;
+  let unsubscribeSessionChanges = null, pendingSessionHint = false;
+  let contentStream = null, contentNeedsRead = false, retryContentAfter = 0;
   let skillSelectionFailure = null;
+  function stopContentStream() {
+    const stream = contentStream;
+    contentStream = null;
+    stream?.unsubscribe?.();
+  }
+  function stopSessionObservation() {
+    stopContentStream();
+    contentNeedsRead = false;
+    unsubscribeSessionChanges?.();
+    unsubscribeSessionChanges = null;
+    pendingSessionHint = false;
+  }
+  function drainSessionUpdates() {
+    if (state.polling || state.disposed || state.cancelRequested || state.turnSubmissionPending) return;
+    if (contentNeedsRead) {
+      contentNeedsRead = false;
+      clearTimeout(state.timer);
+      void poll();
+    } else if (contentStream?.pages.length) {
+      void poll(false, contentStream.pages.shift());
+    }
+  }
+  function watchSessionUpdates() {
+    if (contentStream) return true;
+    if (!runtime.subscribeSessionUpdates || contentNeedsRead || Date.now() < retryContentAfter) return false;
+    const stream = { cursor: state.seq, pages: [], unsubscribe: null };
+    contentStream = stream;
+    stream.unsubscribe = runtime.subscribeSessionUpdates(state.runnerRef, state.seq, update => {
+      if (contentStream !== stream) return;
+      const data = update?.data;
+      if (update?.kind === 'update' && data?.ref === state.runnerRef && Array.isArray(data.items)) {
+        const { since } = update;
+        // A duplicate older page cannot roll back metadata or settle a newer turn.
+        if (since < stream.cursor && data.last <= stream.cursor) return;
+        // The transport already checked the page's individual event sequences.
+        if (since === stream.cursor && OBSERVED_STATES.has(data.status) && stream.pages.length < 8) {
+          stream.cursor = data.last;
+          stream.pages.push(data);
+          drainSessionUpdates();
+          return;
+        }
+      }
+      // A disconnected subscription, cursor gap or slow consumer recovers from
+      // the durable archive. Throttle registration if the Runner keeps rejecting it.
+      stopContentStream();
+      contentNeedsRead = true;
+      retryContentAfter = Date.now() + POLL_MS;
+      drainSessionUpdates();
+    });
+    if (!stream.unsubscribe || contentStream !== stream) {
+      stream.unsubscribe?.();
+      if (contentStream === stream) contentStream = null;
+      return false;
+    }
+    unsubscribeSessionChanges?.();
+    unsubscribeSessionChanges = null;
+    pendingSessionHint = false;
+    clearTimeout(state.timer);
+    state.timer = null;
+    return true;
+  }
+  function wakeSessionPoll() {
+    if (!unsubscribeSessionChanges || pendingSessionHint || state.disposed || state.cancelRequested ||
+        state.recoveryRequired || state.turnSubmissionPending || state.accessChangePending) return;
+    pendingSessionHint = true;
+    // A hint during an in-flight read triggers at most one follow-up read.
+    if (!state.polling) {
+      clearTimeout(state.timer);
+      state.timer = setTimeout(poll, 0);
+    }
+  }
   function invalidateObservation() {
     submissionGeneration++;
+    stopSessionObservation();
+    lastArmonelDeltaAt = -Infinity;
     if (state.timer) clearTimeout(state.timer);
     state.timer = null;
     return submissionGeneration;
@@ -991,6 +1086,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     return invalidateObservation();
   }
   function scheduleRecovery() {
+    stopSessionObservation();
     if (state.disposed || state.cancelRequested && !state.stopAwaitingTerminal || !state.recoveryRequired || state.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return;
     const generation = submissionGeneration, cancellation = observationCancellation;
     clearTimeout(state.timer);
@@ -1008,12 +1104,18 @@ async function createRunnerHandle(request, defaults, initialSession) {
     if (key?.startsWith('comment:')) return data.admissionKey === key;
     return data.ref === state.runnerRef || key && data.admissionKey === key || !key && state.dispatchReady;
   }
-  async function poll(readOnly = false) {
+  async function poll(readOnly = false, pushedPage = null) {
     if (state.polling) return pollFinished;
     const stopOnly = readOnly && state.stopAwaitingTerminal && (state.manualStopRequested || state.goalStopAwaitingTerminal);
     const unavailable = () => state.disposed || state.cancelRequested && !stopOnly;
     if (unavailable() || !state.started || state.pluginGenerationPreparing || state.preparingPlugins || state.turnSubmissionPending || submissionFailed && !state.recoveryRequired ||
       (turnQueue.active() && turnQueue.active().options.controlled)) return;
+    if (readOnly) stopSessionObservation();
+    else if (!pushedPage) stopContentStream();
+    if (!readOnly && !pushedPage && adapterId === 'armonel' && !unsubscribeSessionChanges &&
+        !runtime.supportsSessionUpdates?.())
+      unsubscribeSessionChanges = runtime.subscribeSessionChanges?.(state.runnerRef, wakeSessionPoll);
+    pendingSessionHint = false;
     state.polling = true;
     let finishPoll;
     pollFinished = new Promise(resolve => { finishPoll = resolve; });
@@ -1029,7 +1131,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     try {
       const firstResume = state.initialSession;
       state.initialSession = null;
-      const reply = firstResume || await runtime.rpc('job.session', {
+      const reply = pushedPage ? { ok: true, data: pushedPage } : firstResume || await runtime.rpc('job.session', {
         ref: state.runnerRef, since: historySince ?? state.seq, limit: 500,
       }, 15000);
       if (unavailable() || stalePoll()) return;
@@ -1077,7 +1179,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       if (data.authorizationRequired && !readOnly) {
         const authorization = await runtime.rpc('job.authorize', {
           ref: state.runnerRef,
-          cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), ...(state.accessPolicy ? { accessPolicy: state.accessPolicy } : {}) },
+          cfg: { ...runnerModelConfig(), ...(state.accessPolicy ? { accessPolicy: state.accessPolicy } : {}) },
         }, 15000);
         const authorized = authorization && authorization.data || {};
         if (!authorization || authorization.ok === false || authorized.ok === false) {
@@ -1091,10 +1193,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
         .filter(item => Number(item.seq || 0) > cursor)
         .sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
       const pageEnd = page.length ? Number(page.at(-1).seq) : cursor;
-      if (Number(data.seq || 0) > pageEnd) {
+      const moreItems = Number(data.seq || 0) > pageEnd;
+      if (moreItems && !pushedPage) {
         historyItems.push(...page);
         historySince = pageEnd;
-        state.timer = setTimeout(() => poll(readOnly), page.length ? 0 : POLL_MS);
+        state.timer = setTimeout(() => poll(readOnly), page.length || pendingSessionHint ? 0 : POLL_MS);
         return;
       }
       const items = historyItems.concat(page);
@@ -1116,6 +1219,12 @@ async function createRunnerHandle(request, defaults, initialSession) {
         appendItem(item);
       }
       await restoreTaskOutput(state.seq);
+      if (moreItems) {
+        // A live subscription already has a complete baseline. Display this
+        // batch now; a terminal receipt only settles after its final batch.
+        emit('changed');
+        return;
+      }
       state.round = Number(data.round || state.round || 1);
       state.usage = data.usage && typeof data.usage === 'object' ? { ...data.usage } : state.usage;
       if (Array.isArray(data.usageReceipts)) state.usageReceipts = data.usageReceipts;
@@ -1181,7 +1290,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       state.accessRestorePending = false;
       state.appliedAccessPolicy = data.appliedAccessPolicy || state.appliedAccessPolicy;
       state.pendingPermissions = Array.isArray(data.pendingPermissions) ? data.pendingPermissions : [];
-      state.status = state.pendingPermissions.length ? 'waiting-user' : _status(data.status);
+      state.status = state.pendingPermissions.length ? 'waiting-user' : _status(data.status, data.failureKind);
       const observedGoal = taskGoalSupported
         ? taskGoal.observe(state, data.taskGoal, TERMINAL_STATES.has(data.status)) : null;
       state.queuePosition = Math.max(0, Number(data.queuePosition || 0));
@@ -1197,7 +1306,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
         state.statusText = state.goalLimit.reason;
       } else if (data.error && !stopped) {
         state.runtimeError = _text(redact(require('../access-control/errors').message(data.error)), 1000);
-        state.status = 'unreachable';
+        if (state.status !== 'incomplete') state.status = 'unreachable';
         state.statusText = state.runtimeError;
       } else if (state.protocolIssue) {
         state.status = state.goalPaused ? 'idle' : 'unreachable';
@@ -1210,7 +1319,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
         state.statusText = state.queuePosition > 0
           ? '\u6392\u961f\u4e2d \u00b7 \u7b2c ' + state.queuePosition + ' \u9879'
           : '\u6392\u961f\u4e2d';
-      } else if (state.runtimeError && state.status !== 'streaming') {
+      } else if (state.runtimeError && !['streaming', 'incomplete'].includes(state.status)) {
         state.status = 'unreachable';
         state.statusText = state.runtimeError;
       } else if (observedGoal?.reason) {
@@ -1251,12 +1360,36 @@ async function createRunnerHandle(request, defaults, initialSession) {
       }
       emit(active ? 'changed' : 'settled');
       if (active) {
-        state.timer = setTimeout(poll, POLL_MS);
+        // Queue admission may still own the snapshot before a native session
+        // exists. Subscribe once the complete native baseline has been applied.
+        if (!readOnly && data.ref === state.runnerRef &&
+            ['running', 'access-changing', 'waiting-permission'].includes(data.status) &&
+            watchSessionUpdates()) return;
+        let delay = POLL_MS;
+        if (adapterId === 'armonel') {
+          if (!readOnly && !firstResume && !recovered && data.status === 'running' && state.status === 'streaming') {
+            if (unsubscribeSessionChanges && runtime.supportsSessionEvents?.()) {
+              delay = ARMONEL_STREAM_WATCHDOG_MS;
+            } else {
+              const now = Date.now();
+              if (page.some(item => item.delta === true && item.done !== true &&
+                  (item.kind === 'say' || item.kind === 'thinking') && String(item.full || item.text || '').trim())) {
+                lastArmonelDeltaAt = now;
+              }
+              // Tolerate one quiet poll between chunks on earlier Runners.
+              if (now - lastArmonelDeltaAt < ARMONEL_STREAM_QUIET_MS) delay = ARMONEL_STREAM_POLL_MS;
+            }
+          } else {
+            lastArmonelDeltaAt = -Infinity;
+          }
+        }
+        state.timer = setTimeout(poll, pendingSessionHint ? 0 : delay);
+      } else if (state.status === 'idle') {
+        settle({ ok: true, snapshot: _snapshot(state) });
+      } else if (stopped && state.status === 'aborted' && data.status === 'stopped' && !data.error) {
+        settle({ ok: true, cancelled: true, snapshot: _snapshot(state) });
       } else {
-        const result = state.status === 'idle'
-          ? { ok: true, snapshot: _snapshot(state) }
-          : { ok: false, reason: state.statusText || displayName + ' 没有正常完成' };
-        settle(result);
+        settle({ ok: false, reason: state.statusText || displayName + ' 没有正常完成' });
       }
     } catch (error) {
       if (!unavailable() && !stalePoll()) {
@@ -1267,6 +1400,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       state.polling = false;
       pollFinished = null;
       finishPoll();
+      if (contentNeedsRead || contentStream?.pages.length) queueMicrotask(drainSessionUpdates);
     }
   }
 
@@ -1355,7 +1489,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     runtime.rpc('job.dispatch', {
       cli: adapterId,
       dispatchId: state.dispatchId,
-      cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
+      cfg: { ...runnerModelConfig(), pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
         ...(adapterId === 'codex' ? { codex_reasoning_effort: dispatchedEffort } : {}),
         ...(turnPolicy ? { accessPolicy: turnPolicy } : {}) },
       task: { id: state.alias, title: state.title, note, status: 'doing',
@@ -1483,7 +1617,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       promptText: [next.promptText || _conversationPrompt(text, { ...opts, intent: state.intent, accessPolicy: turnPolicy }),
         next.materialUnderstandingPrompt,
         ...(opts.contextPrompts || []), taskContext, _languageContract()].filter(Boolean).join('\n\n'),
-      cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), skillSelection: next[TURN_SKILLS] || _skillRows(state.selectedSkills),
+      cfg: { ...runnerModelConfig(), skillSelection: next[TURN_SKILLS] || _skillRows(state.selectedSkills),
         ...(adapterId === 'codex' ? { codex_reasoning_effort: state.agentExecution?.reasoningEffort || '' } : {}),
         pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
         ...(turnPolicy ? { accessPolicy: turnPolicy } : {}) },
@@ -1975,12 +2109,19 @@ async function createRunnerHandle(request, defaults, initialSession) {
       } finally { state.modelChoicePending = false; }
     },
     setThinkingLevel(level) {
-      if (adapterId !== 'codex') return { ok: false, reason: '当前 Agent 不支持此思考强度设置' };
+      if (!['codex', 'dsh'].includes(adapterId)) return { ok: false, reason: '当前 Agent 不支持此思考强度设置' };
       if (state.disposed || state.modelChoicePending) return { ok: false, reason: '会话已关闭或正在切换模型，请稍候' };
       if (typeof level !== 'string' || /[\r\n\0]/.test(level)) return { ok: false, reason: '思考强度无效' };
-      const name = state.modelSelection.capture(), next = require('./codex-thinking').profile(name, level);
+      if (adapterId === 'dsh' && (['streaming', 'queued', 'waiting-user'].includes(state.status) ||
+          state.turnSubmissionPending || state.stopPending || turnQueue.active())) {
+        return { ok: false, reason: '当前回合尚未结束，结束后可为下一轮调整推理强度' };
+      }
+      const name = state.modelSelection.capture();
+      const next = adapterId === 'dsh' ? dshThinking(state.modelSelection.choiceModel(), level)
+        : require('./codex-thinking').profile(name, level);
       if (!next.supported || level && !next.levels.includes(level)) return { ok: false, reason: '当前模型不支持此思考强度，请刷新模型后重试' };
-      try { modelPreference.write(name, next.level); }
+      try { modelPreference.write(name, adapterId === 'codex' ? next.level : undefined,
+        adapterId === 'dsh' ? next.level : undefined); }
       catch (_) { return { ok: false, reason: '思考强度未能保存，请重试；原设置已保留' }; }
       state.thinking = next;
       emit('thinking-changed');
@@ -2052,6 +2193,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     cancel() {
       pausedPreparation = null;
       observationCancellation++;
+      stopSessionObservation();
       state.queueImmediate.cancel();
       const active = turnQueue.active();
       if (active && active.options.controlled) {
@@ -2271,7 +2413,7 @@ function createRunnerRuntimeAdapter(options) {
       cwd: row.workDir || '', title: row.title || displayName + ' 工作会话',
       createdAt: Math.round(Number(row.started || row.ended || 0) * 1000),
       at: Math.round(Number(row.ended || row.started || 0) * 1000),
-      count: Number(row.seq || 0), state: _status(row.state),
+      count: Number(row.seq || 0), state: _status(row.state, row.failureKind),
     };
   }
   const adapter = {

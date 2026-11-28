@@ -18,6 +18,21 @@ function idleAgent() {
   return { status: 'idle', session: { seq: 7 }, whenIdle: async () => {} };
 }
 
+test('managed DSH reasoning updates only the exact native process selection', async () => {
+  const { applyManagedReasoning } = await load();
+  const route = { provider: 'soduwork', model: 'fixture' };
+  const record = { effort: 'high' }, selection = { current: { ...route, reasoningEffort: 'high' } };
+  assert.throws(() => applyManagedReasoning(record, { ...route, model: 'different' }, selection,
+    { ...route, level: 'off' }), /selected managed reasoning model/);
+  assert.equal(selection.current.reasoningEffort, 'high');
+  applyManagedReasoning(record, route, selection, { ...route, level: 'off' });
+  assert.deepEqual(selection.current, { ...route, reasoningEffort: 'off' });
+  assert.equal(record.effort, 'off');
+  applyManagedReasoning(record, route, selection, { ...route, level: '' });
+  assert.deepEqual(selection.current, route);
+  assert.equal(record.effort, undefined);
+});
+
 test('DSH settlement joins descendants and waits for the parent turn they wake', { timeout: 3000 }, async () => {
   const { waitForSettlement } = await load();
   const child = deferred(), parent = deferred(), joined = deferred(), resumed = deferred();
@@ -176,6 +191,16 @@ function turnEndBlock() {
     return [];
   }`;
 }
+function cancelHandler() {
+  return `      cancel(params) {
+        const record = sessions.get(params.sessionId);
+        if (record === void 0) return Promise.resolve();
+        record.cancelled = true;
+        record.agent.cancel({ kind: "user" });
+        settlePrompt(record, "cancelled");
+        return Promise.resolve();
+      }`;
+}
 function fixtureSource(version) {
   return [
     'export class Projection {',
@@ -192,6 +217,11 @@ function fixtureSource(version) {
     '        const usage = record.projection.promptUsage();',
     '  return { stopReason };',
     '}',
+    'export async function cancel(sessions, sessionId) {',
+    '  return ({',
+    cancelHandler(),
+    '  }).cancel({ sessionId });',
+    '}',
   ].join('\n');
 }
 async function promptFixture(version) {
@@ -207,6 +237,28 @@ function recordFixture() {
 }
 
 for (const version of ['0.4.40', '0.4.41']) {
+  test('DSH ' + version + ' returns cancelled after the active native work settles', { timeout: 3000 }, async () => {
+    const { cancel, prompt } = await promptFixture(version);
+    const record = recordFixture(), idle = deferred(), child = deferred();
+    let aborts = 0, returned = false;
+    record.agent.whenIdle = () => idle.promise;
+    record.agent.cancel = () => { aborts++; };
+    const pending = prompt(record, { waitForChildren: () => child.promise }).then(result => {
+      returned = true;
+      return result;
+    });
+    const inflight = record.inflight;
+    await cancel(new Map([['session', record]]), 'session');
+    assert.equal(aborts, 1);
+    assert.equal(record.inflight, inflight);
+    assert.equal(returned, false);
+    idle.resolve();
+    await tick();
+    assert.equal(returned, false);
+    child.resolve(false);
+    assert.deepEqual(await pending, { stopReason: 'cancelled' });
+  });
+
   test('DSH ' + version + ' transformed prompt uses the last parent ending and reports errors', async () => {
     const { prompt } = await promptFixture(version);
     for (const outcome of ['max-tokens', 'error']) {
@@ -277,6 +329,7 @@ test('DSH source transform fails closed for unknown versions and changed or dupl
     assert.throws(() => transformBridgeSource('export const unrelated = true;', version));
     assert.throws(() => transformBridgeSource(source.replace('this.toolCalls.clear()', 'this.toolCalls.changedClear()'), version));
     assert.throws(() => transformBridgeSource(source + '\n' + turnEndBlock(), version));
+    assert.throws(() => transformBridgeSource(source.replace('record.agent.cancel({ kind:', 'record.agent.changedCancel({ kind:'), version));
   }
 });
 

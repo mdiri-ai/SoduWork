@@ -55,6 +55,24 @@ def catalog(test, root=None):
 
 
 class BundledDevelopmentSkillTests(unittest.TestCase):
+    def test_skill_prompt_selects_the_reader_for_each_agent(self):
+        from app.services import ai_local
+        from types import SimpleNamespace
+        task = SimpleNamespace(id="fixture", title="Read selected skill", note="Synthetic fixture")
+        directory = PROJECT / "skills" / "tdd"
+        context = {"skills": [{"name": "tdd", "description": "Testing guide", "path": str(directory)}]}
+        armonel = ai_local._compose(task, context, agent="armonel")
+        self.assertIn("`read_host_text`", armonel)
+        self.assertIn(str(directory / "SKILL.md"), armonel)
+        dsh = ai_local._compose(task, context, agent="dsh")
+        self.assertIn("`read` 的 `file_path`", dsh)
+        self.assertIn(str(directory / "SKILL.md"), dsh)
+        self.assertIn("请勿按名称调用 DeepSeek Harness 的 `Skill` 工具", dsh)
+        qwen = ai_local._compose(task, context, agent="qwen")
+        self.assertIn("`read`", qwen)
+        self.assertNotIn("read_host_text", qwen)
+        self.assertNotIn("DeepSeek Harness", qwen)
+
     def test_hub_discovers_valid_catalog_and_dispatches_real_skill_paths(self):
         rows = catalog(self)
         with patch.object(skills, "bundled_root", return_value=str(PROJECT / "skills")):

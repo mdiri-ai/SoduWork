@@ -46,6 +46,54 @@
         "approval": "native-acp",
         "sandbox": false
       },
+      "id": "armonel",
+      "displayName": "Armonel",
+      "transport": "runner",
+      "modelMode": "managed",
+      "goalMode": "none",
+      "group": "recommended",
+      "order": 15,
+      "summary": "通过 ACP 使用 SoduWork 模型完成对话与工作区任务",
+      "runner": {
+        "adapter": "acp",
+        "bins": [
+          "armonel",
+          "armonel.exe"
+        ],
+        "args": [
+          "acp"
+        ],
+        "home": {
+          "env": "EVOLVE_HARNESS_DATA_DIR",
+          "folder": ".armonel"
+        },
+        "modelEnv": {
+          "EVOLVE_HARNESS_BASE_URL": "base",
+          "EVOLVE_HARNESS_MODEL": "model",
+          "EVOLVE_HARNESS_API_KEY": "key"
+        }
+      },
+      "install": {
+        "installer": "bundled",
+        "pkg": "armonel",
+        "version": "0.0.11-rc.4",
+        "blurb": "SoduWork 内置的 ACP Agent，使用已配置的 OpenAI 兼容模型。",
+        "warn": "",
+        "config_how": "由 SoduWork 为当前执行传入模型配置与权限。"
+      }
+    },
+    {
+      "accessControl": {
+        "schema": "soduwork.access-policy/v1",
+        "supported": true,
+        "modes": [
+          "standard",
+          "readonly",
+          "full"
+        ],
+        "approval": "native-acp",
+        "sandbox": false
+      },
       "id": "codex-harness",
       "displayName": "Codex Harness",
       "transport": "runner",

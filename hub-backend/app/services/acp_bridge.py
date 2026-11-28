@@ -17,11 +17,13 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any
 
 try:
-    from .acp_access import BridgeAccess, AccessError
+    from .acp_access import BridgeAccess, AccessError, ApprovalTimeout, ApprovalCancelled
     from .acp_transition import Transition
     from .acp_process import close_process, ProcessCleanupError, OwnedProcessGroup
     from . import runtime_images
@@ -32,7 +34,7 @@ try:
     from . import opencode_model_selection
     from . import codex_acp_outcome
 except ImportError:  # direct script entry used by source Runner
-    from acp_access import BridgeAccess, AccessError
+    from acp_access import BridgeAccess, AccessError, ApprovalTimeout, ApprovalCancelled
     from acp_transition import Transition
     from acp_process import close_process, ProcessCleanupError, OwnedProcessGroup
     import runtime_images
@@ -49,12 +51,36 @@ _MAX_TERMINALS = 8
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL")
 _TASK_OUTPUT_RECOVERY_ENV = "SODUWORK_TASK_OUTPUT_RECOVERY_OWNED"
+_DSH_COMPACT_ONLY_ENV = "SODUWORK_DSH_COMPACT_ONLY"
 _DSH_OUTPUT_CONTINUATION = (
     "上一段模型输出达到单次上限。请沿用当前会话，从最后一个已确认的工具结果继续完成原请求。"
     "已经完成的写入、命令、发送或其他操作不要重复。结果不确定时先只读核对。"
     "被截断且未执行的工具调用请拆成更小的完整调用，分步写入和验证，避免再次生成过长参数。"
     "如果交付物已经完成，请直接给出结果和已完成的验证。"
 )
+_DSH_REASONING_CONTINUATION = (
+    "继续当前会话里的原请求。上一次模型回复在思考阶段用完了输出额度。"
+    "请直接给出简短的可用答案；若任务需要工具，就先发出下一项最小、完整的工具调用，等待结果。"
+    "沿用已经确认的工具结果。操作结果不确定时先只读核对，保留已完成的工作。"
+)
+
+
+@dataclass
+class _PromptProgress:
+    """Evidence from one native prompt; old transcript and compaction are excluded."""
+
+    text: bool = False
+    thinking: bool = False
+    other_content: bool = False
+    tool_seen: bool = False
+    tool_completed: bool = False
+    tool_ids: set[str] = field(default_factory=set)
+
+    def advanced(self) -> bool:
+        return self.text or self.tool_completed
+
+    def reasoning_only(self) -> bool:
+        return self.thinking and not (self.text or self.other_content or self.tool_seen)
 
 
 def _utf8_stdio() -> None:
@@ -67,6 +93,20 @@ def _utf8_stdio() -> None:
 
 def _emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+def _dsh_prompt_usage(value: Any) -> dict | None:
+    """DSH totals one ACP prompt, with cache reads/writes separate from uncached input."""
+    if not isinstance(value, dict):
+        return None
+    names = {"inputTokens": "input", "outputTokens": "output", "totalTokens": "total",
+             "cachedReadTokens": "cacheRead", "cachedWriteTokens": "cacheWrite",
+             "thoughtTokens": "reasoningTokens"}
+    counts = {target: value[source] for source, target in names.items()
+              if type(value.get(source)) is int and 0 <= value[source] <= 2**53 - 1}
+    if not {"input", "output", "total"} <= counts.keys():
+        return None
+    return {**counts, "inputIncludesCache": False}
 
 
 def _text(value: Any) -> str:
@@ -100,13 +140,15 @@ def _stderr_detail(head: list[str], tail: list[str]) -> str:
 
 
 class BridgeError(RuntimeError):
-    pass
+    def __init__(self, message: str, code: int = -32603):
+        super().__init__(message)
+        self.code = code
 
 
 def _safe_path(root: str, value: str) -> str:
     """Resolve an ACP path and reject workspace and symlink escapes."""
     if not value or not os.path.isabs(value):
-        raise BridgeError("ACP paths must be absolute")
+        raise BridgeError("ACP paths must be absolute", -32602)
     base = os.path.realpath(os.path.abspath(root))
     target = os.path.realpath(os.path.abspath(value))
     try:
@@ -122,12 +164,12 @@ def _terminal_env(items: Any) -> dict[str, str]:
     env = os.environ.copy()
     for item in items or []:
         if not isinstance(item, dict):
-            raise BridgeError("Invalid terminal environment entry")
+            raise BridgeError("Invalid terminal environment entry", -32602)
         name = str(item.get("name") or "")
         value = str(item.get("value") or "")
         upper = name.upper()
         if not _ENV_NAME.fullmatch(name):
-            raise BridgeError("Invalid terminal environment variable name")
+            raise BridgeError("Invalid terminal environment variable name", -32602)
         if (upper.startswith(("SODUWORK_", "SODUWORK_", "GIT_CONFIG_"))
                 or any(marker in upper for marker in _SECRET_MARKERS)):
             raise BridgeError("Agent cannot override protected environment variables")
@@ -214,6 +256,8 @@ class AcpBridge:
         self.next_id = 0
         self.pending: dict[Any, dict] = {}
         self.loading = False
+        self.session_close_supported = False
+        self.session_active = False
         self.message_id = ""
         self.message_has_native_id = False
         self.message_parts: list[str] = []
@@ -225,9 +269,14 @@ class AcpBridge:
         self.stderr_head: list[str] = []
         self.stderr_tail: list[str] = []
         self.transition = Transition(self)
+        self.permission_refused = False
         self.outcome = None
         self.dsh_can_compact = False
+        self.dsh_commands_advertised = False
+        self.dsh_compact_only = (os.environ.pop(_DSH_COMPACT_ONLY_ENV, "") == "1"
+                                 and self.agent_name == "dsh")
         self.dsh_compact_reply: list[str] | None = None
+        self.prompt_progress: _PromptProgress | None = None
         # The Runner owns this flag. A managed task must not receive a fresh
         # pair of bridge retries every time its persisted controller resumes it.
         self.task_output_recovery_owned = os.environ.get(_TASK_OUTPUT_RECOVERY_ENV) == "1"
@@ -314,14 +363,17 @@ class AcpBridge:
         except (BrokenPipeError, OSError) as exc:
             raise BridgeError("ACP Agent disconnected early" + self._exit_detail()) from exc
 
-    def request(self, method: str, params: dict) -> dict:
+    def request(self, method: str, params: dict, *, timeout: float | None = None) -> dict:
         self.next_id += 1
         request_id = self.next_id
+        deadline = time.monotonic() + timeout if timeout is not None else None
         self.send({"jsonrpc": "2.0", "id": request_id,
                    "method": method, "params": params})
         if request_id in self.pending:
             return self._unwrap(self.pending.pop(request_id))
         while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise BridgeError("ACP request did not settle before cleanup")
             self.transition.tick(method)
             try:
                 kind, value = self.inbox.get(timeout=.15)
@@ -350,7 +402,8 @@ class AcpBridge:
         if message.get("error"):
             error = message["error"]
             detail = error.get("message") if isinstance(error, dict) else str(error)
-            raise BridgeError(str(detail or "ACP request failed"))
+            code = error.get("code") if isinstance(error, dict) else None
+            raise BridgeError(str(detail or "ACP request failed"), code if type(code) is int else -32603)
         result = message.get("result")
         return result if isinstance(result, dict) else {}
 
@@ -358,7 +411,7 @@ class AcpBridge:
         path = (self.access.path(self.cwd, str(params.get("path") or ""))
                 if self.access.enabled else _safe_path(self.cwd, str(params.get("path") or "")))
         if not os.path.isfile(path):
-            raise BridgeError("Requested file does not exist")
+            raise BridgeError("Requested file does not exist", -32002)
         if os.path.getsize(path) > _MAX_FILE_BYTES:
             raise BridgeError("A single file read cannot exceed 4 MB")
         first = params.get("line")
@@ -366,7 +419,7 @@ class AcpBridge:
         limit = params.get("limit")
         if (type(first) is not int or first < 1
                 or (limit is not None and (type(limit) is not int or limit < 1))):
-            raise BridgeError("Invalid file line range")
+            raise BridgeError("Invalid file line range", -32602)
         # An omitted ACP limit means the complete file, including for an
         # Agent's read/modify/write operation. Never present a truncated prefix
         # as the whole file. Bound the actual read as well as the size probe so
@@ -384,33 +437,37 @@ class AcpBridge:
 
     def _write_text_file(self, params: dict) -> dict:
         if self.permission != "workspace":
-            raise BridgeError("Read-only sessions cannot write files")
+            raise BridgeError("Read-only sessions cannot write files", -32601)
+        content = params.get("content")
+        if not isinstance(content, str):
+            raise BridgeError("File content must be a string", -32602)
         path = (self.access.path(self.cwd, str(params.get("path") or ""), write=True,
                                       arguments={"contentDigest": hashlib.sha256(
-                                          str(params.get("content") or "").encode("utf-8")).hexdigest()})
+                                          content.encode("utf-8")).hexdigest()})
                 if self.access.enabled else _safe_path(self.cwd, str(params.get("path") or "")))
-        content = str(params.get("content") or "")
         if len(content.encode("utf-8")) > _MAX_FILE_BYTES:
             raise BridgeError("A single file write cannot exceed 4 MB")
         parent = os.path.dirname(path)
         if not os.path.isdir(parent):
-            raise BridgeError("Target directory does not exist")
+            raise BridgeError("Target directory does not exist", -32002)
         try:
             with open(path, "w", encoding="utf-8", newline="") as handle:
                 handle.write(content)
         except OSError as exc:
             raise BridgeError("File write failed: %s" % type(exc).__name__) from exc
+        if self.prompt_progress is not None:
+            self.prompt_progress.tool_seen = self.prompt_progress.tool_completed = True
         return {}
 
     def _terminal_create(self, params: dict) -> dict:
         if not self.allow_terminal:
-            raise BridgeError("This task was not granted terminal capability")
+            raise BridgeError("This task was not granted terminal capability", -32601)
         if len(self.terminals) >= _MAX_TERMINALS:
             raise BridgeError("A session can open at most 8 terminals")
         command = str(params.get("command") or "").strip()
         args = params.get("args") or []
         if not command or not isinstance(args, list) or len(args) > 256:
-            raise BridgeError("Invalid terminal command arguments")
+            raise BridgeError("Invalid terminal command arguments", -32602)
         args = [str(item) for item in args]
         cwd = (self.access.path(self.cwd, str(params.get("cwd") or self.cwd))
                if self.access.enabled else _safe_path(self.cwd, str(params.get("cwd") or self.cwd)))
@@ -422,12 +479,12 @@ class AcpBridge:
                 title="Run terminal command"):
             raise BridgeError("Terminal command was not approved")
         if not os.path.isdir(cwd):
-            raise BridgeError("Terminal working directory does not exist")
+            raise BridgeError("Terminal working directory does not exist", -32002)
         try:
             limit = min(4 * 1024 * 1024,
                         max(4096, int(params.get("outputByteLimit") or 1024 * 1024)))
         except (TypeError, ValueError, OverflowError) as exc:
-            raise BridgeError("Invalid terminal output limit") from exc
+            raise BridgeError("Invalid terminal output limit", -32602) from exc
         terminal = _Terminal(
             automatic_program or command,
             self.access.terminal_arguments(command, args) if automatic_program else args,
@@ -439,13 +496,22 @@ class AcpBridge:
         terminal_id = str(params.get("terminalId") or "")
         terminal = self.terminals.get(terminal_id)
         if not terminal:
-            raise BridgeError("Terminal does not exist or was released")
+            raise BridgeError("Terminal does not exist or was released", -32002)
         return terminal
 
     def _client_request(self, method: str, params: dict) -> dict | None:
+        if method.startswith("terminal/") and not self.allow_terminal:
+            raise BridgeError("This task was not granted terminal capability", -32601)
+        if method in {"fs/read_text_file", "fs/write_text_file"}:
+            path = params.get("path")
+            if not isinstance(path, str) or not os.path.isabs(path):
+                raise BridgeError("ACP paths must be absolute", -32602)
         if method == "fs/read_text_file":
             return self._read_text_file(params)
-        if method in {"fs/write_text_file", "terminal/create"} and self.transition.requested:
+        if method in {"fs/write_text_file", "terminal/create"} and self.transition.stop_requested:
+            raise ApprovalCancelled("The user stopped this turn")
+        if (method in {"fs/write_text_file", "terminal/create"}
+                and (self.transition.requested or self.transition.cancel_sent)):
             raise AccessError("Permission change in progress; this operation was not started")
         if method == "fs/write_text_file":
             return self._write_text_file(params)
@@ -474,13 +540,19 @@ class AcpBridge:
     def _incoming(self, message: dict) -> None:
         method = str(message.get("method") or "")
         if method == "session/update":
-            self._update((message.get("params") or {}).get("update") or {})
+            params = message.get("params") or {}
+            if self.dsh_compact_only and params.get("sessionId") != self.session_id:
+                return
+            self._update(params.get("update") or {})
             return
         if "id" not in message:
             return
         if method == "session/request_permission":
             try:
                 result = self._permission_result(message.get("params") or {})
+            except ApprovalTimeout:
+                result = {"outcome": {"outcome": "cancelled"},
+                          "_meta": {"armonel/stopReason": "tool_approval_timeout"}}
             except AccessError:
                 result = {"outcome": {"outcome": "cancelled"}}
             self.send({"jsonrpc": "2.0", "id": message["id"], "result": result})
@@ -488,9 +560,10 @@ class AcpBridge:
         params = message.get("params") or {}
         try:
             result = self._client_request(method, params)
-        except (BridgeError, AccessError) as exc:
+        except (BridgeError, AccessError, OSError) as exc:
             self.send({"jsonrpc": "2.0", "id": message["id"], "error": {
-                "code": -32000, "message": str(exc)}})
+                "code": getattr(exc, "code", -32603),
+                "message": type(exc).__name__ if isinstance(exc, OSError) else str(exc)}})
             return
         if result is not None:
             self.send({"jsonrpc": "2.0", "id": message["id"], "result": result})
@@ -500,6 +573,8 @@ class AcpBridge:
             "message": "Unsupported SoduWork Runner client method: " + method}})
 
     def _permission_result(self, params: dict) -> dict:
+        if self.transition.cancel_sent or self.transition.stop_requested:
+            return {"outcome": {"outcome": "cancelled"}}
         call = params.get("toolCall") or {}
         raw_options = params.get("options") or []
         kimi_approval = {"approve_once": "allow_once", "approve_always": "allow_always",
@@ -528,6 +603,8 @@ class AcpBridge:
         approved = self.permission != "readonly"
         if self.transition.permission_blocked(params):
             approved = False
+        elif self.agent_name == "armonel" and (not approved or not self.access.enabled):
+            approved = False
         elif self.access.enabled:
             approved = self.access.native_permission(params)
             if not approved:
@@ -541,6 +618,8 @@ class AcpBridge:
             selected = next((item for item in options
                              if str(item.get("kind") or "").startswith("reject_")),
                             None)
+        if self.agent_name == "armonel" and (not selected or str(selected.get("kind")).startswith("reject_")):
+            self.permission_refused = True
         if not selected:
             return {"outcome": {"outcome": "cancelled"}}
         return {"outcome": {"outcome": "selected",
@@ -577,16 +656,18 @@ class AcpBridge:
     def _update(self, update: dict) -> None:
         kind = str(update.get("sessionUpdate") or "")
         if self.agent_name == "dsh" and kind == "available_commands_update":
+            self.dsh_commands_advertised = True
             self.dsh_can_compact = any(
                 isinstance(command, dict) and command.get("name") == "compact"
                 for command in update.get("availableCommands") or [])
         if self.dsh_compact_reply is not None and kind == "agent_message_chunk":
             self.dsh_compact_reply.append(_text(update.get("content")))
             return
-        if self.loading:
+        if self.loading or self.dsh_compact_only:
             return
         if self.transition.update(update) is False:
             return
+        progress = self.prompt_progress
         self.codex_tool_output.consume(update)
         self.access.observe_tool(update)
         if kind == "agent_thought_chunk":
@@ -595,6 +676,10 @@ class AcpBridge:
             # They carry no content and must not end the active message.
             if not text:
                 return
+            meta = update.get("_meta")
+            dsh = meta.get("dsh") if isinstance(meta, dict) else None
+            if progress and text.strip() and not (isinstance(dsh, dict) and dsh.get("subagent")):
+                progress.thinking = True
             # Late reasoning may interleave with one explicitly identified
             # message (DSH); only a tool, new message or turn ends that stream.
             if self.message_parts and not self.message_has_native_id:
@@ -617,6 +702,12 @@ class AcpBridge:
                 self.message_count += 1
                 self.message_id = "acp:message:%s" % self.message_count
             content = _text(update.get("content"))
+            if progress:
+                if content.strip():
+                    progress.text = True
+                block = update.get("content")
+                if isinstance(block, dict) and block.get("type") not in (None, "text"):
+                    progress.other_content = True
             if content:
                 self.message_parts.append(content)
                 if not self.loading:
@@ -642,6 +733,12 @@ class AcpBridge:
         if kind == "tool_call":
             self._flush_message()
             tool_id = str(update.get("toolCallId") or "")
+            if progress and tool_id:
+                progress.tool_seen = True
+                if tool_id not in self.tools:
+                    progress.tool_ids.add(tool_id)
+                if tool_id in progress.tool_ids and update.get("status") == "completed":
+                    progress.tool_completed = True
             title = str(update.get("title") or update.get("kind") or "Tool")
             self.tools[tool_id] = title
             raw = update.get("rawInput")
@@ -661,15 +758,23 @@ class AcpBridge:
             return
         if kind == "tool_call_update":
             text = _text(update.get("content"))
+            tool_id = str(update.get("toolCallId") or "")
+            if progress and tool_id:
+                progress.tool_seen = True
+                if update.get("status") == "completed" and tool_id in progress.tool_ids:
+                    progress.tool_completed = True
             if update.get("status") in ("completed", "failed"):
                 text = self.codex_tool_output.finish(update, text)
                 _emit({"type": "tool_execution_end",
-                       "toolName": self.tools.get(
-                           str(update.get("toolCallId") or ""), "Tool"),
-                       "toolCallId": str(update.get("toolCallId") or ""),
+                       "toolName": self.tools.get(tool_id, "Tool"),
+                       "toolCallId": tool_id,
                        **self.transition.result_fields(update), "result": text[:2000]})
             return
         if kind == "usage_update":
+            meta = update.get("_meta")
+            dsh = meta.get("dsh") if isinstance(meta, dict) else None
+            if self.agent_name == "dsh" and isinstance(dsh, dict) and dsh.get("subagent"):
+                return  # A delegated session has its own context window.
             used = update.get("used")
             if isinstance(used, str):
                 try:
@@ -685,7 +790,9 @@ class AcpBridge:
     def _output_limited(self, result: dict) -> bool:
         if result.get("stopReason") != "max_tokens":
             return False
-        if self.agent_name in {"dsh", "opencode", "kimi"}:
+        if self.agent_name in {"dsh", "opencode", "kimi", "armonel"}:
+            # Armonel uses this ACP stop reason for both task budgets and
+            # per-response limits. The Runner reports a generic token limit.
             return True
         # Qwen also uses max_tokens for its input/session budget. Only the
         # reviewed host projection identifies an exhausted output recovery.
@@ -695,8 +802,10 @@ class AcpBridge:
                 and owned.get("outputLimit") is True)
 
     def _client_capabilities(self) -> dict:
+        timeout = (self.access.channel or {}).get("permissionTimeoutMs") if self.agent_name == "armonel" else None
         return {
             **codex_acp_outcome.capabilities(self.agent_name),
+            **({"_meta": {"armonel/permissionTimeoutMs": timeout}} if type(timeout) is int and timeout > 0 else {}),
             # codex-acp only advertises its custom enterprise gateway when the
             # ACP client explicitly opts in. Other ACP agents safely ignore it.
             "auth": {"_meta": {"gateway": True}},
@@ -707,21 +816,55 @@ class AcpBridge:
             "terminal": self.allow_terminal,
         }
 
+    def _prompt(self, content: list) -> dict:
+        result = self.request("session/prompt", {"sessionId": self.session_id, "prompt": content})
+        if self.agent_name == "dsh" and result.get("stopReason"):
+            usage = _dsh_prompt_usage(result.get("usage"))
+            if usage is not None:
+                # Emit once per settled prompt, including cancellation and recovery. One
+                # prompt may cover several model steps; this is not context occupancy.
+                _emit({"type": "acp_prompt_usage", "usage": usage})
+        return result
+
     def _compact_dsh_history(self) -> bool:
         # The native command creates a durable checkpoint in this same session.
         # DSH reports command failures as message chunks with an end_turn result.
+        if self.access.enabled:
+            self.transition.next_poll = 0
+            self.transition.tick("before-prompt")
+            if self.transition.stop_requested:
+                return False
         self.dsh_compact_reply = []
         try:
-            result = self.request("session/prompt", {
-                "sessionId": self.session_id,
-                "prompt": [{"type": "text", "text": "/compact"}],
-            })
+            result = self._prompt([{"type": "text", "text": "/compact"}])
             return (result.get("stopReason") == "end_turn"
                     and "".join(self.dsh_compact_reply).startswith("Compacted "))
         finally:
             self.dsh_compact_reply = None
 
+    def _dsh_compaction_available(self) -> bool:
+        # DSH may publish commands just after returning session/resume.
+        deadline = time.monotonic() + 2
+        while not self.dsh_commands_advertised:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                kind, value = self.inbox.get(timeout=remaining)
+            except queue.Empty:
+                return False
+            if kind != "message" or not isinstance(value, dict):
+                return False
+            if "method" in value:
+                self._incoming(value)
+            elif "id" in value:
+                self.pending[value["id"]] = value
+        return self.dsh_can_compact
+
     def run(self, prompt: str) -> int:
+        if self.dsh_compact_only and not self.session_id:
+            _emit({"type": "turn_stopped", "reason": "dsh_context_compaction_failed"})
+            return 2
         self.start()
         init = self.request("initialize", {
             "protocolVersion": _PROTOCOL,
@@ -732,16 +875,23 @@ class AcpBridge:
         if int(init.get("protocolVersion") or 0) != _PROTOCOL:
             raise BridgeError("ACP protocol version is incompatible")
         capabilities = init.get("agentCapabilities") or {}
-        try:
-            content = runtime_images.prompt(prompt, capabilities, os.environ.get(runtime_images.ENV_KEY, ""))
-        except runtime_images.ImageInputError as exc:
-            raise BridgeError(str(exc)) from exc
+        if self.agent_name == "armonel":
+            identity = init.get("agentInfo") or {}
+            if identity.get("name") != "armonel" or not capabilities.get("loadSession"):
+                raise BridgeError("随附的 Armonel 不支持 ACP 会话恢复，请修复或更新 SoduWork。")
+        content = []
+        if not self.dsh_compact_only:
+            try:
+                content = runtime_images.prompt(prompt, capabilities, os.environ.get(runtime_images.ENV_KEY, ""))
+            except runtime_images.ImageInputError as exc:
+                raise BridgeError(str(exc)) from exc
         self.transition.resumable = bool(capabilities.get("loadSession") or
             (capabilities.get("sessionCapabilities") or {}).get("resume") is not None)
         session_params = {"cwd": self.cwd, "mcpServers": []}
+        session_caps = capabilities.get("sessionCapabilities") or {}
+        self.session_close_supported = isinstance(session_caps.get("close"), dict)
         session_config = {}
         if self.session_id:
-            session_caps = capabilities.get("sessionCapabilities") or {}
             self.loading = True
             try:
                 if session_caps.get("resume") is not None:
@@ -761,6 +911,7 @@ class AcpBridge:
             self.session_id = str(created.get("sessionId") or "")
             if not self.session_id:
                 raise BridgeError("ACP Agent did not return a session ID")
+        self.session_active = True
         if self.agent_name == "qwen":
             try:
                 qwen_runtime.apply_model(self, session_config)
@@ -774,19 +925,66 @@ class AcpBridge:
         self.access.apply(self, session_config)
         _emit({"type": "session", "sessionID": self.session_id})
         _emit({"type": "step_start"})
+        if self.dsh_compact_only:
+            try:
+                compacted = self._dsh_compaction_available() and self._compact_dsh_history()
+            except BridgeError:
+                compacted = False
+            if self.transition.stop_requested:
+                _emit({"type": "turn_stopped", "reason": "cancelled"})
+                return 0
+            reason = "dsh_context_compacted" if compacted else "dsh_context_compaction_failed"
+            _emit({"type": "turn_stopped", "reason": reason})
+            return 2
         continued_output = False
         compacted_output = False
         while True:
+            if self.access.enabled:
+                self.transition.next_poll = 0
+                self.transition.tick("before-prompt")
+                if self.transition.stop_requested:
+                    _emit({"type": "turn_stopped", "reason": "cancelled"})
+                    return 0
+            progress = self.prompt_progress = _PromptProgress() if self.agent_name == "dsh" else None
+            self.permission_refused = False
             if self.outcome:
                 self.outcome.begin(self.session_id)
-            result = self.request("session/prompt", {
-                "sessionId": self.session_id,
-                "prompt": content,
-            })
+            try:
+                result = self._prompt(content)
+            except BridgeError as exc:
+                if self.transition.stop_requested:
+                    self._flush_message()
+                    _emit({"type": "turn_stopped", "reason": "cancelled"})
+                    return 0
+                # Armonel rc.4 reports these native stops as JSON-RPC errors.
+                # Forward only their stable reason, never the appended detail.
+                if self.agent_name != "armonel":
+                    raise
+                message = str(exc)
+                prefix = "Task stopped: compaction_failed. "
+                if exc.code == -32603 and message.startswith("Task stopped: context_contract."):
+                    reason = "context_contract"
+                elif message.startswith(prefix):
+                    detail = message[len(prefix):].removeprefix("Context summary failed before replacing history: ")
+                    reason = ("context_summary_truncated" if detail.startswith(
+                        "Summary was truncated again on a smaller segment; original history was preserved")
+                        else "context_summary_failed")
+                else:
+                    raise
+                self._flush_message()
+                _emit({"type": "turn_stopped", "reason": reason})
+                return 2
+            finally:
+                self.prompt_progress = None
             self._flush_message()
+            if not isinstance(result.get("stopReason"), str) or not result["stopReason"].strip():
+                raise BridgeError("ACP session/prompt response is missing stopReason")
             failure = codex_acp_outcome.failure(self.agent_name, result)
             if failure:
                 raise BridgeError(failure)
+            recovery_without_result = (progress is not None and continued_output
+                                       and result["stopReason"] == "end_turn"
+                                       and (not progress.advanced() or self.transition.busy()))
             if self.agent_name in {"dsh", "kimi", "qwen"} or self._output_limited(result):
                 reason = str(result.get("stopReason") or "")
                 if reason in {"", "end_turn"} or self._output_limited(result):
@@ -798,20 +996,25 @@ class AcpBridge:
                 if native_reason in {"length", "max_tokens"}:
                     result = {**result, "stopReason": "max_tokens"}
             if not self.transition.complete(result):
-                if (self.agent_name == "dsh" and result.get("stopReason") == "max_tokens"
+                if (progress is not None and result.get("stopReason") == "max_tokens"
                         and not self.task_output_recovery_owned
+                        and not self.permission_refused
                         and not self.transition.requested
+                        and not self.transition.stop_requested
                         and not self.transition.cancel_sent and not self.transition.busy()):
                     if continued_output:
-                        if compacted_output or not self.dsh_can_compact or not self._compact_dsh_history():
+                        if (compacted_output or not progress.advanced() or not self.dsh_can_compact
+                                or not self._compact_dsh_history()):
                             break
                         compacted_output = True
                         self.transition.next_poll = 0
                         self.transition.tick("complete")
-                        if self.transition.requested or self.transition.cancel_sent or self.transition.busy():
+                        if (self.transition.stop_requested or self.transition.requested
+                                or self.transition.cancel_sent or self.transition.busy()):
                             break
                     continued_output = True
-                    content = [{"type": "text", "text": _DSH_OUTPUT_CONTINUATION}]
+                    continuation = _DSH_REASONING_CONTINUATION if progress.reasoning_only() else _DSH_OUTPUT_CONTINUATION
+                    content = [{"type": "text", "text": continuation}]
                     _emit({"type": "step_start"})
                     continue
                 break
@@ -825,15 +1028,56 @@ class AcpBridge:
             # tools; resume with the trusted continuation, never the user input.
             content = [{"type": "text", "text": continuation}]
         reason = str(result.get("stopReason") or "")
+        if self.transition.stop_requested:
+            _emit({"type": "turn_stopped", "reason": "cancelled"})
+            return 0
+        meta = result.get("_meta")
+        if self.agent_name == "armonel" and (reason == "context_contract" or
+                isinstance(meta, dict) and meta.get("armonel/stopReason") == "context_contract"):
+            _emit({"type": "turn_stopped", "reason": "context_contract"})
+            return 2
         if reason in ("", "end_turn"):
+            if recovery_without_result:
+                # Preserve the native end_turn receipt. It did not resolve the
+                # earlier truncation with a usable answer or a settled tool.
+                _emit({"type": "turn_stopped", "reason": "output_recovery_no_progress"})
+                return 2
+            return 0
+        if (self.agent_name == "armonel" and reason == "cancelled" and isinstance(meta, dict)
+                and meta.get("armonel/stopReason") == "tool_approval_timeout"):
+            _emit({"type": "turn_stopped", "reason": "tool_approval_timeout"})
+            return 0
+        if reason == "cancelled":
+            _emit({"type": "turn_stopped", "reason": "cancelled"})
+            return 0
+        if (reason == "refusal" and self.permission_refused
+                and not self.transition.requested and not self.transition.blocked):
+            _emit({"type": "turn_stopped", "reason": "tool_approval_denied"})
             return 0
         if self._output_limited(result):
+            if (self.agent_name == "armonel" and isinstance(meta, dict)
+                    and meta.get("armonel/stopReason") == "reasoning_output_limit"):
+                _emit({"type": "turn_stopped", "reason": "reasoning_output_limit"})
+            if progress is not None:
+                if progress.reasoning_only():
+                    _emit({"type": "turn_stopped", "reason": "reasoning_output_limit"})
+                elif continued_output and not progress.advanced():
+                    _emit({"type": "turn_stopped", "reason": "output_recovery_no_progress"})
+            return 2
+        if self.agent_name == "armonel" and reason == "max_turn_requests":
+            _emit({"type": "turn_stopped", "reason": "max_turn_requests"})
             return 2
         raise BridgeError("Agent stopped this turn: " + reason)
 
     def close(self) -> None:
         errors = []
         try:
+            if self.session_active and self.session_close_supported and self.proc and self.proc.poll() is None:
+                try:
+                    self.request("session/close", {"sessionId": self.session_id}, timeout=0.75)
+                except (AccessError, BridgeError):
+                    # The outer Runner still requires verified process exit.
+                    pass
             for terminal in list(self.terminals.values()):
                 try:
                     terminal.kill()

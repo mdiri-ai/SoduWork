@@ -185,13 +185,25 @@ class GoalLaunchStopTests(unittest.TestCase):
                 spawn.assert_not_called()
 
     def test_human_queue_or_budget_during_compaction_does_not_resume_native_session(self):
-        profile = dict(local_base._PROFILES["dsh"], bin=lambda: "synthetic-agent",
+        self.run["cli"] = "opencode"
+        profile = dict(local_base._PROFILES["opencode"], bin=lambda: "synthetic-agent",
                        resume=lambda *_: ["retained"])
         for block in ("human", "budget"):
             with self.subTest(block=block):
                 blocked = self._context_fixture(block)
-                with patch.dict(local_base._PROFILES, {"dsh": profile}), \
+                with patch.dict(local_base._PROFILES, {"opencode": profile}), \
                         patch.object(local_ctx, "_try_compact", side_effect=blocked), \
+                        patch.object(local_stream, "_spawn") as spawn:
+                    self.assertFalse(local_ctx._recover_overflow(self.ref))
+                self.assertEqual(self.run["cliSid"], "retained")
+                self.assertEqual(self.run["segment"], 1)
+                spawn.assert_not_called()
+
+    def test_human_queue_or_budget_before_dsh_native_repair_prevents_automatic_launch(self):
+        for block in ("human", "budget"):
+            with self.subTest(block=block):
+                blocked = self._context_fixture(block)
+                with patch.object(local_ctx, "_note", side_effect=blocked), \
                         patch.object(local_stream, "_spawn") as spawn:
                     self.assertFalse(local_ctx._recover_overflow(self.ref))
                 self.assertEqual(self.run["cliSid"], "retained")

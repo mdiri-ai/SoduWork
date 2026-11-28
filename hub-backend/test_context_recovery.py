@@ -1,5 +1,6 @@
 """Context saturation must never permanently poison a conversation."""
 import json
+import os
 from unittest.mock import Mock
 import unittest
 import tempfile
@@ -70,6 +71,121 @@ class ContextRecoveryTests(unittest.TestCase):
         assert row["overflowTried"] == 0 and row["round"] == 2
         assert ctx._recover_overflow(ref)
         assert "新的本轮要求" in spawn.call_args.args[2]
+
+    def test_dsh_high_context_followup_keeps_native_session(self):
+        ref, row, spawn = self.runtime
+        row.update(cli="dsh", cliSid="native-dsh", state="done")
+        resume = Mock(return_value=["original-native-session"])
+        start = Mock()
+        self.mock_profile("dsh", dict(base._PROFILES["dsh"], bin=lambda: "fixture",
+                                       resume=resume, start=start))
+        with patch.object(ctx, "_relay") as relay:
+            self.assertTrue(ctx.prepare_resume(ref, "只继续未完成的任务", {})["ok"])
+        start.assert_not_called()
+        relay.assert_not_called()
+        self.assertEqual(resume.call_args.args[0], "native-dsh")
+        self.assertEqual(spawn.call_args.args[2], "只继续未完成的任务")
+        self.assertEqual(row["cliSid"], "native-dsh")
+        self.assertEqual(row["segment"], 1)
+        self.assertNotIn("contextSegments", row)
+
+    def test_dsh_overflow_repairs_once_without_replaying_prompt_or_images(self):
+        from app.services import runtime_images
+        ref, row, spawn = self.runtime
+        row.update(cli="dsh", cliSid="native-dsh", contextRequest="不要重放的请求")
+        row["cfg"][runtime_images.CFG_KEY] = [{"id": "previous-image"}]
+        resume = Mock(return_value=["original-native-session"])
+        self.mock_profile("dsh", dict(base._PROFILES["dsh"], bin=lambda: "fixture", resume=resume))
+        with patch.object(ctx, "_relay") as relay:
+            self.assertTrue(ctx._recover_overflow(ref))
+            self.assertFalse(ctx._recover_overflow(ref))
+        relay.assert_not_called()
+        self.assertEqual(resume.call_args.args[0], "native-dsh")
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[2], "")
+        launch_cfg = spawn.call_args.args[5]
+        self.assertIs(launch_cfg["_dshCompactOnly"], base._DSH_COMPACT_ONLY)
+        self.assertNotIn(runtime_images.CFG_KEY, launch_cfg)
+        self.assertNotIn("_dshCompactOnly", row["cfg"])
+        self.assertEqual(row["cliSid"], "native-dsh")
+        self.assertNotIn("contextSegments", row)
+
+    def test_dsh_overflow_without_native_id_does_not_replay_in_new_session(self):
+        ref, row, spawn = self.runtime
+        row.update(cli="dsh", cliSid="")
+        with patch.object(ctx, "_relay") as relay:
+            self.assertFalse(ctx._recover_overflow(ref))
+        relay.assert_not_called()
+        spawn.assert_not_called()
+
+    def test_dsh_compact_environment_requires_internal_launch_marker(self):
+        from app.services import dsh_runtime
+        cfg = {"llm": {"base": "http://127.0.0.1:9/v1", "model": "fixture", "key": "synthetic"}}
+        with patch.dict(os.environ, {base._DSH_COMPACT_ONLY_ENV: "1"}), \
+                patch.object(dsh_runtime, "prepare_temp"), patch.object(base._acp_agents, "home_env"):
+            profile = base._PROFILES["dsh"]
+            untrusted = base._env_for(profile, {**cfg, "_dshCompactOnly": True})
+            trusted = base._env_for(profile, {**cfg, "_dshCompactOnly": base._DSH_COMPACT_ONLY})
+        self.assertNotIn(base._DSH_COMPACT_ONLY_ENV, untrusted)
+        self.assertEqual(trusted[base._DSH_COMPACT_ONLY_ENV], "1")
+
+    def test_dsh_repair_only_uses_advertised_native_compaction(self):
+        from app.services import acp_bridge
+        for available, confirmed, reason in (
+            (True, True, "dsh_context_compacted"),
+            (True, False, "dsh_context_compaction_failed"),
+            (False, False, "dsh_context_compaction_failed"),
+        ):
+            with self.subTest(available=available, confirmed=confirmed), patch.dict(os.environ, {
+                acp_bridge._DSH_COMPACT_ONLY_ENV: "1", "SODUWORK_APPROVAL_CHANNEL": "",
+            }):
+                bridge = acp_bridge.AcpBridge([], self.temp.name, "dsh", "workspace", "native-dsh")
+                self.assertNotIn(acp_bridge._DSH_COMPACT_ONLY_ENV, os.environ)
+                methods, prompts = [], []
+
+                def request(method, params):
+                    methods.append(method)
+                    if method == "initialize":
+                        return {"protocolVersion": 1, "agentCapabilities": {"sessionCapabilities": {"resume": {}}}}
+                    if method == "session/resume":
+                        bridge.inbox.put(("message", {"method": "session/update", "params": {
+                            "sessionId": "native-dsh", "update": {"sessionUpdate": "available_commands_update",
+                                                                  "availableCommands": [{"name": "compact"}] if available else []},
+                        }}))
+                        return {}
+                    self.assertEqual(params["sessionId"], "native-dsh")
+                    prompts.append(params["prompt"][0]["text"])
+                    bridge._update({"sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": (
+                                        "Compacted session history." if confirmed else "Synthetic private failure")}})
+                    return {"stopReason": "end_turn"}
+
+                with patch.object(bridge, "start"), patch.object(bridge, "request", side_effect=request), \
+                        patch.object(acp_bridge, "_emit") as emit:
+                    self.assertEqual(bridge.run("不要重放的请求"), 2)
+                self.assertEqual(methods[:2], ["initialize", "session/resume"])
+                self.assertEqual(prompts, ["/compact"] if available else [])
+                self.assertEqual(emit.call_args.args[0], {"type": "turn_stopped", "reason": reason})
+
+    def test_dsh_compaction_is_reported_as_incomplete_and_takes_no_raw_failure_text(self):
+        from app.services import local_turn_outcome
+        ref, row, spawn = self.runtime
+        for reason, expected, tokens in (
+            ("dsh_context_compaction_failed", local_turn_outcome.DSH_CONTEXT_COMPACTION_FAILED, {"input": 9000}),
+            ("dsh_context_compacted", local_turn_outcome.DSH_CONTEXT_COMPACTED, {}),
+        ):
+            with self.subTest(reason=reason):
+                row.update(cli="dsh", cliSid="native-dsh", state="running", tokens={"input": 9000})
+                terminal = {}
+                stream._on_line(ref, json.dumps({"type": "turn_stopped", "reason": reason,
+                                                "errorMessage": "Synthetic private failure"}), terminal)
+                stream._finish(ref, 2, terminal, "")
+                self.assertEqual(row["failureKind"], "execution_incomplete")
+                self.assertEqual(row["error"], expected)
+                self.assertEqual(row["tokens"], tokens)
+                self.assertEqual(row["cliSid"], "native-dsh")
+                self.assertNotIn("Synthetic private failure", str(row["lines"]))
+        spawn.assert_not_called()
 
 
     def test_fresh_credentials_used_before_native_compaction(self):
@@ -369,8 +485,9 @@ class ContextRecoveryTests(unittest.TestCase):
 
 
 
-for cli in list(base._PROFILES):
-    setattr(ContextRecoveryTests, "test_base_" + cli.replace("-", "_"), lambda self, name=cli: self.check_base(name))
+for cli in base._PROFILES:
+    if cli != "dsh":
+        setattr(ContextRecoveryTests, "test_base_" + cli.replace("-", "_"), lambda self, name=cli: self.check_base(name))
 
 if __name__ == "__main__":
     unittest.main()

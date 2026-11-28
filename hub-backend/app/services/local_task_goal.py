@@ -420,16 +420,31 @@ def assess(run: dict, terminal: dict, now: float | None = None) -> dict:
     progress = state["progress"] > state.get("turnProgress", 0)
     state["noProgress"] = 0 if progress else state["noProgress"] + 1
     if terminal.get("outputTruncated"):
+        reasoning_limit = ""
+        if terminal.get("reasoningOutputLimit"):
+            from .local_turn_outcome import REASONING_OUTPUT_LIMIT
+            reasoning_limit = REASONING_OUTPUT_LIMIT
+            # Without the native session, prepare_resume could relay the task
+            # into a fresh session instead of preserving already executed work.
+            if run.get("cli") != "dsh" or not run.get("cliSid") or run.get("_executionStart"):
+                return _pause(run, reasoning_limit, at)
         used = state["outputRecoveries"]
         if used >= _OUTPUT_RECOVERIES or (used and state["progress"] <= state["outputRecoveryProgress"]):
-            return _pause(run, "模型输出上限的自动恢复已停止，已有文件和进度已保留；请缩小当前步骤后继续。", at)
-        if state["noProgress"] >= 2:
+            return _pause(run, reasoning_limit or "模型输出上限的自动恢复已停止，已有文件和进度已保留；请缩小当前步骤后继续。", at)
+        if state["noProgress"] >= 2 and not reasoning_limit:
             return _pause(run, "连续两轮没有新的成功工具进展，已暂停目标并保留现有进度。", at)
         state["outputRecoveries"] += 1
         state["outputRecoveryProgress"] = state["progress"]
-        prompt = (_review_prompt(run) if state["status"] == "reviewing" else work_prompt(run,
-                  "上一轮触发了单轮输出上限，尚未完成。检查已经保存的工具结果，从未完成处继续，"
-                  "使用更小的工具调用，不重发已完成操作，不补齐或执行上一轮截断的工具参数。"))
+        if state["status"] == "reviewing":
+            prompt = _review_prompt(run)
+            if reasoning_limit:
+                prompt += "\n上一步的思考用尽了单次输出额度。直接完成最小的必要验证并按上述格式简短回复。"
+        elif reasoning_limit:
+            prompt = ("上一步的思考用尽了单次输出额度。沿用本会话的目标、权限和已有工具结果，"
+                      "直接执行一个最小的未完成步骤，或简短给出已经验证的结果。不要重复规划或重做已完成的操作。")
+        else:
+            prompt = work_prompt(run, "上一轮触发了单轮输出上限，尚未完成。检查已经保存的工具结果，从未完成处继续，"
+                                 "使用更小的工具调用，不重发已完成操作，不补齐或执行上一轮截断的工具参数。")
         state["continuations"] += 1
         return {"action": "continue", "reason": "正在从保留进度恢复输出截断。", "prompt": prompt}
     if state["status"] == "reviewing":

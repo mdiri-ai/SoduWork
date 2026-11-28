@@ -9,6 +9,33 @@ from app.services import workflow_contracts as contract, workflow_inputs
 
 
 class MissingDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stopped_agent_does_not_deliver_workflow_output(self):
+        from app.services import workflow_engine as workflow
+        task = SimpleNamespace(id="task")
+        session = SimpleNamespace(get=AsyncMock(return_value=task), add=Mock())
+        run = SimpleNamespace(id="run", task_id=task.id, context={})
+        node = SimpleNamespace(id="node", node_key="write", node_type="ai", state="running",
+                               executor={"ref": "fixture"}, output={}, error="", started_at=None,
+                               finished_at=None)
+        snapshot = {"ok": True, "done": True, "status": "stopped", "error": "",
+                    "attachments": [{"filename": "report.pdf"}], "finalText": "Created report.pdf"}
+        with (
+            patch.object(workflow, "_node_config", AsyncMock(return_value={})),
+            patch.object(workflow.ai_exec, "load", AsyncMock(return_value={})),
+            patch.object(workflow.ai_exec, "status_sync", return_value=snapshot),
+            patch.object(workflow.ai_exec, "pull_artifacts", AsyncMock()) as pull,
+            patch.object(workflow, "_completion_decision", AsyncMock()) as decision,
+            patch.object(workflow, "_begin_rework", AsyncMock()) as rework,
+        ):
+            await workflow._poll_node(session, run, node)
+        self.assertEqual(node.state, "failed")
+        self.assertEqual(node.output["executionStatus"], "stopped")
+        self.assertTrue(contract.terminal_failure(node.output))
+        self.assertIsNotNone(node.finished_at)
+        pull.assert_not_awaited()
+        decision.assert_not_awaited()
+        rework.assert_not_awaited()
+
     async def test_finished_agent_with_missing_delivery_records_contract_failure(self):
         from contextlib import ExitStack
         from app.services import workflow_engine as workflow

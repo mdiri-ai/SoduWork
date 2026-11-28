@@ -275,6 +275,44 @@ class ExecutionHostCleanupTests(unittest.TestCase):
         self.assertEqual(successor['state'], 'running')
         self.assertFalse(successor['stopping'])
 
+    def test_cooperative_acp_stop_waits_for_host_and_falls_back_for_timeout(self):
+        for timed_out in (False, True):
+            with self.subTest(timed_out=timed_out):
+                proc, channel = Mock(poll=Mock(return_value=None)), object()
+                proc.wait.side_effect = subprocess.TimeoutExpired('synthetic host', 3) if timed_out else None
+                self.run.update(proc=proc, stopping=False)
+                with patch('app.services.access_broker.request_stop', return_value=channel) as request, \
+                        patch('app.services.access_broker.close') as close, \
+                        patch.object(local_stream, '_kill_tree', return_value=True) as terminate:
+                    self.assertTrue(local_stream.stop_sync({}, self.ref)['ok'])
+                request.assert_called_once_with(self.ref, self.owner)
+                proc.wait.assert_called_once_with(timeout=local_stream._ACP_STOP_TIMEOUT_S)
+                if timed_out:
+                    close.assert_called_once_with(self.ref, expected=channel)
+                    terminate.assert_called_once_with(self.ref, expected_pid=self.run['pid'], expected_proc=proc)
+                else:
+                    close.assert_not_called()
+                    terminate.assert_not_called()
+
+    def test_cooperative_acp_stop_cannot_attribute_late_exit_to_a_successor(self):
+        proc = Mock(poll=Mock(side_effect=[None, 0]))
+        proc.wait.side_effect = subprocess.TimeoutExpired('synthetic host', 3)
+        self.run['proc'] = proc
+        successor = {**self.run, 'pid': 54321, 'proc': Mock(),
+                     '_workerIdentity': object(), 'stopping': False}
+
+        def replace(_ref, *, expected):
+            self.assertIs(expected, channel)
+            local_process._RUNS[self.ref] = successor
+
+        channel = object()
+        with patch('app.services.access_broker.request_stop', return_value=channel), \
+                patch('app.services.access_broker.close', side_effect=replace), \
+                patch.object(local_stream, '_kill_pid_tree', return_value=True) as terminate:
+            self.assertFalse(local_stream.stop_sync({}, self.ref)['ok'])
+        terminate.assert_not_called()
+        self.assertFalse(successor['stopping'])
+
     def test_exit_receipt_protects_host_before_joiner_publishes_its_fence(self):
         self.run.update(cli='pi', started=1, lastOut=1,
             piFinalResponseAt=time.time() - 60, stream={**self.spec, 'version': 1})

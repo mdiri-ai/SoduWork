@@ -10,7 +10,7 @@ function instructions() {
     '草稿顶层 mcpServers、runtimeCapabilities、skills 必须是字符串数组。写本地文件用 runtimeCapabilities:["files"]，需要终端才追加 "terminal"；无连接器/额外技能分别用 mcpServers:[]、skills:[]。不能写 runtimeCapabilities:{"files":true} 或 mcpServers:{}。随包 .mcp.json 内的 mcpServers 配置对象不是草稿字段；草稿只填写连接器名称，不复制连接配置。随包参考文件写 resources，不把文件名或自创技能名放进 skills。',
     '多底座协调必须使用 template=workflow，不能只在 instructions 中描述多个 Agent 或编造 agent/multi_agent 节点。',
     '个人本机协作节点仅使用 ai、ai_review、human_review、publish；spec、quality、approval、merge、deploy_chain、validate 是企业执行节点，安装后须经企业审核并绑定项目，不能用于直接本机试用。',
-    '每个 AI 节点在 config.agentKind 中填写实际路由：' + routes + '。Qwen Code 的标识是 local:qwen，不能写 local:qwen-code。省略 agentKind 才表示沿用当前底座；用户明确指定底座时保留该选择。',
+    'AI 节点的 config.agentKind 使用实际路由：' + routes + '。Qwen 用 local:qwen，勿写 local:qwen-code。仅沿用当前底座时可省略；保留用户指定的底座。',
     '本机协作不要填写 runnerTags、Runner ID 或机器地址。没有用户指定且可核对的模型 ID 时省略 config.model，各底座读取自己的可用模型；不能根据底座名称猜测模型 ID，也不能把 Pi 的模型名复制给 Qwen Code。无法安装或未授权的底座应报告缺项，不能偷偷改用另一个 Agent。',
     'AI 节点的 config.prompt 为本节点工作说明；dependsOn 引用直接上游节点 key。outputs 每项必须含 key、kind，file/decision 还须含相对当前节点目录的 path。路径不能是上游节点目录或绝对地址；平台按 inputs.fromNode/outputKey 校验并复制上游材料，不同底座无需共享工作目录。',
     '节点 inputs 只能填写 key、fromNode、outputKey、label（可选）、required（布尔，可选），不能填写 path、absolutePath 或自定复制目标。文件交接时平台在本节点 .soduwork-inputs 内分配带哈希的实际路径；节点 prompt 必须要求按“上游已校验材料”清单的 inputKey 找到对应记录，再按其实际 path/absolutePath 读取，不得猜 input/plan.md 等固定落点，也不访问上游工作目录。',

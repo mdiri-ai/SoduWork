@@ -287,7 +287,7 @@ def resolve_assignee_sync(cfg: dict, aid: str, atype: str = "") -> dict | None:
 
 
 # Dispatch contract.
-def _compose(t, ctx: dict) -> str:
+def _compose(t, ctx: dict, *, agent: str = "") -> str:
     """Compose task data with the product instructions supplied by the orchestration layer;
     adapters do not define planning, milestone, or delivery policy.
     """
@@ -376,7 +376,7 @@ def _compose(t, ctx: dict) -> str:
     _sk = ctx.get("skills") or []
     if _sk:
         from . import skills as _skills
-        blk = _skills.prompt_block(_sk, bool(ctx.get("skillsNative")))
+        blk = _skills.prompt_block(_sk, bool(ctx.get("skillsNative")), agent=agent)
         if blk:
             parts.append(blk.strip())
     mcp_specs = dict(dict(ctx.get("mcpConfig") or {}).get("servers") or {})
@@ -742,7 +742,7 @@ def _dispatch_sync_once(cfg: dict, t, files: list | None = None,
     goal_seed = {"cli": key}
     if goal_contract and not local_task_goal.initialize(goal_seed, goal_contract):
         return {"ok": False, "error": "当前底座尚未验证任务级自动续跑，请使用受支持的底座"}
-    prompt = _compose(t, ctx)
+    prompt = _compose(t, {**ctx, "skills": scope_skills} if key in {"armonel", "dsh"} else ctx, agent=key)
     mode = "plan" if ctx.get("mode") == "plan" or (policy or {}).get("mode") == "readonly" else "work"
     artifact_mode = str(ctx.get("deliveryMode") or "").strip().lower()
     if artifact_mode not in ("files", "git", "mixed"):

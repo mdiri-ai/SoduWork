@@ -101,6 +101,9 @@ exports.default = async function afterSign(context) {
   const env = process.env;
   if (!notarizeEnabled(env)) return;
   const appPath = path.join(context.appOutDir, context.packager.appInfo.productFilename + '.app');
+  // The release build overrides the normal afterSign hook. Exercise the signed
+  // helper as shipped, before submitting the bundle to the notary.
+  await require('./check-armonel-acp.cjs').checkAcp(path.join(appPath, 'Contents', 'Resources', 'armonel', 'armonel'));
   notarizeApp({ appPath, env, run: (file, args, options) => execFileSync(file, args, { stdio: 'inherit', ...options }) });
 };
 

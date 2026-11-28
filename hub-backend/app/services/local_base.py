@@ -554,6 +554,8 @@ def _save_meta(ref: str) -> None:
                     pass
         except Exception as e:  # noqa: BLE001 - Archive failures must not terminate execution.
             log.warning("本地 run 存档失败 %s: %s", ref[:8], type(e).__name__)
+        from .runner_local_rpc import session_changed
+        session_changed(ref, run)
 
 
 def _save_baseline(ref: str, seen: set) -> None:
@@ -581,6 +583,9 @@ def _append_events(ref: str, items: list[dict]) -> None:
                 f.write(json.dumps(it, ensure_ascii=False) + "\n")
     except Exception:  # noqa: BLE001
         pass
+    from .runner_local_rpc import session_changed
+    with _LOCK:
+        session_changed(ref, _RUNS.get(ref))
 
 def _record_event(ref: str, item: dict) -> dict | None:
     """Append one product-level event with the run's authoritative sequence."""
@@ -940,6 +945,10 @@ def bind_command_environment(env: dict, argv: list[str]) -> dict:
     return env
 
 
+_DSH_COMPACT_ONLY = object()
+_DSH_COMPACT_ONLY_ENV = "SODUWORK_DSH_COMPACT_ONLY"
+
+
 def _env_for(prof: dict, cfg: dict, runtime_ref: str = "", *, require_model: bool = True,
              runtime_root: str | None = None) -> dict:
     """Build the child environment; native recovery terminals may omit model admission.
@@ -995,6 +1004,9 @@ def _env_for(prof: dict, cfg: dict, runtime_ref: str = "", *, require_model: boo
     for target, source in dict((cfg or {}).get("runtimeSecrets") or {}).items():
         if source in os.environ:
             env[str(target)] = os.environ[str(source)]
+    env.pop(_DSH_COMPACT_ONLY_ENV, None)
+    if prof.get("acp_key") == "dsh" and cfg.get("_dshCompactOnly") is _DSH_COMPACT_ONLY:
+        env[_DSH_COMPACT_ONLY_ENV] = "1"
     if prof is _PROFILES.get("opencode"):
         from .opencode_runtime_config import prepare_environment
         prepare_environment(env, runtime_root or _data_root())
@@ -1056,6 +1068,7 @@ def _env_for(prof: dict, cfg: dict, runtime_ref: str = "", *, require_model: boo
         # Keep agent state directories outside restricted home-directory locations.
         # Some security policies block the rename operations required for session archival.
         _acp_agents.home_env(acp_key, env, runtime_root or _data_root(),
+                            runtime_ref=runtime_ref,
                             **({"installation_root": _data_root()} if acp_key == "dsh" and runtime_root else {}))
         if acp_key == "qwen":
             from . import qwen_runtime

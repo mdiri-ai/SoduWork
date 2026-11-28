@@ -67,9 +67,8 @@ def resume(ref, text, cfg):
             fresh.pop("_executionSelection", None)
             scoped = dict(run)
             skill_read_scope.for_run(scoped, fresh)
-            brief = _handoff_brief(ref, text).replace(
-                "[SoduWork 上下文自动压缩：同一会话继续]",
-                "[SoduWork 执行底座或模型已切换：继续同一会话]")
+            brief = _handoff_brief(
+                ref, text, header="[SoduWork 执行底座或模型已切换：用历史节选开启新的底座会话]")
             old = dict(run)
             segments = list(run.get("contextSegments") or [])
             segments.append({**selection.current(run), "sid": run.get("cliSid") or "",
@@ -100,7 +99,8 @@ def resume(ref, text, cfg):
                 return result
             _note(ref, "已切换为 " + _PROFILES[wanted["agentId"]]["name"] +
                   (" · 本地模型" if (merged.get("llm") or {}).get("localOnly") else
-                   " · " + wanted["modelName"] if wanted["modelName"] else "") + "，继续当前会话。")
+                    " · " + wanted["modelName"] if wanted["modelName"] else "") +
+                  "，正在新的底座会话接续。原会话历史已保留。")
             return {**result, "acceptedSelection": wanted}
     except (selection.SelectionError, access_policy.PolicyError, ValueError, OSError) as exc:
         return {"ok": False, "code": getattr(exc, "code", "EXECUTION_SELECTION_INVALID"), "error": str(exc)}

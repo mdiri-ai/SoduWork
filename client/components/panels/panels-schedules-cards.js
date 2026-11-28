@@ -38,7 +38,7 @@ function _schCardAssignee(id) {
   if (known && !/^runner:/i.test(known)) return known;
   // Older schedules store a routing key; show the known runtime without changing that key.
   const runtime = raw.split(':').pop().toLowerCase();
-  const names = { pi: 'Pi', opencode: 'OpenCode', codex: 'Codex', 'codex-harness': 'Codex Harness',
+  const names = { pi: 'Pi', armonel: 'Armonel', opencode: 'OpenCode', codex: 'Codex', 'codex-harness': 'Codex Harness',
     'claude-code': 'Claude Code', claude: 'Claude Code', 'qwen-code': 'Qwen Code', qwencode: 'Qwen Code',
     qwen: 'Qwen Code', 'deepseek-harness': 'DeepSeek Harness', harness2: 'Google Harness²' };
   return names[runtime] || (raw.startsWith('runner:') ? 'Agent' : known || raw || 'Agent');

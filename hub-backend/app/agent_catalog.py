@@ -80,8 +80,10 @@ def validate_catalog(data: dict) -> dict[str, dict]:
             ):
                 raise ValueError(f'{key}: modelEnv may only map environment names to base/key/model')
         install = row.get('install')
-        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual'}:
+        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual', 'bundled'}:
             raise ValueError(f'{key}: unsupported installer')
+        if install['installer'] == 'bundled' and (key != 'armonel' or not install.get('version')):
+            raise ValueError(f'{key}: a reviewed, versioned bundled installer is required')
         if install['installer'] == 'managed' and key != 'opencode':
             raise ValueError(f'{key}: no reviewed managed installer is registered')
         if install['installer'] == 'npm' and not re.fullmatch(r'(?:@[a-z0-9._-]+/)?[a-z0-9._-]+', str(install.get('pkg') or '')):

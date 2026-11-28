@@ -8,6 +8,20 @@ import { registerHooks } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const REASONING_ENV = 'SODUWORK_DSH_MANAGED_REASONING';
+export let managedReasoning = null;
+
+export function applyManagedReasoning(record, route, selection, override) {
+  if (route?.provider !== override.provider || route?.model !== override.model || !selection) {
+    throw new Error('DeepSeek Harness did not restore the selected managed reasoning model.');
+  }
+  // `session/set_config_option` also writes native product-wide defaults.
+  // Use the same selection object only for this managed ACP process instead.
+  selection.current = { provider: route.provider, model: route.model,
+    ...(override.level ? { reasoningEffort: override.level } : {}) };
+  record.effort = override.level || undefined;
+}
+
 export async function waitForSettlement(agent, subagents, signal) {
   if (typeof agent?.whenIdle !== 'function'
       || typeof subagents?.waitForChildren !== 'function') {
@@ -47,9 +61,21 @@ const SETTLEMENT_HASHES = new Map([
   ['0.4.40', '2b28c53b694972ade01775573aac8e51399db7f5407115bbbc71373ddc89e2ee'],
   ['0.4.41', 'ac3db9a394876ec5b33b4c859a4863786b1d11838672fc4cea0b1bac48367d16'],
 ]);
+const MANAGED_SELECTION_HASHES = [
+  ['  const routeOf = (record) => {', 'da3014c81dbf49f963bb762aae7db91cd61cd10702d0b3d6f064ad9e839d4b10'],
+  ['  const ensureSelection = (record) => {', 'b56377f267147dac5d6a5f1754d0bfdcd712de9e723fb6706006c5f64d221ae7'],
+];
 const TURN_END_START = '  onTurnEnd(data) {';
 const TURN_END_END = '\n  }';
 const TURN_END_HASH = '1950482fe50555b215721716d9b69e261c82431e9a1bce9a7de04eaecd15ef25';
+const CANCEL_HANDLER = `      cancel(params) {
+        const record = sessions.get(params.sessionId);
+        if (record === void 0) return Promise.resolve();
+        record.cancelled = true;
+        record.agent.cancel({ kind: "user" });
+        settlePrompt(record, "cancelled");
+        return Promise.resolve();
+      }`;
 const DISCARD_PREVIEWS = `    const updates = [];
     // DSH drops tool calls in a max-tokens response before admitting them for
     // execution. Settle only native pending previews, never an executing tool.
@@ -76,6 +102,9 @@ const REPLACEMENT = `        const stopReason = await new Promise((resolve, reje
           };
           record.inflight = inflight;
           try {
+            if (__soduworkManagedReasoning) {
+              __soduworkApplyManagedReasoning(record, routeOf(record), ensureSelection(record), __soduworkManagedReasoning);
+            }
             deliverPrompt(record.agent, message, false);
           } catch (error) {
             record.inflight = void 0;
@@ -119,6 +148,15 @@ export function transformBridgeSource(source, version) {
     throw new Error('DeepSeek Harness ACP prompt interface is unsupported (' + version
       + '); update SoduWork before running this adapter.');
   }
+  if (managedReasoning && MANAGED_SELECTION_HASHES.some(([anchor, hash]) => {
+    const first = source.indexOf(anchor);
+    const next = source.indexOf('\n  const ', first + anchor.length);
+    return first < 0 || next < first || source.indexOf(anchor, first + anchor.length) !== -1 ||
+      createHash('sha256').update(source.slice(first, next)).digest('hex') !== hash;
+  })) {
+    throw new Error('DeepSeek Harness managed reasoning interface is unsupported (' + version +
+      '); update SoduWork before running this adapter.');
+  }
   const turnStart = source.indexOf(TURN_END_START);
   const turnEnd = source.indexOf(TURN_END_END, turnStart) + TURN_END_END.length;
   const turnBlock = source.slice(turnStart, turnEnd);
@@ -128,17 +166,36 @@ export function transformBridgeSource(source, version) {
     throw new Error('DeepSeek Harness ACP tool preview interface is unsupported (' + version
       + '); update SoduWork before running this adapter.');
   }
+  const cancelStart = source.indexOf(CANCEL_HANDLER);
+  if (cancelStart < 0 || source.indexOf(CANCEL_HANDLER, cancelStart + CANCEL_HANDLER.length) !== -1) {
+    throw new Error('DeepSeek Harness ACP cancellation interface is unsupported (' + version
+      + '); update SoduWork before running this adapter.');
+  }
   // Both complete native blocks have been reviewed. Replace by their verified
   // content so bundle layout changes cannot invalidate stored offsets.
   const fixedTurn = turnBlock.replace('    this.toolCallBlocks.clear();',
     DISCARD_PREVIEWS + '    this.toolCallBlocks.clear();').replace('    return [];', '    return updates;');
-  return 'import { waitForSettlement as __soduworkWaitForSettlement } from '
+  // The cancellation notification dispatches abort. The existing prompt
+  // settlement waiter owns the reply after the parent and children are idle.
+  const fixedCancel = CANCEL_HANDLER.replace('        settlePrompt(record, "cancelled");\n', '');
+  return 'import { waitForSettlement as __soduworkWaitForSettlement, managedReasoning as __soduworkManagedReasoning, '
+    + 'applyManagedReasoning as __soduworkApplyManagedReasoning } from '
     + JSON.stringify(import.meta.url) + ';\n'
-    + source.replace(source.slice(start, end), REPLACEMENT).replace(turnBlock, fixedTurn);
+    + source.replace(source.slice(start, end), REPLACEMENT).replace(turnBlock, fixedTurn)
+      .replace(CANCEL_HANDLER, fixedCancel);
 }
 
 if (process.env.SODUWORK_DSH_ACP_SETTLEMENT === '1') {
   delete process.env.SODUWORK_DSH_ACP_SETTLEMENT;
+  if (process.env[REASONING_ENV]) {
+    const value = JSON.parse(process.env[REASONING_ENV]);
+    delete process.env[REASONING_ENV];
+    if (value?.provider !== 'soduwork' || typeof value.model !== 'string' || !value.model ||
+        !['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(value.level)) {
+      throw new Error('DeepSeek Harness received an invalid managed reasoning setting.');
+    }
+    managedReasoning = value;
+  }
   // Do not pass the host preload into tools or unrelated child Node processes.
   delete process.env.NODE_OPTIONS;
   registerHooks({

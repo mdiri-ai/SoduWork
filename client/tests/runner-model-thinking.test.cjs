@@ -75,6 +75,36 @@ test('Runner forwards only explicit supported thinking levels and typed policy d
   }
 });
 
+test('Armonel forwards explicit off only when the active model declares the wire off value', () => {
+  const model = { id: 'fixture', key: 'synthetic', baseUrl: 'http://fixture.invalid/v1',
+    reasoning: true, thinkingMode: 'controllable', thinkingFormat: 'openai', supportsReasoningEffort: true,
+    thinkingLevelMap: { off: 'none', low: 'low' } };
+  assert.equal(create(model, 'armonel', [], 'off').llm.thinkingLevel, 'off');
+  assert.equal(create(model, 'qwen', [], 'off').llm.thinkingLevel, undefined);
+  assert.equal(create(model, 'armonel', []).llm.thinkingLevel, undefined);
+  for (const override of [ { thinkingMode: 'always' }, { thinkingAlwaysOn: true },
+    { thinkingFormat: 'qwen' }, { supportsReasoningEffort: false }, { thinkingLevelMap: { off: null } } ]) {
+    assert.equal(create({ ...model, ...override }, 'armonel', [], 'off').llm.thinkingLevel, undefined);
+  }
+});
+
+test('DSH forwards only explicitly selected and declared reasoning levels', () => {
+  const model = { id: 'fixture', key: 'synthetic', baseUrl: 'http://fixture.invalid/v1',
+    reasoning: true, thinkingMode: 'controllable', thinkingFormat: 'openai', supportsReasoningEffort: true,
+    thinkingLevelMap: { off: 'none', low: 'low', high: 'high' } };
+  assert.equal(create(model, 'dsh', [], 'off').llm.thinkingLevel, 'off');
+  assert.equal(create(model, 'dsh', [], 'low').llm.thinkingLevel, 'low');
+  assert.equal(create({ ...model, thinkingLevel: 'high' }, 'dsh', []).llm.thinkingLevel, 'high');
+  assert.equal(create(model, 'dsh', []).llm.thinkingLevel, undefined);
+  assert.equal(create(model, 'dsh', [], 'medium').llm.thinkingLevel, undefined);
+  assert.equal(create({ ...model, thinkingMode: 'always' }, 'dsh', [], 'low').llm.thinkingLevel, 'low');
+  for (const override of [{ thinkingMode: 'always' }, { thinkingAlwaysOn: true },
+    { thinkingFormat: 'qwen' }, { supportsReasoningEffort: false }, { thinkingLevelMap: { off: 'none' } },
+    { thinkingLevelMap: { off: null, low: 'low' } }, { id: 'glm_5.3_flash' }]) {
+    assert.equal(create({ ...model, ...override }, 'dsh', [], 'off').llm.thinkingLevel, undefined);
+  }
+});
+
 test('Runner keeps keyless local model configuration on the local execution boundary', () => {
   const cfg = create({ localOnly: true, authMode: 'none', baseUrl: 'http://127.0.0.1:11434/v1',
     key: '', id: 'local:opaque-reference', wireModelId: 'qwen-local-wire' }, 'qwen');

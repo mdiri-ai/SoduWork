@@ -8,11 +8,61 @@ import time
 import unittest
 from unittest.mock import patch
 
-from app.services import ai_local, local_base, local_stream, runner_admission, runner_usage_receipts
+from app.services import acp_bridge, ai_local, local_base, local_stream, local_turn_outcome, runner_admission, runner_usage_receipts
 from runner_main import Runner
 
 
 class RunnerUsageReceiptTests(unittest.TestCase):
+    def test_dsh_prompt_totals_and_recovery_keep_the_last_native_context_watermark(self):
+        for reason in ("end_turn", "cancelled"):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as root, \
+                    patch.object(local_base, "_STORE", root), patch.dict(acp_bridge.os.environ, {
+                        "SODUWORK_APPROVAL_CHANNEL": "", acp_bridge._TASK_OUTPUT_RECOVERY_ENV: "",
+                    }):
+                run = {"cli": "dsh", "state": "running", "seq": 0, "segment": 1,
+                       "cfg": {"llm": {"localOnly": True, "model": "fixture-model"}}}
+                first = {"inputTokens": 70, "outputTokens": 30, "cachedReadTokens": 10,
+                         "cachedWriteTokens": 5, "thoughtTokens": 21, "totalTokens": 115}
+                last = {"inputTokens": 12, "outputTokens": 2, "totalTokens": 14}
+                responses = iter([("max_tokens", first), (reason, last)])
+                bridge = acp_bridge.AcpBridge([], root, "dsh", "workspace")
+                terminal = {}
+
+                def request(method, _params):
+                    if method == "initialize":
+                        return {"protocolVersion": 1}
+                    if method == "session/new":
+                        return {"sessionId": "fixture"}
+                    self.assertEqual(method, "session/prompt")
+                    stop, usage = next(responses)
+                    # The last model step used 9 context tokens. The prompt receipt
+                    # may aggregate several earlier model steps and is larger.
+                    bridge._update({"sessionUpdate": "usage_update", "used": 9, "size": 128000})
+                    bridge._update({"sessionUpdate": "usage_update", "used": 65000, "size": 128000,
+                                    "_meta": {"dsh": {"subagent": {"id": "child"}}}})
+                    bridge._update({"sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": "fixture"}})
+                    return {"stopReason": stop, "usage": usage}
+
+                with patch.dict(local_base._RUNS, {"fixture": run}), \
+                        patch.object(bridge, "start"), patch.object(bridge, "request", side_effect=request), \
+                        patch.object(acp_bridge, "_emit", side_effect=lambda row:
+                                     local_stream._on_line("fixture", json.dumps(row), terminal)):
+                    self.assertEqual(bridge.run("fixture"), 0)
+                self.assertEqual([row["usage"]["total"] for row in runner_usage_receipts.private_snapshot(run)],
+                                 [115, 14])
+                self.assertEqual({key: run["usage"][key] for key in
+                                  ("input", "output", "total", "cacheRead", "cacheWrite", "reasoning")},
+                                 {"input": 97, "output": 32, "total": 129, "cacheRead": 10,
+                                  "cacheWrite": 5, "reasoning": 21})
+                self.assertEqual(run["tokens"]["input"], 9)
+
+    def test_dsh_missing_or_malformed_prompt_usage_does_not_create_a_receipt(self):
+        for usage in (None, {}, {"inputTokens": True, "outputTokens": 4, "totalTokens": 5},
+                      {"inputTokens": 1, "outputTokens": -1, "totalTokens": 0}):
+            with self.subTest(usage=usage):
+                self.assertIsNone(acp_bridge._dsh_prompt_usage(usage))
+
     def test_unknown_legacy_model_identity_requires_positive_public_ownership(self):
         legacy = {"cli": "qwen", "model": "private-wire", "usage": {"total": 99}}
         raw = {"model": "private-wire", "error": "old private-wire diagnostic", "usage": {"total": 99}}
@@ -111,6 +161,55 @@ class RunnerUsageReceiptTests(unittest.TestCase):
         warning = {"kind": "out", "tool": "", "text": "Warning: private-wire metadata is unavailable"}
         self.assertEqual(runner_usage_receipts.sanitize_event(run, warning)["text"],
                          "Warning: [local model] metadata is unavailable")
+
+    def test_armonel_approval_denial_persists_as_stopped_without_dropping_completed_files(self):
+        event = {"type": "turn_stopped", "reason": "tool_approval_denied"}
+        run = {"cli": "armonel", "state": "running", "seq": 0, "segment": 1,
+               "admissionKey": "dispatch:fixture", "admissionStartSeq": 0,
+               "cfg": {"llm": {"localOnly": True, "model": "fixture-model"}}}
+        with tempfile.TemporaryDirectory() as root, patch.object(local_base, "_STORE", root), \
+                patch.dict(local_base._RUNS, {"fixture": run}):
+            work = Path(root) / "work"
+            work.mkdir()
+            completed = work / "completed.txt"
+            completed.write_text("existing work", encoding="utf-8")
+            run["ws"] = str(work)
+            term = {}
+            local_stream._on_line("fixture", json.dumps(event), term)
+            local_stream._finish("fixture", 0, term, "")
+            self.assertEqual(run["state"], "stopped")
+            self.assertEqual(run["error"], "")
+            self.assertNotIn("failureKind", run)
+            rows = local_base._read_events("fixture")
+            self.assertEqual([row["kind"] for row in rows], ["sys", "turn-end"])
+            self.assertIn("工具调用未获批准", rows[0]["text"])
+            self.assertEqual(rows[-1]["turnState"], "stopped")
+            self.assertEqual(completed.read_text(encoding="utf-8"), "existing work")
+
+    def test_armonel_token_limit_reports_an_incomplete_turn_for_a_private_model(self):
+        self.assert_armonel_incomplete_turn({"type": "step_finish", "part": {"reason": "max_tokens"}},
+                                            local_turn_outcome.ARMONEL_TOKEN_LIMIT)
+
+    def test_armonel_request_limit_reports_an_incomplete_turn_for_a_private_model(self):
+        self.assert_armonel_incomplete_turn({"type": "turn_stopped", "reason": "max_turn_requests"},
+                                            local_turn_outcome.ARMONEL_REQUEST_LIMIT)
+
+    def assert_armonel_incomplete_turn(self, event, message):
+        run = {"cli": "armonel", "state": "running", "seq": 0, "segment": 1,
+               "admissionKey": "dispatch:fixture", "admissionStartSeq": 0,
+               "modelLocalOnly": True, "queue": ["fixture-follow-up"]}
+        with tempfile.TemporaryDirectory() as root, patch.object(local_base, "_STORE", root), \
+                patch.dict(local_base._RUNS, {"fixture": run}):
+            term = {}
+            local_stream._on_line("fixture", json.dumps(event), term)
+            local_stream._finish("fixture", 2, term, "")
+            self.assertEqual(run["state"], "failed")
+            self.assertEqual(run["failureKind"], "execution_incomplete")
+            self.assertEqual(run["queue"], ["fixture-follow-up"])
+        snapshot = {"error": run["error"], "failureKind": run["failureKind"]}
+        self.assertEqual(runner_usage_receipts.public_snapshot(snapshot, run)["error"], message)
+        snapshot["error"] = "untrusted model response"
+        self.assertNotIn(snapshot["error"], runner_usage_receipts.public_snapshot(snapshot, run)["error"])
 
     def test_remote_projection_removes_local_model_and_per_event_usage(self):
         run = {"modelLocalOnly": True, "usageReceipts": [

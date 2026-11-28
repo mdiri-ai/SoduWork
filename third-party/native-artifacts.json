@@ -5,6 +5,7 @@
   "inventoryBasis": [
     "client/package.json（build.extraResources、electron-builder ^26.15.3）",
     "client/package-lock.json（锁定版本与 npm integrity）",
+    "client/main/armonel-release.json（Armonel 各平台归档和可执行文件的固定摘要）",
     "client/THIRD_PARTY_NOTICES.md（外壳组件既有声明）"
   ],
   "platforms": {
@@ -48,6 +49,16 @@
         "evidence": "third-party/manifest.json notices[pi]"
       },
       {
+        "id": "armonel-runtime",
+        "component": "Armonel Windows x64 原生程序",
+        "role": "ACP Agent 执行底座",
+        "version": "0.0.11-rc.4",
+        "architecture": "x64",
+        "license": "MIT；原始 LICENSE 和 THIRD_PARTY_LICENSES.txt 随包分发",
+        "source": "Armonel 官方 Windows x64 npm 平台包",
+        "evidence": "client/main/armonel-release.json (win32-x64); resources/armonel/"
+      },
+      {
         "id": "ssh2-and-deps",
         "component": "ssh2 + asn1 + bcrypt-pbkdf + safer-buffer + tweetnacl",
         "role": "SSH 连接（纯 JavaScript，无原生二进制）",
@@ -77,8 +88,26 @@
         "evidence": "client/package-lock.json; generated third-party/inventory/npm-notices.json"
       }
     ],
-    "linux": [],
-    "macos": []
+    "linux": [
+      {
+        "id": "armonel-runtime",
+        "component": "Armonel Linux x64",
+        "role": "ACP Agent",
+        "version": "0.0.11-rc.4",
+        "license": "MIT; LICENSE and THIRD_PARTY_LICENSES.txt",
+        "evidence": "client/main/armonel-release.json (linux-x64); resources/armonel/"
+      }
+    ],
+    "macos": [
+      {
+        "id": "armonel-runtime",
+        "component": "Armonel macOS arm64 / x64",
+        "role": "ACP Agent",
+        "version": "0.0.11-rc.4",
+        "license": "MIT; LICENSE and THIRD_PARTY_LICENSES.txt",
+        "evidence": "client/main/armonel-release.json (darwin-arm64, darwin-x64); Contents/Resources/armonel/"
+      }
+    ]
   },
   "limits": [
     "Linux 与 macOS 平台清单需在对应平台构建机产出最终安装包时按同一 schema 登记后追加。",

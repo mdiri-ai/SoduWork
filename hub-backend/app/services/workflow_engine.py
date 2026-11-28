@@ -1762,6 +1762,13 @@ async def _poll_node(session: AsyncSession, run: am.WorkflowRun, nr: am.NodeRun)
                        node_id=nr.id, detail={"node": nr.node_key, "state": nr.state,
                                               "error": nr.error, "stopError": stop_error})
             return
+        if status.get("done") and status.get("status") == "stopped" and not status.get("error"):
+            nr.state, nr.error, nr.finished_at = "failed", "执行已停止，请确认后重试当前节点", _now()
+            nr.output = workflow_contracts.failure_output("escalation", executionStatus="stopped")
+            _forget_output_settle(session, run, nr)
+            _event(session, run.id, "node.failed", node_id=nr.id, detail={
+                "node": nr.node_key, "state": nr.state, "error": nr.error})
+            return
         receipt = {}
         if status.get("attachments") or status.get("artifactUrl"):
             receipt = await ai_exec.pull_artifacts(

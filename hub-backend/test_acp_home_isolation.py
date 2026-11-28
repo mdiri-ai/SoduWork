@@ -86,6 +86,28 @@ class AcpHomeIsolationTests(unittest.TestCase):
                 self.assertTrue(report["personalStateUnchanged"])
                 self.assertTrue(report["localModelReady"])
 
+    def test_armonel_inherits_only_the_selected_model_and_reuses_its_own_journal(self):
+        profile = local_base._PROFILES["armonel"]
+        llm = {"base": "http://127.0.0.1:9/v1", "model": "fixture", "localOnly": True}
+        inherited = {"EVOLVE_HARNESS_DATA_DIR": str(self.personal),
+                     "EVOLVE_HARNESS_API_KEY": "stale-fixture",
+                     "EVOLVE_HARNESS_PLUGIN_PROFILE": str(self.marker),
+                     "EVOLVE_HARNESS_MODEL_HEADERS": "{}"}
+        with patch.dict(os.environ, inherited):
+            first = local_base._env_for(profile, {"llm": llm}, "first", runtime_root=str(self.root))
+            resumed = local_base._env_for(profile, {"llm": llm}, "first", runtime_root=str(self.root))
+            second = local_base._env_for(profile, {"llm": llm}, "second", runtime_root=str(self.root))
+        data = "EVOLVE_HARNESS_DATA_DIR"
+        self.assertEqual(first[data], resumed[data])
+        self.assertNotEqual(first[data], second[data])
+        self.assertEqual(Path(first[data]).parent, self.root / ".armonel")
+        self.assertEqual(first["EVOLVE_HARNESS_BASE_URL"], llm["base"])
+        self.assertEqual(first["EVOLVE_HARNESS_MODEL"], llm["model"])
+        self.assertNotIn("EVOLVE_HARNESS_API_KEY", first)
+        self.assertNotIn("EVOLVE_HARNESS_PLUGIN_PROFILE", first)
+        self.assertNotIn("EVOLVE_HARNESS_MODEL_HEADERS", first)
+        self.assertEqual(list(self.personal.iterdir()), [self.marker])
+
 
 if __name__ == "__main__":
     unittest.main()

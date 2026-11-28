@@ -16,6 +16,8 @@
 .agent-brand-qwen {--agent-brand-accent:#6950ef;}
 .agent-brand-kimi {--agent-brand-accent:#111827;}
 .agent-brand-dsh {--agent-brand-accent:#5786fe;}
+/* The Armonel artwork occupies 1240/1254 of its canvas height. */
+.agent-brand-armonel {--agent-brand-accent:#111827;--agent-brand-mark-scale:calc(1254 / 1240);}
 /* Normalize the visible longest edge: the Codex mark occupies 15.5/24 of its SVG.
    Keep the original artwork intact. */
 .agent-brand-codex,.agent-brand-codex-harness {--agent-brand-accent:#6f52b5;--agent-brand-mark-scale:calc(24 / 15.5);}

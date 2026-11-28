@@ -48,6 +48,7 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
       (activeModel?.runtimeRevision || activeModel?.configRevision));
   return {
     capture: () => selected,
+    choiceModel: () => selectedModel,
     needsApply: name => needsApply(name === undefined ? selected : name),
     view: () => ({ name: selected, activeName: active, model: publicModel(selectedModel),
       activeModel: publicModel(activeModel), pending: needsApply(selected) }),
@@ -99,22 +100,26 @@ function preference(app, ref) {
       value = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (_) { return {}; }
     return { ...(typeof value.name === 'string' ? { name: canonicalName(value.name) } : {}),
+      ...(typeof value.thinkingLevel === 'string' ? { thinkingLevel: value.thinkingLevel } : {}),
       ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}) };
   };
   return {
     read() { return readSelection().name; },
     readSelection,
-    write(name, reasoningEffort = readSelection().reasoningEffort) {
+    write(name, reasoningEffort, thinkingLevel) {
       if (!file) return;
       name = canonicalName(name);
       // Reopening a conversation must not rewrite an unchanged saved choice.
       // A transient destination lock may block new choices, but not restoration.
       const current = readSelection();
-      if (current.name === name && current.reasoningEffort === reasoningEffort) return;
+      if (reasoningEffort === undefined) reasoningEffort = current.reasoningEffort;
+      if (thinkingLevel === undefined) thinkingLevel = current.thinkingLevel;
+      if (current.name === name && current.reasoningEffort === reasoningEffort && current.thinkingLevel === thinkingLevel) return;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = file + '.' + crypto.randomUUID() + '.tmp';
       try {
         fs.writeFileSync(tmp, JSON.stringify({ name,
+          ...(typeof thinkingLevel === 'string' ? { thinkingLevel } : {}),
           ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}) }), { mode: 0o600, flag: 'wx' });
         replaceFileSync(tmp, file);
       } catch (cause) {

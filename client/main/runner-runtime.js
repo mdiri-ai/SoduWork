@@ -34,6 +34,11 @@ const CONNECTION_ERRORS = Object.freeze({
 });
 const _rpcPending = new Map();
 let _rpcSeq = 0;
+let _rpcPipeClosed = false;
+let _sessionEventsChild = null;
+let _sessionEventsVersion = 0;
+const _sessionObservers = new Map();
+const _sessionSubscriptions = new Map();
 const CAPABILITY_KEYS = new Set(['browser', 'computer']);
 const CAPABILITY_GRANT_VERSION = 2;
 const DEFAULT_CAPABILITY_GRANTS = Object.freeze(['browser']);
@@ -46,7 +51,7 @@ const RUNNER_ENV_DENY = Object.freeze([
   'PI_CODING_AGENT_DIR',
   'SODUWORK_PROXY_KEY', 'SODUWORK_MCP_KEY', 'SODUWORK_HUB_ORIGIN',
   'SODUWORK_MCP_SERVERS', 'SODUWORK_MCP_SERVERS_JSON', 'SODUWORK_LLM_KEY',
-  'SODUWORK_BUNDLED_PI_CLI', 'SODUWORK_BUNDLED_NODE',
+  'SODUWORK_BUNDLED_PI_CLI', 'SODUWORK_BUNDLED_NODE', 'SODUWORK_BUNDLED_ARMONEL',
   'SODUWORK_GIT_USER', 'SODUWORK_GIT_TOKEN',
   'OPENCODE_CONFIG_CONTENT', 'SODUWORK_BUNDLED_OPENCODE', 'SODUWORK_BUNDLED_SHELL',
   'NODE_OPTIONS', 'ELECTRON_RUN_AS_NODE',
@@ -112,6 +117,8 @@ function _runnerEnv(base, deviceSecret, app, resourceRoot) {
     env.SODUWORK_BUNDLED_PI_CLI = bundled.cli;
     env.SODUWORK_BUNDLED_NODE = bundled.node;
   }
+  const armonel = require('./armonel-runtime.cjs').bundledExecutable(app, resourceRoot || process.resourcesPath);
+  if (armonel) env.SODUWORK_BUNDLED_ARMONEL = armonel;
   const shellRoot = _bundledShell(app, resourceRoot);
   if (shellRoot) env.SODUWORK_BUNDLED_SHELL = shellRoot;
   env.SODUWORK_SKILL_ROOTS = _skillRoots(app, resourceRoot).join(path.delimiter);
@@ -325,16 +332,69 @@ function _readConfig(app) {
 }
 
 function _rejectRpc(message = 'Runner stopped') {
+  _sessionEventsChild = null;
+  _sessionEventsVersion = 0;
   const error = message instanceof Error ? message : new Error(String(message || 'Runner stopped'));
   for (const pending of _rpcPending.values()) {
     clearTimeout(pending.timer);
     pending.reject(error);
   }
   _rpcPending.clear();
+  for (const subscription of [..._sessionSubscriptions.values()]) {
+    _endSessionUpdates(subscription, true);
+  }
 }
 
 let _mobileCapabilities = null;
 function setMobileCapabilities(handler) { _mobileCapabilities = handler; }
+
+function supportsSessionEvents() { return _proc !== null && _sessionEventsChild === _proc; }
+function supportsSessionUpdates() { return supportsSessionEvents() && _sessionEventsVersion === 2; }
+
+function _endSessionUpdates(subscription, notify, unsubscribe = false) {
+  const { ref, subscriptionId, child, observer } = subscription;
+  if (!_sessionSubscriptions.delete(subscriptionId)) return;
+  if (unsubscribe && child === _proc && supportsSessionUpdates()) {
+    void rpc('job.session.unsubscribe', { ref, subscriptionId }).catch(() => {});
+  }
+  if (notify) {
+    try { observer({ kind: 'resync' }); } catch (_) { /* Other bindings are independent. */ }
+  }
+}
+
+// One binding belongs to one exact pipe, ref and consumer cursor. Register before
+// writing the RPC because the Runner can send the initial page before its reply.
+function subscribeSessionUpdates(ref, since, observer) {
+  if (!supportsSessionUpdates() || typeof ref !== 'string' || !ref ||
+      !Number.isSafeInteger(since) || since < 0 || typeof observer !== 'function') return null;
+  const subscriptionId = crypto.randomUUID();
+  const subscription = { child: _proc, ref, subscriptionId, observer, cursor: since };
+  _sessionSubscriptions.set(subscriptionId, subscription);
+  void rpc('job.session.subscribe', { ref, since, subscriptionId }).then(result => {
+    if (result.ok !== true) _endSessionUpdates(subscription, true);
+  }, () => _endSessionUpdates(subscription, true, true));
+  return () => _endSessionUpdates(subscription, false, true);
+}
+
+// seq is the journal head; last is the cursor covered by this bounded page.
+// Metadata (including terminal state) may change without inserting an event.
+function _validSessionPage(ref, since, data) {
+  return Number.isSafeInteger(since) && since >= 0 && data?.ref === ref &&
+    Array.isArray(data.items) && typeof data.status === 'string' &&
+    Number.isSafeInteger(data.seq) && data.seq >= data.last &&
+    data.last === since + data.items.length && (data.items.length > 0 || data.seq === since) &&
+    data.items.every((item, index) => item?.seq === since + index + 1);
+}
+
+function subscribeSessionChanges(ref, observer) {
+  const observers = _sessionObservers.get(ref) || new Set();
+  observers.add(observer);
+  _sessionObservers.set(ref, observers);
+  return () => {
+    observers.delete(observer);
+    if (!observers.size && _sessionObservers.get(ref) === observers) _sessionObservers.delete(ref);
+  };
+}
 
 function _consumeRunnerLines(lines, logPath, child) {
   const logLines = [];
@@ -356,6 +416,45 @@ function _consumeRunnerLines(lines, logPath, child) {
     }
     try {
       const packet = JSON.parse(line.slice(LOCAL_RPC_PREFIX.length));
+      if (packet.kind === 'session-events-ready') {
+        if (child === _proc) {
+          _sessionEventsChild = child;
+          _sessionEventsVersion = packet.version;
+        }
+        return;
+      }
+      if (packet.kind === 'session-update' || packet.kind === 'session-reset') {
+        const subscription = _sessionSubscriptions.get(packet.subscriptionId);
+        if (!supportsSessionUpdates() || child !== _proc || subscription?.child !== child ||
+            subscription.ref !== packet.ref) return;
+        if (packet.kind === 'session-reset') {
+          _endSessionUpdates(subscription, true);
+          return;
+        }
+        const { since, data } = packet;
+        if (!_validSessionPage(packet.ref, since, data)) {
+          _endSessionUpdates(subscription, true, true);
+          return;
+        }
+        if (since < subscription.cursor && data.last <= subscription.cursor) return;
+        if (since !== subscription.cursor) {
+          _endSessionUpdates(subscription, true, true);
+          return;
+        }
+        subscription.cursor = data.last;
+        try { subscription.observer({ kind: 'update', since, data }); }
+        catch (_) { _endSessionUpdates(subscription, true, true); }
+        return;
+      }
+      if (packet.kind === 'session-changed') {
+        if (child !== _proc || !supportsSessionEvents() || !Array.isArray(packet.refs)) return;
+        for (const ref of new Set(packet.refs)) {
+          for (const observer of _sessionObservers.get(ref) || []) {
+            try { observer(); } catch (_) { /* Isolate observers. */ }
+          }
+        }
+        return;
+      }
       if (packet.kind === 'desktop-capability') {
         const reply = result => {
           if (child !== _proc || child.killed || !child.stdin?.writable) return;
@@ -374,8 +473,12 @@ function _consumeRunnerLines(lines, logPath, child) {
       clearTimeout(pending.timer);
       if (packet.ok) pending.resolve(packet.result || {});
       else pending.reject(new Error(String(packet.error || 'Runner request failed')));
-    } catch (error) {
-      logLines.push('[local-rpc] invalid response: ' + String(error && error.message || error));
+    } catch (_) {
+      // Parser diagnostics may contain bytes from a private transcript.
+      logLines.push('[local-rpc] invalid response');
+      for (const subscription of [..._sessionSubscriptions.values()]) {
+        if (subscription.child === child) _endSessionUpdates(subscription, true, true);
+      }
     }
   });
   if (logLines.length) {
@@ -385,7 +488,7 @@ function _consumeRunnerLines(lines, logPath, child) {
 
 function rpc(op, payload = {}, timeoutMs = 30000) {
   const child = _proc;
-  if (!child || child.killed || !child.stdin || !child.stdin.writable) {
+  if (!child || child.killed || _rpcPipeClosed || !child.stdin || !child.stdin.writable) {
     return Promise.reject(Object.assign(new Error(_lastError || 'Runner is not running'), {
       code: 'RUNNER_NOT_RUNNING',
     }));
@@ -423,11 +526,11 @@ function _retire(child) {
 
 function _stop() {
   if (_restartTimer) { clearTimeout(_restartTimer); _restartTimer = null; }
-  _rejectRpc('Runner stopped');
   const p = _proc;
   _proc = null;
   _processCredential = '';
   _connectionState = 'stopped';
+  _rejectRpc('Runner stopped');
   return _retire(p);
 }
 
@@ -471,23 +574,33 @@ function _start(app) {
       env: _runnerEnv(process.env, cfg.secret, app),
     });
     _proc = child;
+    _rpcPipeClosed = false;
     _processCredential = _credentialFingerprint(cfg);
     if (Number.isInteger(child.pid)) {
       _ownedRunners.set(child, require('./runner-process-lifecycle.cjs').supervise(child));
     }
     _connectionState = 'connecting';
+    const pipeClosed = () => {
+      if (_proc !== child || _rpcPipeClosed) return;
+      _rpcPipeClosed = true;
+      _rejectRpc('Local Runner pipe closed');
+      // EOF initiates the owned Runner's cooperative shutdown. The existing
+      // exit handler can then reconnect with a fresh pair of private pipes.
+      if (child.stdin?.writable && !child.stdin.writableEnded) child.stdin.end();
+    };
     if (child.stdout) {
       let remainder = '';
       child.stdout.setEncoding('utf8').on('data', (text) => {
-        if (_proc !== child) return;
+        if (_proc !== child || _rpcPipeClosed) return;
         const lines = (remainder + text).split(/\r?\n/);
         remainder = lines.pop();
         _consumeRunnerLines(lines, logPath, child);
       });
+      child.stdout.once('end', pipeClosed);
+      child.stdout.once('error', pipeClosed);
+      child.stdout.once('close', pipeClosed);
     }
-    if (child.stdin) child.stdin.on('error', (error) => {
-      if (_proc === child) _rejectRpc(error);
-    });
+    if (child.stdin) child.stdin.on('error', pipeClosed);
     // The same private pipe already owns local RPC. Pass one bounded startup
     // frame before any RPC; the Runner never reopens an Electron-written JSON.
     child.stdin.write('@@SODUWORK_RUNNER_CONFIG@@' + JSON.stringify({ ..._stored(cfg),
@@ -660,6 +773,7 @@ function install({ app, ipcMain, identityOf, sessionOf, canConnect }) {
 
 module.exports = {
   install, identity, pauseForHubChange, capabilityGrants, rpc, setMobileCapabilities,
+  subscribeSessionChanges, supportsSessionEvents, subscribeSessionUpdates, supportsSessionUpdates,
   _clean, _stored, _grants, _migrateRaw, _mergeRaw, _prepareWorkRoot, _runnerEnv, _bundledPi,
   _bundledShell, _skillRoots,
   CAPABILITY_KEYS, CAPABILITY_GRANT_VERSION, DEFAULT_CAPABILITY_GRANTS, RUNNER_ENV_DENY,

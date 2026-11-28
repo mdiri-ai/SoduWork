@@ -48,6 +48,10 @@ def model_response(self, body):
         self.calls['parent'] += 1
     names = {tool['function']['name'] for tool in body['tools']}
     self.observe('model_request', stage=stage)
+    if self.reasoning_limit and stage == 0:
+        return {'role': 'assistant', 'reasoning_content': 'Synthetic planning.'}, 'length', None
+    if self.reasoning_limit and stage == 1:
+        assert '最小的未完成步骤' in json.dumps(body['messages'], ensure_ascii=False)
     if stage in (0, 1, 3):
         tool = 'read' if stage == 3 else 'write'
         assert tool in names, str(names)
@@ -69,6 +73,7 @@ def model_response(self, body):
 
 
 def controller_case(args, root, proc, fixture, incoming, updates, report, reader):
+    fixture.reasoning_limit = args.reasoning_limit
     work = root / 'work'
     seeds = {'RUN_ID.txt': 'synthetic-retained-run-identity\n', 'existing.txt': 'Keep prior work\n'}
     for name, value in seeds.items():
@@ -135,6 +140,8 @@ def controller_case(args, root, proc, fixture, incoming, updates, report, reader
                 stream._on_line(ref, json.dumps(event), terminal)
                 if event.get('type') == 'session':
                     native_ids.append(event['sessionID'])
+            if not attempt and args.reasoning_limit:
+                assert terminal.get('reasoningOutputLimit'), terminal
             stream._finish(ref, current.returncode, terminal, '')
             boundaries.append({'attempt': attempt, 'code': current.returncode, 'state': run['state'],
                                'goal': goal.snapshot(run), 'modelCalls': fixture.calls['parent']})
@@ -166,6 +173,8 @@ def main():
     parser.add_argument('--runtime-root', type=Path, required=True)
     parser.add_argument('--node', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--reasoning-limit', action='store_true',
+                        help='Start with a length stop containing only native reasoning deltas.')
     args = parser.parse_args()
     args.expect_bug = False
     for name in ('adapter_entry', 'runtime_root', 'node'):
@@ -194,7 +203,7 @@ def main():
     report['installedInputsUnchanged'] = before == fixture_module.fingerprint(files)
     report['node'] = subprocess.check_output([str(args.node), '--version'], text=True).strip()
     report['platform'] = sys.platform
-    report['adapter'] = json.loads((args.adapter_entry.parent.parent / 'package.json').read_text())['version']
+    report['adapter'] = json.loads((args.adapter_entry.parent.parent / 'package.json').read_text(encoding='utf-8'))['version']
     (output / 'summary.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(json.dumps({key: report.get(key) for key in ('ok', 'error', 'processCodes', 'taskGoal',
                                                     'outputRecoveries', 'installedInputsUnchanged', 'calls')}))

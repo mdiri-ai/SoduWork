@@ -13,6 +13,47 @@ const NAMESPACE = '9af442c8-cd1d-4b91-a668-22da2b2635bf';
 const settled = new Set(['done', 'completed', 'failed', 'cancelled', 'interrupted', 'stopped']);
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const relative = (root, file) => path.relative(root, file).replace(/\\/g, '/');
+
+// Node output can be paused while its sink writes artifacts. Recover from its
+// applied cursor if the queued pages grow faster than the sink can consume.
+function nodeUpdates(runtime, ref) {
+  const pages = [];
+  let unsubscribe = null, wake = null;
+  function close() {
+    const dispose = unsubscribe;
+    unsubscribe = null;
+    pages.length = 0;
+    dispose?.();
+    wake?.();
+  }
+  return {
+    get active() { return Boolean(unsubscribe); },
+    subscribe(since) {
+      if (unsubscribe) return;
+      unsubscribe = runtime.subscribeSessionUpdates?.(ref, since, event => {
+        if (event.kind !== 'update' || pages.length >= 8) { close(); return; }
+        pages.push(event);
+        wake?.();
+      });
+    },
+    take(since) {
+      const event = pages.shift();
+      if (!event) return null;
+      if (event.since === since) return event.data;
+      close();
+      return null;
+    },
+    wait(timeout) {
+      if (pages.length || !unsubscribe) return;
+      return new Promise(resolve => {
+        const timer = timeout == null ? null : setTimeout(() => wake?.(), Math.min(timeout, 2147483647));
+        wake = () => { clearTimeout(timer); wake = null; resolve(); };
+      });
+    },
+    close,
+  };
+}
+
 function inside(root, file) {
   const rel = path.relative(root, file);
   return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
@@ -130,7 +171,7 @@ function create({ app, handle, plugin, identityOf, skillDirs, deviceGrants, asse
   }
   async function stopNode(node) {
     const token = active.get(node);
-    if (token) token.cancelled = true;
+    if (token) { token.cancelled = true; token.updates?.close(); }
     if (!node.ref) return;
     if (node.ref.startsWith('workflow-pi:')) return directPi.stop(node);
     const ref = node.ref;
@@ -333,6 +374,7 @@ function create({ app, handle, plugin, identityOf, skillDirs, deviceGrants, asse
         await accessRelay.sync();
       }
       if (node.timingDispatchId !== node.dispatchId) { node.timingDispatchId = node.dispatchId; node.activeElapsedMs = 0; }
+      const updates = token.updates = nodeUpdates(runtime, node.ref);
       let since = 0, text = '', reconnects = 0, lastTick = Date.now(), permissionWaiting = false;
       for (;;) {
         await accessRelay?.sync();
@@ -343,8 +385,13 @@ function create({ app, handle, plugin, identityOf, skillDirs, deviceGrants, asse
         if (node.activeElapsedMs > node.config.timeoutSeconds * 1000) {
           await stopNode(node); throw new Error('当前节点执行超时，已停止并保留过程');
         }
-        let page;
-        try { page = await rpc('job.session', { ref: node.ref, since, limit: 500 }); reconnects = 0; }
+        let page = updates.take(since);
+        if (!page && updates.active) {
+          const remaining = Math.max(1, node.config.timeoutSeconds * 1000 - node.activeElapsedMs);
+          await updates.wait(permissionWaiting ? null : remaining);
+          continue;
+        }
+        try { page ??= await rpc('job.session', { ref: node.ref, since, limit: 500 }); reconnects = 0; }
         catch (_) {
           if (++reconnects > 12) throw new Error('本机执行连接中断，状态未确认；请恢复连接后重试或停止');
           await wait(interval); continue;
@@ -378,9 +425,13 @@ function create({ app, handle, plugin, identityOf, skillDirs, deviceGrants, asse
           return await finishNode(output.text(node.ref) || text);
         }
         if (['failed', 'cancelled', 'interrupted', 'stopped', 'unknown'].includes(status)) throw new Error('节点未正常完成：' + status);
-        await wait(interval);
+        if (page.items.length && since < Number(page.seq || 0)) continue;
+        if (page.ref === node.ref && ['running', 'waiting-permission', 'access-changing'].includes(status)) updates.subscribe(since);
+        else updates.close();
+        if (!updates.active) await wait(interval);
       }
     } finally {
+      token.updates?.close();
       await accessRelay?.close();
       // Close an incomplete stream on failure/cancellation as well; never mask
       // the dispatch error or prevent credential cleanup with a UI sink error.

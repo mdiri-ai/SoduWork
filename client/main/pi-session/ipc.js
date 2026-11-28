@@ -817,7 +817,8 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         // saved creation receipt and current Hub ownership/state are verified.
         // Established archives still require their persisted task binding.
         requireTaskBinding: Boolean(opts.requireTaskBinding) && !work.bindCreatedTask,
-        thinkingLevel: spec.thinkingLevel,
+        thinkingLevel: ['armonel', 'dsh'].includes(opts.adapterId) && !String(opts.thinkingLevel || '').trim()
+          ? '' : spec.thinkingLevel,
         ...(typeof opts.modelName === 'string' ? { modelName: spec.modelName } : {}),
         reasoningEffort: spec.reasoningEffort,
         intent: spec.intent,

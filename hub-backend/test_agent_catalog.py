@@ -71,6 +71,148 @@ class CatalogTest(unittest.TestCase):
         from app.agent_catalog import AGENTS
         self.assertEqual(AGENTS['pi']['install']['version'], '0.84.4')
 
+    def test_armonel_uses_only_the_bundled_program_and_orders_after_pi(self):
+        from app.agent_catalog import AGENTS
+        from app.services import acp_agents, agent_setup
+        self.assertEqual(sorted(AGENTS, key=lambda key: AGENTS[key]['order'])[:3],
+                         ['pi', 'armonel', 'codex-harness'])
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / ('armonel.exe' if os.name == 'nt' else 'armonel')
+            binary.write_bytes(b'native package fixture')
+            binary.chmod(0o755)
+            with patch.dict(os.environ, {'SODUWORK_BUNDLED_ARMONEL': binary.name,
+                                         'SODUWORK_AGENT_ARMONEL_BIN': str(binary)}):
+                self.assertIsNone(acp_agents.find_bin('armonel'))
+                with patch.object(agent_setup, '_spawn') as spawn:
+                    job = agent_setup.job(agent_setup.start_install('armonel', 'install'))
+                    self.assertFalse(job['ok'])
+                    self.assertFalse(agent_setup.can_uninstall('armonel'))
+                    spawn.assert_not_called()
+            with patch.dict(os.environ, {'SODUWORK_BUNDLED_ARMONEL': str(binary)}):
+                self.assertEqual(acp_agents.find_bin('armonel'), str(binary))
+                metadata = acp_agents.run_args('saved-id', 'work')
+                readonly = acp_agents.command_argv('armonel', str(binary), metadata, directory, {})
+                self.assertIn('--read-only', readonly)
+                self.assertNotIn('--allow-write', readonly)
+                self.assertEqual(readonly[readonly.index('--session') + 1], 'saved-id')
+                work = acp_agents.command_argv('armonel', str(binary), metadata, directory,
+                                             {'accessPolicy': {'mode': 'standard'}})
+                self.assertEqual(work[work.index('--') + 1:][:2], [str(binary), 'acp'])
+                self.assertIn('--allow-write', work)
+                self.assertIn('--allow-exec', work)
+                self.assertNotIn('--read-only', work)
+
+    def test_armonel_constrains_each_request_independently_of_task_length(self):
+        from app.services.acp_agents import _agent_args
+        model = {"base": "http://127.0.0.1:1/v1", "model": "fixture"}
+        for settings, expected in (
+            ({}, ["32768", "8192"]),
+            ({"contextWindow": 128000, "contextWindowSource": "safe-default"}, ["32768", "8192"]),
+            ({"contextWindow": 128000, "contextWindowSource": "configured"}, ["128000", "8192"]),
+            ({"contextWindow": 32768, "maxOutputTokens": 16384}, ["32768", "16384"]),
+            ({"contextWindow": 4096, "maxOutputTokens": 8192}, ["4096", "3840"]),
+            ({"contextWindow": 4000000}, ["2000000", "8192"]),
+        ):
+            with self.subTest(settings=settings):
+                args = _agent_args("armonel", {"llm": {**model, **settings}})
+                self.assertEqual(args[:1], ["acp"])
+                self.assertEqual(args[1::2], ["--context-window", "--max-tokens", "--max-total-tokens", "--max-tool-calls"])
+                self.assertEqual(args[2::2], [*expected, "0", "0"])
+        self.assertEqual(_agent_args("armonel", {}),
+                         ["acp", "--max-total-tokens", "0", "--max-tool-calls", "0"])
+
+    def test_armonel_forwards_only_declared_openai_reasoning_effort(self):
+        from app.services.acp_agents import _agent_args
+        model = {"base": "http://127.0.0.1:1/v1", "model": "fixture", "kind": "openai-compat",
+                 "reasoning": True, "supportsReasoningEffort": True, "thinkingFormat": "openai",
+                 "thinkingMode": "controllable", "thinkingLevel": "high",
+                 "thinkingLevelMap": {"high": "high", "medium": "xhigh", "off": "none"}}
+        for changes, expected in (
+            ({}, "high"),
+            ({"thinkingLevel": "medium"}, "xhigh"),
+            ({"thinkingLevel": "off"}, "off"),
+            ({"thinkingLevel": "off", "thinkingMode": "always"}, None),
+            ({"thinkingLevel": "off", "thinkingAlwaysOn": True}, None),
+            ({"thinkingLevel": ""}, None),
+            ({"thinkingFormat": "deepseek"}, None),
+            ({"thinkingMode": "none"}, None),
+            ({"kind": "anthropic"}, None),
+            ({"supportsReasoningEffort": False}, None),
+            ({"thinkingLevelMap": {}}, None),
+            ({"thinkingLevelMap": {"high": None}}, None),
+            ({"thinkingLevelMap": {"high": "unsupported-value"}}, None),
+        ):
+            with self.subTest(changes=changes):
+                args = _agent_args("armonel", {"llm": {**model, **changes}})
+                if expected is None:
+                    self.assertNotIn("--thinking", args)
+                else:
+                    self.assertEqual(args[args.index("--thinking") + 1], expected)
+
+    def test_armonel_recovery_uses_only_declared_wire_efforts(self):
+        from app.services.acp_agents import inject_llm_env
+        route = {"base": "http://localhost/v1", "model": "alias", "localOnly": True}
+        for restrictions, expected in (
+            ({}, None),
+            ({"thinkingLevelMap": {"low": None, "high": "high"}}, ["high"]),
+            ({"thinkingLevelMap": {"low": "medium", "high": "high", "off": "none"}}, ["medium", "high"]),
+            ({"thinkingLevelMap": {"off": None}}, []),
+            ({"supportsReasoningEffort": False, "thinkingLevelMap": {"low": "low"}}, []),
+            ({"reasoning": False}, []),
+            ({"thinkingMode": "none"}, []),
+        ):
+            with self.subTest(restrictions=restrictions):
+                env = {"ARMONEL_CHAT_RECOVERY_EFFORTS": '["max"]'}
+                inject_llm_env("armonel", env, {**route, **restrictions})
+                raw = env.get("ARMONEL_CHAT_RECOVERY_EFFORTS")
+                self.assertEqual(json.loads(raw) if raw is not None else None, expected)
+
+    def test_armonel_selects_reasoning_recovery_for_verified_gateway(self):
+        from app.services.acp_agents import _agent_args, inject_llm_env
+        route = {"base": "https://gateway.example/v1", "model": "deployment", "key": "test"}
+        device = tempfile.TemporaryDirectory()
+        self.addCleanup(device.cleanup)
+        self.enterContext(patch.dict(os.environ, {"SODUWORK_DATA_ROOT": device.name}))
+        profiles = Path(device.name) / ".armonel" / "recovery-profiles.json"
+        profiles.parent.mkdir()
+        profiles.write_text(json.dumps({route["base"]: {route["model"]: "openai"}}), encoding="utf-8")
+        for changes, expected in (
+            ({}, "openai"),
+            ({"base": route["base"] + "/", "thinkingMode": "auto"}, "openai"),
+            ({"reasoning": True, "thinkingFormat": "openai"}, "openai"),
+            ({"thinkingMode": "always"}, None),
+            ({"thinkingAlwaysOn": True}, None),
+            ({"thinkingMode": "none"}, None),
+            ({"supportsReasoningEffort": False}, None),
+            ({"thinkingLevelMap": {"off": None}}, None),
+            ({"thinkingFormat": "qwen"}, None),
+            ({"reasoning": False}, None),
+            ({"model": "another-deployment"}, None),
+            ({"base": "https://gateway.example.other/v1"}, None),
+            ({"base": route["base"] + "/other"}, None),
+            ({"reasoning": True, "thinkingMode": "controllable", "thinkingFormat": "zai"}, "zai"),
+        ):
+            with self.subTest(changes=changes):
+                model = {**route, **changes}
+                env = {"ARMONEL_CHAT_THINKING_OFF": "stale"}
+                inject_llm_env("armonel", env, model)
+                self.assertEqual(env.get("ARMONEL_CHAT_THINKING_OFF"), expected)
+                self.assertNotIn("--thinking", _agent_args("armonel", {"llm": model}))
+        for agent in ("dsh", "opencode"):
+            with self.subTest(agent=agent):
+                env = {}
+                inject_llm_env(agent, env, route)
+                self.assertNotIn("ARMONEL_CHAT_THINKING_OFF", env)
+        for content in ("[]", "{", '{"https://gateway.example/v1": []}', None):
+            with self.subTest(invalid_profile=content):
+                if content is None:
+                    profiles.unlink()
+                else:
+                    profiles.write_text(content, encoding="utf-8")
+                env = {}
+                inject_llm_env("armonel", env, route)
+                self.assertNotIn("ARMONEL_CHAT_THINKING_OFF", env)
+
     def test_source_compatible_acp_runtimes_pin_versions_separately_from_package_names(self):
         from app.agent_catalog import AGENTS, install_specs
         expected = {

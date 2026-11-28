@@ -20,7 +20,7 @@ assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.TURN_Q
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.MODEL_SELECT));
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.GOAL_CONTROL));
 assert.deepEqual(RUNTIMES.map((item) => item.id), [
-  'pi', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
+  'pi', 'armonel', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
 ]);
 RUNTIMES.filter((item) => item.transport === 'runner').forEach((runtimeSpec) => {
   const runner = validateAdapter(createRunnerRuntimeAdapter({ runtimeSpec }));
@@ -63,6 +63,7 @@ assert.match(runtime, /data-runtime=.*runtime\.id/,
   'runtime rows must be generated from the catalog rather than hard-coded');
 [
   "pi: 'PI'",
+  "armonel: 'AR'",
   "opencode: 'OC'",
   "qwen: 'QW'",
   "dsh: 'DS'",

@@ -37,6 +37,86 @@ for (const agentId of ['qwen', 'codex']) test(agentId + ' sends provider model I
   await send('Same new model'); assert.equal(calls.filter(x => x.op === 'job.comment').at(-1).input.executionSelection, undefined);
 });
 
+test('Armonel forwards the conversation thinking choice on each supported Runner launch', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-armonel-thinking-'));
+  const alias = 'armonel-thinking-contract';
+  const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':armonel');
+  const launches = [];
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime('armonel'),
+    runnerRuntime: { async rpc(op, input) {
+      if (op === 'job.dispatch' || op === 'job.comment') {
+        launches.push(input.cfg.llm);
+        return { ok: true, data: { ok: true, ref } };
+      }
+      if (op === 'job.session') return { ok: true, data: { status: 'done', round: launches.length,
+        items: [{ seq: launches.length, kind: 'say', text: 'Synthetic reply' }] } };
+      if (op === 'job.stop') return { ok: true, data: { ok: true } };
+      throw Error(op);
+    } },
+    modelConfig: { fetchModel: async (_identity, id) => ({ ok: true, model: {
+      id, key: 'synthetic', baseUrl: 'http://fixture.invalid/v1',
+      ...(id === 'reasoning' ? { reasoning: true, thinkingMode: 'controllable', thinkingFormat: 'openai',
+        supportsReasoningEffort: true, thinkingLevelMap: { low: 'low', off: 'none' } } : {}),
+    } }) },
+  });
+  const session = await adapter.createSession({ native: { runner: { openOptions: {
+    ref: alias, cwd: root, modelName: 'reasoning', thinkingLevel: 'low',
+  } } } });
+  t.after(async () => { await session.dispose(); fs.rmSync(root, { recursive: true, force: true }); });
+  const handle = getRunnerSessionDetails(session).handle;
+  assert.equal((await handle.submit('First turn', []).completion).ok, true);
+  assert.equal((await handle.submit('Follow-up', []).completion).ok, true);
+  assert.equal((await handle.selectModel('plain')).ok, true);
+  assert.equal((await handle.submit('Different model', []).completion).ok, true);
+  assert.deepEqual(launches.map(({ model, thinkingLevel }) => ({ model, thinkingLevel })), [
+    { model: 'reasoning', thinkingLevel: 'low' },
+    { model: 'reasoning', thinkingLevel: 'low' },
+    { model: 'plain', thinkingLevel: undefined },
+  ]);
+});
+
+test('a stopped DSH chat changes reasoning on the next prompt without replacing the session', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-dsh-thinking-'));
+  const calls = [];
+  let session;
+  t.after(async () => { await session?.dispose(); fs.rmSync(root, { recursive: true, force: true }); });
+  const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime('dsh'),
+    runnerRuntime: { async rpc(op, input) {
+      if (op === 'job.comment') { calls.push(input); return { ok: true, data: { ok: true } }; }
+      if (op === 'job.session') return { ok: true, data: calls.length ? { ok: true, status: 'done',
+        round: calls.length + 1, items: [{ seq: calls.length, kind: 'say', text: 'Synthetic result' }] }
+        : { ok: true, status: 'failed', error: 'Synthetic token exhaustion', failureKind: 'execution_incomplete', items: [] } };
+      if (op === 'job.stop' || op === 'runtime.detect') return { ok: true, data: {} };
+      throw Error(op);
+    } },
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'synthetic',
+      baseUrl: 'http://fixture.invalid/v1', reasoning: true, thinkingMode: 'controllable',
+      thinkingFormat: 'openai', supportsReasoningEffort: true, thinkingLevelMap: { low: 'low', high: 'high', off: 'none' } } }) },
+  });
+  const request = { native: { runner: { openOptions: {
+    app: { getPath: () => root }, ref: 'dsh-chat', resumePath: 'saved-dsh-session',
+    cwd: root, modelName: 'fixture', thinkingLevel: 'high',
+  } } } };
+  session = await adapter.resumeSession(request);
+  for (let attempt = 0; !session.snapshot().execution.terminalConfirmed && attempt < 100; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(session.snapshot().execution.terminalConfirmed, true);
+  const handle = getRunnerSessionDetails(session).handle;
+  assert.equal(handle.setThinkingLevel('medium').ok, false);
+  assert.equal(handle.setThinkingLevel('off').thinking.level, 'off');
+  assert.equal((await handle.submit('Continue', []).completion).ok, true);
+  assert.equal(calls[0].ref, 'saved-dsh-session');
+  assert.equal(calls[0].cfg.llm.thinkingLevel, 'off');
+  assert.equal(handle.setThinkingLevel('').thinking.level, '');
+  assert.equal((await handle.submit('Continue with provider defaults', []).completion).ok, true);
+  assert.equal(calls[1].ref, 'saved-dsh-session');
+  assert.equal(calls[1].cfg.llm.thinkingLevel, undefined);
+  await session.dispose();
+  session = await adapter.resumeSession(request);
+  assert.equal(session.snapshot().thinking.level, '', 'the saved reset survives reopening');
+});
+
 test('resumed Runner history without saved model selection bypasses a stale Agent preference', async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-model-recovery-'));
   const fetches = [];

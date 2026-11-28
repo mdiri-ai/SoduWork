@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SODUWORK_ARMONEL_NPM_REGISTRY: ${{ vars.SODUWORK_ARMONEL_NPM_REGISTRY }}
+
 concurrency:
   group: source-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -42,6 +45,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb xauth rpm gnupg
+      - name: Prepare pinned Armonel archives for macOS checks
+        if: runner.os == 'macOS' && env.SODUWORK_ARMONEL_NPM_REGISTRY != ''
+        working-directory: client
+        run: npm run vendor:armonel
       - name: Check prerequisites and launcher regressions
         shell: bash
         run: |
@@ -70,6 +77,10 @@ jobs:
         run: |
           npm ci
           ./node_modules/.bin/electron e2e/titlebar-modal-theme.cjs "$RUNNER_TEMP/titlebar-palettes"
+      - name: Check Armonel resource selection and available native runtime on macOS
+        if: runner.os == 'macOS'
+        working-directory: client
+        run: node --test tests/verify-runtime.test.cjs
       - name: Verify Windows desktop startup and install caches on another volume
         if: runner.os == 'Windows'
         shell: pwsh
@@ -126,6 +137,10 @@ jobs:
         with:
           node-version: '22'
           package-manager-cache: false
+      - name: Prepare pinned Armonel archives for client tests
+        if: env.SODUWORK_ARMONEL_NPM_REGISTRY != ''
+        working-directory: client
+        run: npm run vendor:armonel
       - name: Prepare backend interpreter used by client contracts
         shell: bash
         run: |

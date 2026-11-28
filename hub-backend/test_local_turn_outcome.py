@@ -335,6 +335,52 @@ class TurnOutcomeTests(unittest.TestCase):
                         self.assertEqual(self.run['failureKind'], 'execution_incomplete')
                         self.assertEqual(self.run['error'], local_turn_outcome.TRUNCATED)
 
+    def test_armonel_reasoning_only_preserves_session_and_projects_the_specific_reason(self):
+        self.run.update(state="running", cli="armonel", cliSid="saved-session", queue=[])
+        terminal = {}
+        for event in [{"type": "step_finish", "part": {"reason": "max_tokens"}},
+                      {"type": "turn_stopped", "reason": "reasoning_output_limit"}]:
+            local_stream._on_line(self.ref, json.dumps(event), terminal)
+        with patch.object(local_stream, "_resume") as resume:
+            local_stream._finish(self.ref, 2, terminal, "")
+        resume.assert_not_called()
+        page = ai_local.session_sync({}, self.ref)
+        self.assertEqual((page["status"], page["cliSid"], page["error"]),
+                         ("failed", "saved-session", local_turn_outcome.REASONING_OUTPUT_LIMIT))
+
+    def test_dsh_preserves_specific_recovery_stops_for_private_models(self):
+        from app.services import runner_usage_receipts
+        for reason, message in (("reasoning_output_limit", local_turn_outcome.REASONING_OUTPUT_LIMIT),
+                                ("output_recovery_no_progress", local_turn_outcome.OUTPUT_RECOVERY_NO_PROGRESS)):
+            with self.subTest(reason=reason):
+                self.run.update(state="running", cli="dsh", cliSid="saved-session", modelLocalOnly=True,
+                                queue=["next user prompt"])
+                terminal = {}
+                self.dsh_step(terminal, "max_tokens")
+                local_stream._on_line(self.ref, json.dumps({"type": "turn_stopped", "reason": reason}), terminal)
+                with patch.object(local_stream, "_resume") as resume:
+                    local_stream._finish(self.ref, 2, terminal, "")
+                resume.assert_not_called()
+                page = ai_local.session_sync({}, self.ref)
+                self.assertEqual((page["status"], page["cliSid"], page["failureKind"]),
+                                 ("failed", "saved-session", "execution_incomplete"))
+                self.assertEqual(self.run["queue"], ["next user prompt"])
+                self.assertEqual(runner_usage_receipts.public_snapshot(page, self.run)["error"], message)
+
+    def test_local_armonel_context_stops_keep_the_safe_diagnosis_in_the_snapshot(self):
+        for reason, diagnosis in (("context_summary_failed", local_turn_outcome.ARMONEL_SUMMARY_FAILED),
+                                  ("context_summary_truncated", local_turn_outcome.ARMONEL_SUMMARY_TRUNCATED),
+                                  ("context_contract", local_turn_outcome.ARMONEL_CONTEXT_CONTRACT)):
+            with self.subTest(reason=reason):
+                self.run.update(state="running", cli="armonel", cliSid="saved-session", modelLocalOnly=True, queue=[])
+                terminal = {}
+                local_stream._on_line(self.ref, json.dumps({"type": "turn_stopped", "reason": reason}), terminal)
+                with patch.object(local_stream, "_resume") as resume:
+                    local_stream._finish(self.ref, 2, terminal, "")
+                resume.assert_not_called()
+                page = ai_local.session_sync({}, self.ref)
+                self.assertEqual((page["status"], page["cliSid"], page["error"]), ("failed", "saved-session", diagnosis))
+
     def test_dsh_successful_native_continuation_clears_only_output_truncation(self):
         terminal = {}
         self.dsh_step(terminal, "max_tokens")

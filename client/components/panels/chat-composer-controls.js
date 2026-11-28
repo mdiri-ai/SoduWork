@@ -120,9 +120,25 @@
     }
     on(global, 'resize', positionModels);
     function renderThinking(state) {
+      const thinking = state?.thinking || {};
+      const dsh = pop.querySelector('[data-dsh-chat-thinking]');
+      if (dsh) {
+        const levels = thinking.supported ? thinking.levels || [] : [];
+        const offer = levels.length > 0 && Boolean(global.ComposeModelPicker?.dshEffortOptions) && !state.cloudHandoff;
+        dsh.hidden = !offer;
+        dsh.disabled = !offer || !state.ref || Boolean(state.busy || state.runtimeSwitching || thinkingBusy);
+        const fallback = pop.querySelector('[data-dsh-chat-thinking-default]');
+        if (fallback) fallback.hidden = offer;
+        const signature = levels.join(',');
+        if (dsh.dataset.levels !== signature && offer) {
+          dsh.innerHTML = global.ComposeModelPicker.dshEffortOptions(levels, thinking.level);
+          dsh.dataset.levels = signature;
+        }
+        if (offer && !thinkingBusy) dsh.value = thinking.level || '';
+        return;
+      }
       const panel = pop.querySelector('.nmodel-thinking');
       if (!panel) return;
-      const thinking = state && state.thinking || {};
       const supported = Boolean(thinking.supported);
       const canDisable = supported && thinking.canDisable !== false;
       const enabled = Boolean(supported && thinking.enabled);
@@ -250,7 +266,12 @@
         '<i class="nmodel-tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></i></button>').join('') :
         '<p class="nmodel-message">' + esc(tx('没有匹配的可用模型')) + '</p>';
     }
-    function thinkingMarkup() {
+    function thinkingMarkup(state) {
+      if (state.adapterId === 'dsh') {
+        return '<label class="cp-model-summary"><span>推理强度</span>' +
+          '<select data-dsh-chat-thinking hidden title="从下一轮消息起生效"></select>' +
+          '<span data-dsh-chat-thinking-default>由服务决定</span></label>';
+      }
       return '<section class="nmodel-thinking" aria-label="思考模式">' +
         '<span class="nmodel-thinking-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5v3m0 9v3M2.5 10h3m9 0h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.2"/></svg></span>' +
         '<span class="nmodel-thinking-copy"><b>思考模式</b><small data-thinking-label>正在加载</small></span>' +
@@ -265,7 +286,7 @@
       pop.innerHTML = '<header class="nmodel-header"><div class="nmodel-heading"><b>选择模型</b><span title="只对后续发送的消息生效，不会中断当前轮次">用于本次会话</span></div><button type="button" data-model-close aria-label="关闭模型选择">×</button></header>' +
         '<label class="nmodel-search"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="m13 13 4 4"/></svg><input type="search" aria-label="搜索模型" placeholder="搜索可用模型"></label>' +
         '<div class="nmodel-options" role="listbox" aria-label="可用模型"><p class="nmodel-message">正在加载…</p></div>' +
-        thinkingMarkup();
+        thinkingMarkup(current);
       pop.showPopover?.();
       renderThinking(current); positionModels();
       pop.querySelector('input').focus({ preventScroll: true });
@@ -432,6 +453,22 @@
       }
       if (event.target.matches('input[type=search]')) list(event.target.value);
     });
+    on(pop, 'change', async event => {
+      if (!event.target.matches('[data-dsh-chat-thinking]') || event.target.disabled) return;
+      const state = options.state(), level = event.target.value, epoch = effortEpoch;
+      if (state.adapterId !== 'dsh' || !state.ref || thinkingBusy ||
+          level && !state.thinking?.levels?.includes(level)) return;
+      const current = () => epoch === effortEpoch && options.state().ref === state.ref && options.state().adapterId === 'dsh';
+      thinkingBusy = true;
+      renderThinking(state);
+      try {
+        const result = await global.soduWorkAPI.conversationSession.setThinking(state.ref, level);
+        if (!current()) return;
+        if (result?.ok) options.thinkingChanged?.(result.thinking);
+        else options.say(result?.reason || '推理强度未能更新，请重试');
+      } catch (_) { if (current()) options.say('推理强度未能更新，请重试'); }
+      finally { thinkingBusy = false; if (current()) renderThinking(options.state()); }
+    });
     on(pop, 'click', async event => {
       event.stopPropagation();
       if (event.target.closest('[data-model-close]')) { close(true); return; }
@@ -494,7 +531,7 @@
         event.preventDefault(); event.stopPropagation(); nativeView = 'effort'; renderNativeEffort(); pop.querySelector('[data-native-list]')?.focus(); return;
       }
       if (event.key === 'Escape' && !pop.hidden) { event.stopPropagation(); close(wrap.contains(event.target)); }
-      if (event.target.matches('[data-effort-slider]')) return;
+      if (event.target.matches('[data-effort-slider], [data-dsh-chat-thinking]')) return;
       if (pop.contains(event.target) && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
         const items = [...pop.querySelectorAll('[role="option"]')], index = items.indexOf(document.activeElement);
         if (items.length) { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus(); }

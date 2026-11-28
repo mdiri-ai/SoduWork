@@ -26,6 +26,7 @@ _CODEX_TRANSPORT_NOISE = re.compile(
 
 _STALL_RETRY_LIMIT = max(0, int(os.environ.get("SODUWORK_LOCAL_STALL_RETRIES") or 1))
 _LAUNCH_STOP_TIMEOUT_S = 3.0
+_ACP_STOP_TIMEOUT_S = 3.0
 _STALL_RECOVERY_PROMPT = (
     "SoduWork 检测到上一轮长时间没有任何新输出，已经中断那一轮并自动续跑。\n"
     "不要重复已经完成的工作；先检查当前工作区、进程和服务的实际状态，从最后一步继续。"
@@ -167,8 +168,8 @@ def stop_sync(cfg: dict, ref: str) -> dict:
         owner = run.get('_workerIdentity')
         pid, proc = int(run.get('pid') or 0), run.get('proc')
     from . import access_broker
-    access_broker.close(ref)
     if launch_pending:
+        access_broker.close(ref)
         # The worker must observe any process returned by an in-flight Popen and
         # confirm its exit. An accepted cancellation is not a stop receipt.
         launch_pending['retry'].set()
@@ -181,12 +182,38 @@ def stop_sync(cfg: dict, ref: str) -> dict:
         return {"ok": bool(launch_pending['stopped']),
                 "stopped": bool(launch_pending['stopped']), **goal_receipt}
     if run.get("contextCompacting"):
+        access_broker.close(ref)
         return {"ok": True, "stopped": True, **goal_receipt}
-    ok = _kill_tree(ref, expected_pid=pid, expected_proc=proc)
+    channel = access_broker.request_stop(ref, owner) if proc is not None and pid else None
+    if channel:
+        # The agent's cancelled reply is not a process exit receipt. Give the
+        # bridge a bounded opportunity to drain updates and close the session.
+        try:
+            proc.wait(timeout=_ACP_STOP_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        else:
+            with _LOCK:
+                if _RUNS.get(ref) is not run or run.get('_workerIdentity') is not owner:
+                    return {"ok": False, "error": "会话执行已变更，未停止新的执行", **goal_receipt}
+            return {"ok": True, "stopped": True, **goal_receipt}
+        access_broker.close(ref, expected=channel)
+    else:
+        access_broker.close(ref)
+    ok = bool(channel and proc.poll() is not None)
+    if not ok:
+        ok = _kill_tree(ref, expected_pid=pid, expected_proc=proc)
+    if not ok and channel and proc.poll() is not None:
+        # The original host can exit while the forced-stop check is in flight.
+        ok = True
+    if ok and channel:
+        with _LOCK:
+            if _RUNS.get(ref) is not run or run.get('_workerIdentity') is not owner:
+                return {"ok": False, "error": "会话执行已变更，未停止新的执行", **goal_receipt}
     if not ok:
         with _LOCK:
             r = _RUNS.get(ref)
-            if r is run and r.get('_workerIdentity') is owner:
+            if r is run and r.get('_workerIdentity') is owner and not channel:
                 r["stopping"] = False
         return {"ok": False, "error": "没能确认它停下来（进程可能还在收尾，稍后可再点一次）"}
     return {"ok": True, "stopped": True, **goal_receipt}
@@ -775,6 +802,20 @@ def _on_line(ref: str, raw: str, term: dict, stream: str = "out",
             new.append({"kind": "out", "tool": "", "text": ln[:300]})
         else:
             local_turn_outcome.observe(str(run.get("cli") or ""), m, term)
+            if term.get("toolApprovalDenied") and not terminal_before.get("toolApprovalDenied"):
+                new.append({"kind": "sys", "tool": "", "text": local_turn_outcome.TOOL_APPROVAL_DENIED})
+            if term.get("toolApprovalTimeout") and not terminal_before.get("toolApprovalTimeout"):
+                new.append({"kind": "sys", "tool": "", "text": local_turn_outcome.TOOL_APPROVAL_TIMEOUT})
+            if term.get("requestLimitReached") and not terminal_before.get("requestLimitReached"):
+                new.append({"kind": "sys", "tool": "", "text": local_turn_outcome.ARMONEL_REQUEST_LIMIT})
+            if term.get("reasoningOutputLimit") and not terminal_before.get("reasoningOutputLimit"):
+                new.append({"kind": "sys", "tool": "", "text": local_turn_outcome.REASONING_OUTPUT_LIMIT})
+            if term.get("outputRecoveryNoProgress") and not terminal_before.get("outputRecoveryNoProgress"):
+                new.append({"kind": "sys", "tool": "", "text": local_turn_outcome.OUTPUT_RECOVERY_NO_PROGRESS})
+            if term.get("dshContextRecovery") and not terminal_before.get("dshContextRecovery"):
+                note = (local_turn_outcome.DSH_CONTEXT_COMPACTED if term["dshContextRecovery"] == "dsh_context_compacted"
+                        else local_turn_outcome.DSH_CONTEXT_COMPACTION_FAILED)
+                new.append({"kind": "sys", "tool": "", "text": note})
             event_type = str(m.get("type") or "").replace("-", "_").replace(".", "_")
             if (term.get("piFinalResponse") and event_type == "message_end"
                     and str(run.get("cli") or "") == "pi"):
@@ -1088,6 +1129,17 @@ def _finish(ref: str, code: int, term: dict, hard_err: str) -> None:
         _save_meta(ref)
         _scrub_runtime_config(ref)
         return
+    if (term.get("nativeCancelled") or term.get("toolApprovalDenied") or term.get("toolApprovalTimeout")) and not (bad or timed or overflow):
+        with _LOCK:
+            if term.get("nativeCancelled") and goal_owned:
+                local_task_goal.control(run, "pause")
+            run.update(state="stopped", error="", stopping=False)
+            run.pop("failureKind", None)
+            run.pop("failurePath", None)
+            _record_terminal(ref, run)
+            _save_meta(ref)
+        _scrub_runtime_config(ref)
+        return
     # On context exhaustion, try compaction before handoff; neither transition is an execution failure.
     # Recovery can launch a replacement, so require a settled execution host.
     if (overflow and not hard_err and not stopping and not run.get("permissionDenied")
@@ -1131,6 +1183,7 @@ def _finish(ref: str, code: int, term: dict, hard_err: str) -> None:
         if not term.get("outputTruncated"):
             completion_recovery = local_completion.assess(run)
     truncated = bool(term.get("outputTruncated"))
+    request_limited = (code == 2 and term.get("requestLimitReached") and not term.get("isError") and not overflow)
     dialogue_failure = local_dialogue_outcome.failure(run, term) if not bad and not truncated else {}
     bad = bad or (truncated and not completion_recovery) or bool(dialogue_failure)
     if dialogue_failure:
@@ -1158,9 +1211,35 @@ def _finish(ref: str, code: int, term: dict, hard_err: str) -> None:
                                 "请查看最后一条实况后重试。")
         else:
             run["state"] = "failed" if bad else "done"
-            if truncated and bad:
+            if code == 2 and term.get("dshContextRecovery") and not term.get("isError") and not overflow:
                 run["failureKind"] = "execution_incomplete"
-                run["error"] = local_turn_outcome.TRUNCATED
+                if term["dshContextRecovery"] == "dsh_context_compacted":
+                    run["compacted"] = int(run.get("compacted") or 0) + 1
+                    run["tokens"] = {}
+                    run["error"] = local_turn_outcome.DSH_CONTEXT_COMPACTED
+                else:
+                    run["error"] = local_turn_outcome.DSH_CONTEXT_COMPACTION_FAILED
+            elif code == 2 and term.get("contextSummaryFailed") and not term.get("isError") and not overflow:
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = (local_turn_outcome.ARMONEL_SUMMARY_TRUNCATED
+                                if term["contextSummaryFailed"] == "context_summary_truncated" else
+                                local_turn_outcome.ARMONEL_SUMMARY_FAILED)
+            elif code == 2 and term.get("contextContractFailed") and not term.get("isError") and not overflow:
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = local_turn_outcome.ARMONEL_CONTEXT_CONTRACT
+            elif request_limited:
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = local_turn_outcome.ARMONEL_REQUEST_LIMIT
+            elif truncated and bad and term.get("reasoningOutputLimit"):
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = local_turn_outcome.REASONING_OUTPUT_LIMIT
+            elif truncated and bad and term.get("outputRecoveryNoProgress"):
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = local_turn_outcome.OUTPUT_RECOVERY_NO_PROGRESS
+            elif truncated and bad:
+                run["failureKind"] = "execution_incomplete"
+                run["error"] = (local_turn_outcome.ARMONEL_TOKEN_LIMIT if run.get("cli") == "armonel"
+                                else local_turn_outcome.TRUNCATED)
             elif dialogue_failure:
                 run["failureKind"] = dialogue_failure["kind"]
                 run["error"] = dialogue_failure["reason"]

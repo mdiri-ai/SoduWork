@@ -13,6 +13,26 @@ test('Developer ID builds enable notarization unless explicitly skipped', () => 
   assert.equal(notarizeEnabled({}), false);
 });
 
+test('a signed Mac release must run the ACP probe inside the app before notarization', async t => {
+  const key = 'SODUWORK_MAC_SIGN_IDENTITY';
+  const prior = process.env[key], priorSkip = process.env.SODUWORK_MAC_SKIP_NOTARIZE;
+  t.after(() => {
+    if (prior === undefined) delete process.env[key]; else process.env[key] = prior;
+    if (priorSkip === undefined) delete process.env.SODUWORK_MAC_SKIP_NOTARIZE;
+    else process.env.SODUWORK_MAC_SKIP_NOTARIZE = priorSkip;
+  });
+  process.env[key] = 'Developer ID Application: SoduWork (TEAM123)';
+  delete process.env.SODUWORK_MAC_SKIP_NOTARIZE;
+  const appOutDir = await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-post-sign-'));
+  t.after(() => fs.rm(appOutDir, { recursive: true, force: true }));
+  const context = { appOutDir, packager: { appInfo: { productFilename: 'SoduWork' } } };
+  t.mock.method(require('../scripts/check-armonel-acp.cjs'), 'checkAcp', async executable => {
+    assert.equal(executable, path.join(context.appOutDir, 'SoduWork.app', 'Contents', 'Resources', 'armonel', 'armonel'));
+    throw Error('ACP fixture rejected the signed helper');
+  });
+  await assert.rejects(require('../scripts/notarize-macos.cjs').default(context), /ACP fixture rejected/);
+});
+
 test('notarization submits a zipped app and staples the original bundle', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-notary-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

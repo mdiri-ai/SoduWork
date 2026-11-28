@@ -87,6 +87,16 @@ npm start
 
 在 `client/` 运行 `npm test` 和 `npm run check:layout`。Electron 端到端检查见本目录的 `e2e/`，按脚本选择所需环境。`dist/`、`.runtime/` 和生成的 `runner/` 文件是产物，不要提交或复制旧版二进制替代源码。
 
+### 在桌面安装包中内置 Armonel
+
+Armonel 锁定为 `0.0.11-rc.4`。首次从源码启动桌面或构建安装包时，SoduWork 会按[发布清单](../client/main/armonel-release.json)从[默认 Nexus 包源](../client/scripts/armonel-npm-registry.json)下载目标平台的归档。能访问 Nexus 的构建机可直接运行原有命令。如需使用其他 npm 仓库，将 `SODUWORK_ARMONEL_NPM_REGISTRY` 设为该仓库的 HTTPS 根地址；GitHub Actions 支持同名仓库变量。
+
+需要离线构建时，可提前在 `client/` 运行 `npm run vendor:armonel`，将 Apple Silicon、Intel Mac、Windows x64 和 Linux x64 的四个原始归档同步到 `client/runtime-packages/armonel/<版本>/`。正式打包必须取得目标归档，并通过归档和可执行文件的 SHA-256 校验。安装包自带程序和两份许可文件，用户无需安装 npm。macOS 构建会从 `SoduWork.app/Contents/Resources/armonel/armonel` 验证离线 ACP 对话。在 Apple Silicon 上构建并验证 Intel 安装器需要 Rosetta。
+
+构建单个平台时，可用 `SODUWORK_ARMONEL_PACKAGE` 直接指定归档。使用通用镜像时，可将 `SODUWORK_ARMONEL_PACKAGE_BASE_URL` 指向按 `<base>/<版本>/<文件名>` 提供归档的镜像。GitLab CI 可将 `SODUWORK_ARMONEL_PROJECT_ID` 设为托管 `armonel-npm` 通用包的数字项目 ID，并为作业令牌授予读取权限。
+
+模型将单次输出全部用于思考时，Armonel 会按模型已声明的能力调整恢复请求。对于缺少能力声明的网关别名，运维人员可以先验证 `reasoning_effort=none` 能返回正文或完整工具调用，再把端点和模型名写入 `$SODUWORK_DATA_ROOT/.armonel/recovery-profiles.json`，例如 `{"https://gateway.example/v1":{"deployment":"openai"}}`。Runner 在启动 Armonel 时读取，开关只用于恢复请求。模型的显式限制优先。
+
 ## 技能和插件
 
 `skills/<name>/SKILL.md` 描述内置技能，包括项目自有指南和已核对来源的上游开发技能，见[技能目录](../skills/README.zh-CN.md)；`hub-backend/plugins/*.json` 提供通用插件与工作流。遵循[插件协议](plugin-authoring.md)保持版本不可变、权限最小化及导入审查。新增内置技能还需要显式更新 `tools/distribution/PUBLIC-SOURCE.json` 的发布范围，并保留原始许可和来源说明。

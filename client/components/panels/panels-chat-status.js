@@ -467,8 +467,9 @@
           '<b data-thinking-elapsed>' + elapsedText(queueElapsedMs(current)) + '</b></span></div>';
       }
       const tokens = tokenInfo();
-      const failed = ['failed', 'unreachable', 'no-output', 'incomplete'].includes(current.snap?.status);
-      const label = busy ? '处理中' : failed ? '执行失败' : '已处理';
+      const status = current.snap?.status;
+      const failed = ['failed', 'unreachable', 'no-output'].includes(status);
+      const label = busy ? '处理中' : status === 'incomplete' ? '未完成' : failed ? '执行失败' : '已处理';
       return '<div data-chat-node="turn-metrics" class="nturn-metrics" aria-label="' + escape(tx('当前工作统计')) + '">' +
         '<span class="nstatus-metric"><span data-thinking-label>' + tx(label) + '</span> ' +
         '<b data-thinking-elapsed>' + elapsedText(elapsedMs()) + '</b></span><span class="nstatus-divider">·</span>' +

@@ -149,8 +149,9 @@ def _selected_cli_version(key: str, *, cached: bool = True) -> str:
         executable, prefix = command[0], [*command[1:], *prefix]
     if not cached:
         return _short(executable, [*prefix, "--version"])
-    return _cached_version_probe(executable, [*prefix, "--version"], run=_short,
-                                 files=_package_files((_SPECS.get(key) or {}).get("pkg", "")))
+    spec = _SPECS.get(key) or {}
+    files = [] if spec.get("installer") == "bundled" else _package_files(spec.get("pkg", ""))
+    return _cached_version_probe(executable, [*prefix, "--version"], run=_short, files=files)
 
 
 def _runtime_issue(key: str) -> str:
@@ -163,8 +164,8 @@ def _runtime_issue(key: str) -> str:
     if key == "codex":
         from .codex_account_acp import runtime_issue
         return runtime_issue()
-    if key == "dsh":
-        return _acp_runtime_issue("dsh")
+    if key in {"dsh", "armonel"}:
+        return _acp_runtime_issue(key)
     if key != "codex-harness":
         return ""
     native = _codex_native_name()
@@ -214,7 +215,7 @@ def is_bundled(key: str) -> bool:
     """Whether this agent is shipped and lifecycle-managed by SoduWork."""
     if key == "pi":
         return bool(_bundled_pi_cli_js() and _bundled_pi_node())
-    return False
+    return (_SPECS.get(key) or {}).get("installer") == "bundled"
 
 
 def _version_of(key: str) -> tuple[str, str, str]:
@@ -223,6 +224,11 @@ def _version_of(key: str) -> tuple[str, str, str]:
     """
     binp = _bin_of(key)
     spec = _SPECS.get(key) or {}
+    if spec.get("installer") == "bundled":
+        reported = _selected_cli_version(key)
+        if reported == f"{key} {spec['version']}":
+            return spec["version"], "bundled", ""
+        return "", "", ""
     if spec.get("installer") == "managed":
         if key == "opencode" and (issue := managed_agents._cpu_compatibility_issue()):
             return managed_agents._read_active(), "managed-record", issue
@@ -287,9 +293,10 @@ def detect(key: str, *, has_model: bool = True, probes: dict | None = None) -> d
     bundled = is_bundled(key)
     ver, ver_from, warn_now = _version_of(key)
     # Runtimes can leave package metadata behind after an incomplete removal.
-    present = bool(binp or ver or bundled)
+    requires_bundle = spec.get("installer") == "bundled"
+    present = bool(binp or ver or (bundled and not requires_bundle))
     platform_issue = managed_agents._cpu_compatibility_issue() if key == "opencode" else ""
-    runtime_issue = platform_issue or (_runtime_issue(key) if binp else "")
+    runtime_issue = platform_issue or (_runtime_issue(key) if binp or requires_bundle else "")
     # npm accepts unsupported engine versions with a warning. Treat an
     # installed CLI on an incompatible Node runtime as unavailable so the
     # Runner never advertises a seat that immediately crashes on dispatch.
@@ -598,6 +605,9 @@ def start_install(key: str, action: str, *, owner_id: str = "") -> str:
         _spawn(jid, _run_codex_login)
         return jid
     if is_bundled(key):
+        if (_SPECS.get(key) or {}).get("installer") == "bundled" and (issue := _runtime_issue(key)):
+            _done(jid, False, issue)
+            return jid
         version = _version_of(key)[0]
         name = str((_PROFILES.get(key) or {}).get("name") or key)
         if action == "uninstall":

@@ -376,6 +376,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(check_public_ci.findings(".github/workflows/ci.yml", "http://10.1.2.3"), ["private address in pipeline"])
         self.assertEqual(check_public_ci.findings("tools/github/hub.py", "http://127.0.0.1"), [])
 
+    def test_armonel_registry_exception_is_scoped_to_one_file_and_value(self):
+        name = check_public_ci.ARMONEL_REGISTRY_FILE
+        data = (check_public_ci.ROOT / name).read_text(encoding="utf-8").removesuffix("\n")
+        url = json.loads(data)
+        for ending in ("", "\n", "\r\n"):
+            self.assertEqual(check_public_ci.findings(name, data + ending), [])
+        self.assertEqual(check_public_ci.findings("README.md", data), ["private domain"])
+        for changed in (json.dumps(url.replace("://", "://build.")), json.dumps(url + "other/"),
+                        json.dumps(url.replace("://", "://user:password@")), json.dumps(url + "?option=1"),
+                        json.dumps({"registry": url}), data + "\n" + data, data + "\0"):
+            with self.subTest(changed=changed):
+                self.assertEqual(check_public_ci.findings(name, changed), ["unapproved Armonel registry configuration"])
+
     def test_client_candidate_contains_desktop_assets_only(self):
         self.assertEqual(release.SHARDS["client"], ["windows", "linux", "macos-arm64", "macos-x64"])
         with self.assertRaises(KeyError):

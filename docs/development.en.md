@@ -87,6 +87,16 @@ An independently started source client defaults to `http://127.0.0.1:18989` when
 
 Run `npm test` and `npm run check:layout` in `client/`. Electron end-to-end checks live in `e2e/`; inspect each script's environment requirements. `dist/`, `.runtime/`, and generated `runner/` files are build outputs. Do not commit them or substitute old release binaries for current source.
 
+### Bundling Armonel in the desktop installer
+
+Armonel is pinned to `0.0.11-rc.4`. On the first desktop source start or installer build, SoduWork downloads the target platform archive from the [default Nexus registry](../client/scripts/armonel-npm-registry.json) using the [release manifest](../client/main/armonel-release.json). On a machine with access to Nexus, run the usual startup or build command. To select another npm registry, set `SODUWORK_ARMONEL_NPM_REGISTRY` to its HTTPS repository root. GitHub Actions accepts a repository variable with the same name.
+
+For offline builds, run `npm run vendor:armonel` in `client/` beforehand to sync the four original archives for Apple Silicon, Intel Mac, Windows x64 and Linux x64 into `client/runtime-packages/armonel/<version>/`. Installer builds require the target archive and verify both the archive and executable SHA-256. The installer ships the executable and both license files. End users can run Armonel without installing npm. On macOS the build checks an offline ACP conversation from `SoduWork.app/Contents/Resources/armonel/armonel`. Building and testing an Intel installer on Apple Silicon requires Rosetta.
+
+For a single target, `SODUWORK_ARMONEL_PACKAGE` can point directly to its archive. A generic mirror can serve `<base>/<version>/<filename>` through `SODUWORK_ARMONEL_PACKAGE_BASE_URL`. GitLab CI can use `SODUWORK_ARMONEL_PROJECT_ID` for the numeric project hosting the `armonel-npm` generic package, with read access for the job token.
+
+Armonel uses the model's declared thinking controls to recover when a response spends its entire output on reasoning. For a gateway alias with missing capability metadata, an operator who has verified that `reasoning_effort=none` produces usable output can record the exact endpoint and wire model in `$SODUWORK_DATA_ROOT/.armonel/recovery-profiles.json`. For example, `{"https://gateway.example/v1":{"deployment":"openai"}}`. The Runner reads the profile when launching Armonel. The switch applies to the recovery request only. Explicit model restrictions take precedence.
+
 ## Skills and plugins
 
 Bundled skills live at `skills/<name>/SKILL.md`; see the [skill catalog](../skills/README.md) for project-owned guides and reviewed upstream development skills. Generic plugins and workflows live in `hub-backend/plugins/*.json`. Follow the [plugin protocol](plugin-authoring.en.md) for immutable versions, minimal permissions, and import review. Adding a bundled skill also requires explicitly updating the release scope in `tools/distribution/PUBLIC-SOURCE.json` and retaining its original license and provenance.

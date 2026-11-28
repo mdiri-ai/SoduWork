@@ -40,14 +40,14 @@ function isDirOnlyBuild(context) {
 
 // Use installed upstream template: do not fork UAC/multi-user/uninstall behavior.
 async function prepare(context = {}) {
+  const arch = typeof context.arch === 'string' ? context.arch : ({ 1: 'x64', 3: 'arm64' })[context.arch];
   if (context.electronPlatformName && context.electronPlatformName !== 'win32') {
     if (context.appOutDir) {
       const resourcesPath = context.electronPlatformName === 'darwin'
         ? path.join(context.appOutDir, context.packager.appInfo.productFilename + '.app', 'Contents', 'Resources')
         : path.join(context.appOutDir, 'resources');
-      require('./verify-runtime.cjs').verify(context.appOutDir, context.electronPlatformName, { packaged: true, resourcesPath });
-      require('./verify-runtime.cjs').verifyExecutables(resourcesPath, context.electronPlatformName,
-        typeof context.arch === 'string' ? context.arch : ({ 1: 'x64', 3: 'arm64' })[context.arch]);
+      require('./verify-runtime.cjs').verify(context.appOutDir, context.electronPlatformName, { packaged: true, resourcesPath, arch });
+      await require('./verify-runtime.cjs').verifyExecutables(resourcesPath, context.electronPlatformName, arch);
       if (context.electronPlatformName === 'darwin') {
         const appPath = path.join(context.appOutDir, context.packager.appInfo.productFilename + '.app');
         const key = path.resolve(appPath);
@@ -110,9 +110,8 @@ async function prepare(context = {}) {
       await copyShellRuntime(root, context.appOutDir);
       // Miniature installer fixtures carry no product runtime manifest.
       if (await fs.stat(path.join(context.appOutDir, 'resources/runtime-manifest.json')).then(() => true, () => false)) {
-        require('./verify-runtime.cjs').verify(context.appOutDir, 'win32', { packaged: true });
-        require('./verify-runtime.cjs').verifyExecutables(path.join(context.appOutDir, 'resources'), 'win32',
-          typeof context.arch === 'string' ? context.arch : ({ 1: 'x64', 3: 'arm64' })[context.arch]);
+        require('./verify-runtime.cjs').verify(context.appOutDir, 'win32', { packaged: true, arch });
+        await require('./verify-runtime.cjs').verifyExecutables(path.join(context.appOutDir, 'resources'), 'win32', arch);
       } else if (await fs.stat(path.join(root, 'runtime-manifest.json')).then(() => true, () => false)) {
         throw Error('Packaged client runtime manifest is missing');
       }

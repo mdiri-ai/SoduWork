@@ -1390,7 +1390,7 @@ class LocalStartupTests(unittest.TestCase):
             build.hashlib.sha256(lock.read_bytes()).hexdigest())
         return client
 
-    def test_cached_windows_desktop_verifies_shell_on_each_start(self):
+    def test_cached_windows_desktop_prepares_shell_and_armonel_on_each_start(self):
         with patch.object(sys, 'platform', 'win32'):
             client = self.cached_desktop()
             log = self.state / 'startup.log'
@@ -1398,10 +1398,11 @@ class LocalStartupTests(unittest.TestCase):
                     patch.object(build, 'run') as run:
                 for _ in range(2):
                     self.assertEqual(build.prepare_desktop(self.state, log), client)
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ['node', str(client / 'scripts/prepare-shell-runtime.cjs')],
+                ['node', str(client / 'scripts/prepare-armonel-runtime.cjs'), '--source', str(build.ROOT / 'client')],
+            ] * 2)
             for call in run.call_args_list:
-                self.assertEqual(call.args[0], [
-                    'node', str(client / 'scripts/prepare-shell-runtime.cjs')])
                 self.assertEqual(call.kwargs['cwd'], client)
                 self.assertEqual(call.kwargs['log'], log)
 
@@ -1617,13 +1618,15 @@ class LocalStartupTests(unittest.TestCase):
         self.assertIn('MSYS2/Cygwin', message)
         self.assertIn(str(posix), message)
 
-    def test_cached_nonwindows_desktop_does_not_prepare_windows_shell(self):
+    def test_mac_desktop_prepares_armonel_without_package_overrides(self):
         with patch.object(sys, 'platform', 'darwin'):
             client = self.cached_desktop()
             with patch.object(build, 'check_dependencies', return_value=('node', 'npm')), \
+                    patch.dict(os.environ, {}, clear=True), \
                     patch.object(build, 'run') as run:
                 self.assertEqual(build.prepare_desktop(self.state, self.state / 'startup.log'), client)
-            run.assert_not_called()
+            self.assertEqual([call.args[0] for call in run.call_args_list], [
+                ['node', str(client / 'scripts/prepare-armonel-runtime.cjs'), '--source', str(build.ROOT / 'client')]])
 
     def test_electron_proxy_environment_honors_precedence_and_explicit_switches(self):
         cases = [
@@ -1672,7 +1675,7 @@ class LocalStartupTests(unittest.TestCase):
                 patch.object(sys, 'platform', 'win32'):
             self.assertEqual(build.prepare_desktop(self.state, self.state / 'startup.log'), client)
             self.assertEqual(dict(build.os.environ), environment)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         for index, (_, kwargs) in enumerate(calls):
             child = kwargs.get('env', {})
             self.assertEqual(child.get('npm_config_cache'), str(self.state / 'cache/npm'))

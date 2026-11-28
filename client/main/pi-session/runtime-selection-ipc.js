@@ -59,7 +59,7 @@ function install({ app, ipcMain, session, identityOf, memories, cloud, publish }
     }
     try {
       const handle = await current(event, ref);
-      if (cloud.guard(handle) || handle.adapterId !== 'codex' || typeof handle.setThinkingLevel !== 'function')
+      if (cloud.guard(handle) || !['codex', 'dsh'].includes(handle.adapterId) || typeof handle.setThinkingLevel !== 'function')
         return { ok: false, reason: '当前会话暂不支持调整推理强度' };
       return await handle.setThinkingLevel(value);
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }

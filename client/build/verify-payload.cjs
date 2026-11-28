@@ -11,6 +11,7 @@ const NOTICE_LIMIT = 64 * 1024 * 1024;
 // Reviewed documents from the bundled Python distribution. Do not grant these
 // uncommon extensions notice status for arbitrary application files.
 const RUNTIME_NOTICE_PATHS = new Set([
+  'resources/armonel/third_party_licenses.txt',
   'resources/python/lib/site-packages/et_xmlfile-2.0.0.dist-info/licence.python',
   'resources/python/tcl/tk8.6/demos/license.terms',
   'resources/python/tcl/tk8.6/license.terms',
@@ -23,7 +24,8 @@ function noticeCandidate(relative) {
   // its bytes under strict payload hashing on both Windows and Unix layouts.
   if (/^resources\/node\/(?:lib\/)?node_modules\/npm\/node_modules\/@npmcli\/arborist\/bin\/license\.js$/i.test(normalized)) return false;
   const name = normalized.split('/').pop();
-  return /^(?:licen[cs]es?|copying\d*|notice|copyright(?:notice)?|authors)(?:[._-]|$)/i.test(name) ||
+  return RUNTIME_NOTICE_PATHS.has(normalized.toLowerCase()) ||
+    /^(?:licen[cs]es?|copying\d*|notice|copyright(?:notice)?|authors)(?:[._-]|$)/i.test(name) ||
     /\/share\/licenses\//i.test('/' + relative.replaceAll('\\', '/'));
 }
 function isNoticePath(relative) {

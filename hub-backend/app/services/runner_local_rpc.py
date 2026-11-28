@@ -6,12 +6,14 @@ until they really finish, and reserve separate workers for reads and controls.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import contextvars
 from dataclasses import dataclass
 import functools
 import json
+import threading
 
 _CURRENT = contextvars.ContextVar("runner_local_request", default=None)
 _LIMITS = {"work": 8, "query": 8, "probe": 2, "control": 4}
@@ -19,6 +21,158 @@ _QUERIES = {"job.has", "job.status", "job.info", "job.session", "agent.job",
             "runtime.sessions", "runtime.content.read"}
 _CONTROLS = {"job.stop", "job.permission", "runtime.ping", "runtime.shutdown",
              "desktop.capability.reply"}
+_session_streams = None
+
+
+@dataclass
+class SessionSubscription:
+    identity: str
+    ref: str
+    cursor: int
+    owner: dict
+
+
+class SessionStreams:
+    """One private desktop pipe. Dirty refs are bounded; the journal owns the data."""
+
+    def __init__(self, owner):
+        self.owner = owner
+        self.loop = asyncio.get_running_loop()
+        self.wake = asyncio.Event()
+        self.lock = threading.Lock()
+        self.subscriptions = {}
+        self.watched = Counter()
+        self.changed = set()
+        self.legacy = set()
+
+    def configure(self, message):
+        ref, identity = message.get("ref"), message.get("subscriptionId")
+        if not all(isinstance(value, str) and 0 < len(value) <= 128 for value in (ref, identity)):
+            return {"ok": False, "error": "Invalid session subscription"}
+        existing = self.subscriptions.get(identity)
+        if message["op"] == "job.session.unsubscribe":
+            if existing and existing.ref == ref:
+                self.remove(existing)
+            return {"ok": True}
+        cursor = message.get("since", 0)
+        if type(cursor) is not int or not 0 <= cursor < 2**53 or existing or len(self.subscriptions) >= 256:
+            return {"ok": False, "error": "Session subscription unavailable"}
+        owner = self.owner(ref)
+        if owner is None:
+            # Admission can be queued before a native run is registered. The
+            # existing job.session snapshot remains authoritative in that phase.
+            return {"ok": False, "error": "Local session stream unavailable"}
+        sub = SessionSubscription(identity, ref, cursor, owner)
+        self.subscriptions[identity] = sub
+        with self.lock:
+            self.watched[ref] += 1
+        self.publish(ref)  # Include edits made before the registration arrived.
+        return {"ok": True}
+
+    def remove(self, sub):
+        self.subscriptions.pop(sub.identity)
+        with self.lock:
+            self.watched[sub.ref] -= 1
+            if not self.watched[sub.ref]:
+                del self.watched[sub.ref]
+                self.changed.discard(sub.ref)
+
+    def publish(self, ref, *, legacy=False):
+        with self.lock:
+            idle = not self.changed and not self.legacy
+            if ref in self.watched:
+                self.changed.add(ref)
+            elif legacy and len(self.legacy) < 256:
+                # Older desktops understand only Armonel ref notifications.
+                self.legacy.add(ref)
+            else:
+                return
+            if idle:
+                try:
+                    self.loop.call_soon_threadsafe(self.wake.set)
+                except RuntimeError:
+                    return  # The parent pipe has already closed.
+
+    async def send(self, server):
+        await server.send_packet({"kind": "session-events-ready", "version": 2})
+        while True:
+            await self.wake.wait()
+            await asyncio.sleep(.016)  # Coalesce adjacent chunks, never tick while idle.
+            with self.lock:
+                refs, legacy = self.changed, self.legacy
+                self.changed, self.legacy = set(), set()
+                self.wake.clear()
+            if legacy:
+                await server.send_packet({"kind": "session-changed", "refs": sorted(legacy)})
+            for sub in tuple(self.subscriptions.values()):
+                if sub.ref in refs and self.subscriptions.get(sub.identity) is sub:
+                    await self.send_update(server, sub)
+
+    async def send_update(self, server, sub):
+        from .runner_event_scope import is_local
+        data = None
+        if self.owner(sub.ref) is sub.owner:
+            try:
+                reply = await server.dispatch({"op": "job.session", "ref": sub.ref,
+                                               "since": sub.cursor, "limit": 128})
+                data = reply.get("data") if reply.get("ok") else None
+            except Exception:
+                pass  # The observer can recover using the ordinary snapshot RPC.
+        if self.subscriptions.get(sub.identity) is not sub:
+            return  # The desktop switched sessions while the worker read the page.
+        packet = {"ref": sub.ref, "subscriptionId": sub.identity}
+        if (not isinstance(data, dict) or not data.get("ok") or self.owner(sub.ref) is not sub.owner
+                or data.get("ref") != sub.ref or not is_local(data, sub.ref)):
+            data = None
+        else:
+            data = self.page(data, sub.cursor)
+        if data is None:
+            self.remove(sub)
+            await server.send_packet({**packet, "kind": "session-reset"})
+            return
+        await server.send_packet({**packet, "kind": "session-update", "since": sub.cursor, "data": data})
+        sub.cursor = data["last"]
+        if sub.cursor < data["seq"]:
+            self.publish(sub.ref)
+
+    @staticmethod
+    def page(data, cursor):
+        items, head = data.get("items"), data.get("seq")
+        if type(head) is not int or head < cursor or not isinstance(items, list):
+            return None
+        # Large tool outputs are not token-sized. Keep batches small but allow a
+        # single existing event through intact, advancing only the delivered cursor.
+        size, count = 0, 0
+        for item in items:
+            if cursor + count == head:
+                break  # Archive reads can overlap appends after the metadata snapshot.
+            if not isinstance(item, dict) or item.get("seq") != cursor + count + 1:
+                return None
+            size += len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+            if count and size > 256 * 1024:
+                break
+            count += 1
+        if not count and head > cursor:
+            return None
+        return {**data, "items": items[:count], "last": cursor + count}
+
+
+@contextmanager
+def session_streams(streams):
+    global _session_streams
+    previous, _session_streams = _session_streams, streams
+    try:
+        yield
+    finally:
+        _session_streams = previous
+
+
+def session_changed(ref, run):
+    streams = _session_streams
+    if streams is not None:
+        from .runner_event_scope import is_local
+        # Always invalidate a watched ref, even if a replacement changed owners.
+        streams.publish(ref, legacy=bool(run and run.get("cli") == "armonel" and is_local(run, ref)))
 
 
 @dataclass
@@ -197,6 +351,9 @@ class Server:
     async def reply(self, identity, result=None, error=None):
         packet = {"id": identity, "ok": error is None}
         packet.update({"error": error} if error is not None else {"result": result})
+        await self.send_packet(packet)
+
+    async def send_packet(self, packet):
         blob = self.prefix + json.dumps(packet, ensure_ascii=False, separators=(",", ":")) + "\n"
         try:
             async with self.write_lock:

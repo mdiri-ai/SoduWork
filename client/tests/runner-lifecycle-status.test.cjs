@@ -86,6 +86,10 @@ async function fixture(t, options = {}) {
     configText: () => fs.readFileSync(path.join(root, 'runner', 'config.json'), 'utf8'),
     status: () => handlers.get('runner-status')(), rpc: context.module.exports.rpc,
     mobile: context.module.exports.setMobileCapabilities,
+    observeSession: context.module.exports.subscribeSessionChanges,
+    observeUpdates: context.module.exports.subscribeSessionUpdates,
+    updatesSupported: context.module.exports.supportsSessionUpdates,
+    sessionEventsSupported: context.module.exports.supportsSessionEvents,
     report: data => children.at(-1).stdout.emit('data', '@@SODUWORK_RUNNER_STATUS@@' + JSON.stringify(data) + '\n') };
 }
 
@@ -191,6 +195,147 @@ test('rotated device secret replaces the Runner without exposing credentials', a
   assert.equal(f.children.length, 2, 'refreshing the recovered identity must not restart again');
 });
 
+test('session event hints require readiness from the current private Runner pipe', async t => {
+  const f = await fixture(t);
+  const original = f.children.at(-1);
+  const emit = (child, packet) =>
+    child.stdout.emit('data', '@@SODUWORK_LOCAL_RPC@@' + JSON.stringify(packet) + '\n');
+  const ready = { kind: 'session-events-ready' };
+  const hint = { kind: 'session-changed', refs: ['ref-a', 'ref-b', 'ref-a'] };
+  let observed = 0;
+  const stop = f.observeSession('ref-a', () => { observed++; });
+  emit(original, hint);
+  assert.equal(f.sessionEventsSupported(), false);
+  assert.equal(observed, 0);
+  emit(original, ready);
+  emit(original, hint);
+  assert.equal(f.sessionEventsSupported(), true);
+  assert.equal(observed, 1);
+  original.emit('exit', 1);
+  assert.equal(f.sessionEventsSupported(), false);
+  f.timers.shift()();
+  const replacement = f.children.at(-1);
+  assert.notEqual(replacement, original);
+  emit(original, ready);
+  emit(original, hint);
+  emit(replacement, hint);
+  assert.equal(f.sessionEventsSupported(), false);
+  assert.equal(observed, 1);
+  emit(replacement, ready);
+  emit(replacement, hint);
+  assert.equal(f.sessionEventsSupported(), true);
+  assert.equal(observed, 2);
+  stop();
+  emit(replacement, hint);
+  assert.equal(observed, 2);
+});
+
+test('content subscriptions deliver only their own pipe, token and ref including before acknowledgement', async t => {
+  const f = await fixture(t), child = f.children.at(-1);
+  const prefix = '@@SODUWORK_LOCAL_RPC@@';
+  const receive = packet => child.stdout.write(prefix + JSON.stringify(packet) + '\n');
+  const sent = () => JSON.parse(child.writes.at(-1).slice(prefix.length));
+  const rows = [];
+  receive({ kind: 'session-events-ready' });
+  assert.equal(f.updatesSupported(), false);
+  assert.equal(f.observeUpdates('chat-a', 3, () => {}), null);
+  receive({ kind: 'session-events-ready', version: 2 });
+  assert.equal(f.updatesSupported(), true);
+  const close = f.observeUpdates('chat-a', 3, update => rows.push(update));
+  const request = sent();
+  const { subscriptionId, ref, since } = request.message;
+  assert.equal(request.message.op, 'job.session.subscribe');
+  assert.equal(since, 3);
+  const data = { ref, status: 'running', last: 4, seq: 4, items: [{ seq: 4, kind: 'say', text: '示例' }] };
+  const page = { kind: 'session-update', subscriptionId, ref, since, data };
+  receive({ ...page, subscriptionId: 'other-token' });
+  receive({ ...page, ref: 'chat-b' });
+  assert.equal(rows.length, 0);
+  receive(page);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, 'update');
+  assert.equal(rows[0].since, 3);
+  assert.equal(rows[0].data.items[0].text, '示例');
+  receive({ id: request.id, ok: true, result: { ok: true } });
+  receive(page);
+  assert.equal(rows.length, 1, 'already delivered content is not repeated');
+  receive({ ...page, since: 4, data: { ...data, status: 'done', items: [] } });
+  assert.equal(rows[1].data.status, 'done', 'a status-only update at the same cursor is observable');
+  close();
+  assert.equal(sent().message.op, 'job.session.unsubscribe');
+  assert.equal(sent().message.subscriptionId, subscriptionId);
+  const writes = child.writes.length;
+  close();
+  receive(page);
+  assert.equal(child.writes.length, writes);
+  assert.equal(rows.length, 2);
+});
+
+test('stream resets on missing pages, broken intra-page sequence or an empty page behind head', async t => {
+  const f = await fixture(t), child = f.children.at(-1);
+  const prefix = '@@SODUWORK_LOCAL_RPC@@';
+  const receive = packet => child.stdout.write(prefix + JSON.stringify(packet) + '\n');
+  receive({ kind: 'session-events-ready', version: 2 });
+  const ref = 'stream-ref';
+  for (const [since, data] of [
+    [1, { seq: 2, last: 2, items: [{ seq: 2 }] }],
+    [0, { seq: 2, last: 2, items: [{ seq: 1 }, { seq: 3 }] }],
+    [0, { seq: 1, last: 0, items: [] }],
+  ]) {
+    const events = [];
+    const close = f.observeUpdates(ref, 0, event => events.push(event.kind));
+    const { message } = JSON.parse(child.writes.at(-1).slice(prefix.length));
+    receive({ kind: 'session-update', subscriptionId: message.subscriptionId, ref, since,
+      data: { ...data, ref, status: 'running' } });
+    assert.deepEqual(events, ['resync']);
+    assert.equal(JSON.parse(child.writes.at(-1).slice(prefix.length)).message.op, 'job.session.unsubscribe');
+    close();
+  }
+});
+
+test('rejected, reset, invalid, and disconnected content streams wake a single authoritative resync', async t => {
+  const f = await fixture(t), original = f.children.at(-1);
+  const prefix = '@@SODUWORK_LOCAL_RPC@@';
+  const receive = (child, packet) => child.stdout.write(prefix + JSON.stringify(packet) + '\n');
+  const ready = { kind: 'session-events-ready', version: 2 };
+  receive(original, ready);
+  const events = [];
+  const bind = child => {
+    const close = f.observeUpdates('chat', 0, event => events.push(event.kind));
+    const { message, id } = JSON.parse(child.writes.at(-1).slice(prefix.length));
+    return { close, id, subscriptionId: message.subscriptionId, ref: message.ref };
+  };
+  const one = bind(original);
+  receive(original, { id: one.id, ok: true, result: { ok: false, code: 'SESSION_NOT_LOCAL' } });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(events, ['resync']);
+  const two = bind(original);
+  const reset = { kind: 'session-reset', ref: two.ref, subscriptionId: two.subscriptionId };
+  receive(original, reset);
+  receive(original, reset);
+  assert.deepEqual(events, ['resync', 'resync']);
+  const three = bind(original);
+  receive(original, { ...reset, kind: 'session-update', subscriptionId: three.subscriptionId,
+    since: 0, data: { ref: 'wrong-ref', items: [] } });
+  assert.deepEqual(events, ['resync', 'resync', 'resync']);
+  const old = bind(original);
+  f.setSecret('rotated-fixture');
+  await f.configure();
+  assert.equal(f.updatesSupported(), false);
+  assert.deepEqual(events, ['resync', 'resync', 'resync', 'resync']);
+  const replacement = f.children.at(-1);
+  receive(replacement, ready);
+  const fresh = bind(replacement);
+  const newPage = { kind: 'session-update', ref: fresh.ref, subscriptionId: fresh.subscriptionId,
+    since: 0, data: { ref: fresh.ref, items: [], last: 0, seq: 0, status: 'running' } };
+  receive(original, newPage);
+  receive(replacement, { ...newPage, subscriptionId: old.subscriptionId });
+  assert.equal(events.length, 4);
+  receive(replacement, newPage);
+  assert.equal(events[4], 'update');
+  fresh.close();
+});
+
 test('mobile capability replies use the initiating private Runner pipe', async t => {
   const f = await fixture(t), child = f.children.at(-1), writes = [];
   child.stdin.write = value => writes.push(value);
@@ -201,6 +346,29 @@ test('mobile capability replies use the initiating private Runner pipe', async t
   assert.equal(packet.message.op, 'desktop.capability.reply');
   assert.equal(packet.message.requestId, 'request');
   assert.equal(packet.message.result.data.operation, 'catalog');
+});
+
+test('closed output pipe releases push-only readers before process exit and resumes on a fresh pipe', async t => {
+  const f = await fixture(t), child = f.children.at(-1);
+  const ready = '@@SODUWORK_LOCAL_RPC@@{"kind":"session-events-ready","version":2}\n';
+  child.stdout.write(ready);
+  let resets = 0, eof = 0;
+  child.stdin.end = () => { eof++; };
+  f.observeUpdates('output-pipe', 0, event => { if (event.kind === 'resync') resets++; });
+  const read = assert.rejects(f.rpc('job.session'), /pipe closed/);
+  child.stdout.emit('end');
+  child.stdout.emit('close');
+  await read;
+  assert.equal(resets, 1);
+  assert.equal(eof, 1);
+  assert.equal(f.updatesSupported(), false);
+  await assert.rejects(f.rpc('job.session'), error => error.code === 'RUNNER_NOT_RUNNING');
+  child.emit('exit', 1);
+  f.timers.at(-1)();
+  const next = f.children.at(-1);
+  assert.notEqual(next, child);
+  next.stdout.write(ready);
+  assert.equal(f.updatesSupported(), true);
 });
 
 test('Runner RPC preserves multiline user events across UTF-8 pipe boundaries and process replacement', async t => {

@@ -86,6 +86,40 @@ test('redirects share one deadline instead of restarting the download clock', as
     { get, timeoutMs: 80, log: () => {} }), /total time limit/);
 });
 
+test('a registry response deadline bounds a missing response but allows a slow archive body', async t => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const cache = directory(t);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let sendHeaders;
+  const destroyed = [];
+  const get = (_url, _options, callback) => {
+    sendHeaders = callback;
+    const request = new EventEmitter();
+    request.setTimeout = ms => assert.equal(ms, 60000);
+    request.destroy = error => { destroyed.push(error.code); request.emit('error', error); };
+    return request;
+  };
+  const options = { get, responseTimeoutMs: 15000 };
+  const target = path.join(cache, 'archive');
+  const url = 'https://fixture.invalid/file';
+  let pending = downloadFile(url, target, options);
+  t.mock.timers.tick(15000);
+  await assert.rejects(pending, { code: 'ETIMEDOUT' });
+  assert.equal(fs.existsSync(target), false);
+
+  pending = downloadFile(url, target, options);
+  const body = new PassThrough();
+  body.statusCode = 200;
+  sendHeaders(body);
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(30000);
+  body.end('complete archive');
+  await pending;
+  assert.equal(fs.readFileSync(target, 'utf8'), 'complete archive');
+  assert.deepEqual(destroyed, ['ETIMEDOUT']);
+});
+
 test('failed source diagnostics retain the cause without URL credentials or query secrets', async t => {
   const cache = directory(t), messages = [];
   const url = 'https://account:secret@mirror.test/file?token=private';

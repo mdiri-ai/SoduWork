@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SODUWORK_ARMONEL_NPM_REGISTRY: ${{ vars.SODUWORK_ARMONEL_NPM_REGISTRY }}
+
 concurrency:
   group: package-validation-${{ github.ref }}
   cancel-in-progress: false

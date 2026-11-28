@@ -88,6 +88,8 @@ for (const spec of specs) {
     assert.equal(firstPayload.ctx.skills[1].path, f.added.path);
     assert.equal(firstPayload.ctx.skills[1].description, 'Trusted added multiline description');
     assert.match(firstPayload.task.note, /SKILL\.md/); assert.match(firstPayload.task.note, /本轮明确选用/);
+    assert.equal(firstPayload.task.note.includes('`read_host_text`'), spec.id === 'armonel');
+    assert.equal(firstPayload.task.note.includes('`file_path`'), spec.id === 'dsh');
     assert.doesNotMatch(JSON.stringify(firstPayload), /MALICIOUS|C:\/untrusted/);
     const selection = ['base'], queued = f.handle.submit('#base replace base for this turn', [], { skills: selection });
     selection[0] = 'changed'; assert.equal(queued.queued, true);
@@ -99,10 +101,14 @@ for (const spec of specs) {
     assert.deepEqual(next.cfg.skillSelection.map(row => row.name), ['base']);
     assert.equal(next.cfg.skillSelection[0].path, f.refreshed.path, 'same-name selection replaces rather than duplicates metadata');
     assert.equal(next.cfg.accessPolicy.mode, 'standard');
+    assert.equal(next.promptText.includes('`read_host_text`'), spec.id === 'armonel');
+    assert.equal(next.promptText.includes('`file_path`'), spec.id === 'dsh');
     assert.equal((await f.handle.submit('plain follow-up', []).completion).ok, true);
     const final = f.calls.filter(row => row.op === 'job.comment').at(-1).payload;
     assert.deepEqual(final.cfg.skillSelection.map(row => row.path), [f.base.path]);
     assert.doesNotMatch(final.promptText, /本轮明确选用/);
+    assert.doesNotMatch(final.promptText, /read_host_text/);
+    assert.doesNotMatch(final.promptText, /file_path/);
     assert.deepEqual(f.resolutions, [['added'], ['base']]);
     assert.deepEqual(f.handle.snapshot().messages.filter(row => row.role === 'user').map(row => row.text),
       ['#added first', '#base replace base for this turn', 'plain follow-up']);

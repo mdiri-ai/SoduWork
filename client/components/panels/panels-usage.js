@@ -7,7 +7,7 @@
 
   const ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/><path d="m4 8 6-4 6 5 5-4"/></svg>';
   const AGENT_NAMES = {
-    pi: 'Pi', opencode: 'OpenCode', codex: 'Codex',
+    pi: 'Pi', armonel: 'Armonel', opencode: 'OpenCode', codex: 'Codex',
     'codex-harness': 'Codex Harness', 'claude-code': 'Claude Code',
     harness2: 'Google Harness²',
   };

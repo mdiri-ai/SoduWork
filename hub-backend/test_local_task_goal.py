@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services import declared_outputs, local_task_goal as goal
+from app.services import declared_outputs, local_task_goal as goal, local_turn_outcome
 
 
 class TaskGoalTests(unittest.TestCase):
@@ -35,6 +35,45 @@ class TaskGoalTests(unittest.TestCase):
     def next_turn(self):
         self.run["turnStartSeq"] = self.run["seq"]
         goal.begin_turn(self.run)
+
+    def test_reasoning_only_recovery_uses_one_saved_dsh_checkpoint(self):
+        term = {"outputTruncated": True, "reasoningOutputLimit": True}
+        self.run["cliSid"] = "retained-native-session"
+        self.tool()
+        self.next_turn()
+        recovered = goal.assess(self.run, term, now=101)
+        self.assertEqual(recovered["action"], "continue")
+        self.assertIn("最小的未完成步骤", recovered["prompt"])
+        self.assertEqual(self.state["outputRecoveries"], 1)
+        self.run = json.loads(json.dumps(self.run))
+        self.assertEqual(goal.assess(self.run, term, now=101), {})
+        self.next_turn()
+        self.rows({"kind": "thinking", "text": "considering"})
+        stopped = goal.assess(self.run, term, now=102)
+        self.assertEqual(stopped, {"action": "pause", "reason": local_turn_outcome.REASONING_OUTPUT_LIMIT})
+        self.assertEqual(self.state["continuations"], 1)
+        self.assertEqual(self.state["successes"], 1)
+
+    def test_reasoning_only_recovery_requires_current_dsh_session_and_clear_permissions(self):
+        term = {"outputTruncated": True, "reasoningOutputLimit": True}
+        for changes in ({"cliSid": ""}, {"_executionStart": {"sid": "fresh"}}, {"cli": "qwen"},
+                        {"pendingPermissions": ["wait"]}, {"permissionDenied": True}, {"stopping": True}):
+            with self.subTest(changes=changes):
+                run = {**copy.deepcopy(self.run), "cliSid": "retained", **changes}
+                result = goal.assess(run, term, now=101)
+                self.assertNotEqual(result.get("action"), "continue")
+                self.assertEqual(run["goalState"]["outputRecoveries"], 0)
+
+    def test_reasoning_only_recovery_keeps_the_independent_review_protocol(self):
+        self.run["cliSid"] = "retained-native-session"
+        self.enter_review()
+        old_nonce = self.state["reviewNonce"]
+        decision = goal.assess(self.run, {"outputTruncated": True, "reasoningOutputLimit": True}, now=102)
+        self.assertEqual(decision["action"], "continue")
+        self.assertIn(self.state["reviewNonce"], decision["prompt"])
+        self.assertNotIn(old_nonce, decision["prompt"])
+        self.assertIn("最小的必要验证", decision["prompt"])
+        self.assertEqual(self.state["status"], "reviewing")
 
     def review(self, result="pass", nonce=None, summary="13 页验证通过", gaps=None):
         value = {"schemaVersion": 1, "nonce": nonce or self.state.get("reviewNonce"),

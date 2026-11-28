@@ -40,6 +40,8 @@ test('Runner queue waiting is visible without claiming model work or carrying wa
     view.syncThinkingClock(false);
     now += 86400000;
     assert.match(view.metricsHtml(false), /已处理.*data-thinking-elapsed>7s</);
+    current.snap.status = 'incomplete';
+    assert.match(view.metricsHtml(false), /未完成.*data-thinking-elapsed>7s</);
   } finally { view.stopThinkingClock(); Date.now = originalNow; }
 });
 
@@ -491,7 +493,7 @@ test('live SDK zero usage never masks growing reasoning, final nested reasoning 
   assert.match(view.metricsHtml(false),/data-thinking-estimate hidden/);
 });
 test('failed and empty turns have a failure label even when elapsed time is unavailable', () => {
-  for (const state of ['failed', 'no-output', 'unreachable', 'incomplete']) {
+  for (const state of ['failed', 'no-output', 'unreachable']) {
     const view = status.createThinking(() => ({ snap: { status: state, messages: [{ role: 'user' }] } }));
     assert.match(view.metricsHtml(false), /data-thinking-label>执行失败</);
   }

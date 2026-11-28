@@ -72,11 +72,13 @@ test('ordinary chat stays usable and cannot enable goal controls through the act
   assert.equal(f.calls.filter(op => op === 'job.dispatch').length, 1);
 });
 
-test('all existing Runner substrates keep their declared goal capability', () => {
+test('the official Runner directory exposes only its declared goal capability', () => {
+  assert.equal(catalog.runtime('armonel').goalMode, 'none', 'Armonel has no native goal loop');
   for (const spec of catalog.runnerRuntimes()) {
-    assert.equal(spec.goalMode, 'native');
+    const expected = spec.id === 'armonel' ? 'none' : 'native';
+    assert.equal(spec.goalMode, expected, spec.id);
     const adapter = createRunnerRuntimeAdapter({ runtimeSpec: spec });
-    assert.equal(adapter.capabilities.some(row => row.id === 'goal.control'), true, spec.id);
+    assert.equal(adapter.capabilities.some(row => row.id === 'goal.control'), expected === 'native', spec.id);
   }
 });
 

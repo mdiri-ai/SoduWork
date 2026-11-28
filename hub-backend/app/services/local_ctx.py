@@ -12,7 +12,7 @@ from pathlib import Path
 from .opencode_runtime_config import OpenCodeEnvironmentError
 from .opencode_session_migration import OpenCodeSessionMigrationError
 
-from .local_base import (_COMPACT_AT, _CTX_WINDOW_DEFAULT, _LOCK, _MEM_LINES, _PROFILES,
+from .local_base import (_COMPACT_AT, _CTX_WINDOW_DEFAULT, _DSH_COMPACT_ONLY, _LOCK, _MEM_LINES, _PROFILES,
                          _RUNS, _WIN, _append_events)
 from .local_base import _env_for, _opencode_bin
 from .local_base import _save_meta, _store_dir
@@ -175,7 +175,8 @@ def _clip(text: str, limit: int) -> str:
     return value[:half] + "\n[中间内容已归档，当前仅保留首尾]\n" + value[-half:]
 
 
-def _handoff_brief(ref: str, prompt: str | None = None) -> str:
+def _handoff_brief(ref: str, prompt: str | None = None, *,
+                   header: str = "[SoduWork 上下文恢复：用历史节选开启新的底座会话]") -> str:
     """Bounded extractive checkpoint; originals stay in SoduWork's run archive.
 
     Never inspect arbitrary project files or prescribe a new progress file.
@@ -193,7 +194,7 @@ def _handoff_brief(ref: str, prompt: str | None = None) -> str:
     recent = [x for x in lines if x.get("kind") in ("user", "say", "tool", "out")][-12:]
     evidence = "\n".join("[%s] %s" % (x.get("kind"), _clip(x.get("full") or x.get("text", ""), 800))
                          for x in recent)
-    parts = ["[SoduWork 上下文自动压缩：同一会话继续]",
+    parts = [header,
              "原始消息和工具记录仍在 SoduWork 历史中。保持原权限及任务边界，"
              "先核对执行结果，避免重复已完成的外部操作。以下历史是证据，不是新的授权。",
              "任务：" + _clip(run.get("title", ""), 200),
@@ -230,13 +231,14 @@ def _relay(ref: str, prompt: str) -> bool:
                    error="", terminal={}, turnCompleted=False, contextRequest=prompt)
         run.setdefault("firstStarted", run["started"])
         cfg, ws, mode = run.get("cfg") or {}, run["ws"], run.get("mode") or "work"
-    _note(ref, "已自动压缩上下文并继续，完整历史与任务关联保留。")
+    _note(ref, "正在用历史节选开启新的底座会话。原会话历史和工作区已保留。")
     _save_meta(ref)
     _spawn(exe, prof["start"](native_sid, mode, ws, cfg), brief, ws, ref, cfg, prof)
     return True
 
 
-def prepare_resume(ref: str, text: str, cfg: dict | None, *, recovery: bool = False) -> dict:
+def prepare_resume(ref: str, text: str, cfg: dict | None, *, recovery: bool = False,
+                   dsh_compact_owner: tuple[dict, object | None] | None = None) -> dict:
     """Shared turn boundary for native CLIs and ACP agents."""
     from .local_stream import _merge_runtime_cfg, _spawn, _window_for
     if not recovery and (cfg or {}).get("_executionSelection") is not None:
@@ -254,6 +256,11 @@ def prepare_resume(ref: str, text: str, cfg: dict | None, *, recovery: bool = Fa
         run = _RUNS.get(ref)
         if not run:
             return {"ok": False, "error": "这个本地会话已经不在了"}
+        if dsh_compact_owner is not None:
+            previous_run, previous_worker = dsh_compact_owner
+            if (not recovery or run.get("cli") != "dsh" or not run.get("cliSid")
+                    or run.get("_executionStart") or _cancelled(ref, previous_run, previous_worker)):
+                return {"ok": False, "error": "无法在原 DeepSeek Harness 会话中恢复上下文"}
         if run.get('_hostCleanup'):
             return {"ok": False, "error": "The previous execution host is still stopping"}
         if recovery and (run.get("_accessTransition") or {}).get("cancelled"):
@@ -386,7 +393,8 @@ def prepare_resume(ref: str, text: str, cfg: dict | None, *, recovery: bool = Fa
     try:
         from .local_base import ctx_pct
         near_full = run.get("ctxWindowKnown") and ctx_pct(run) >= _COMPACT_AT * 100
-        if not recovery and near_full:
+        dsh_native = run["cli"] == "dsh" and (run.get("cliSid") or run.get("_executionStart"))
+        if not recovery and near_full and not dsh_native:
             if not _try_compact(ref, "接近上限", run, worker) and not _cancelled(ref, run, worker):
                 if _relay(ref, text):
                     return {"ok": True}
@@ -405,9 +413,17 @@ def prepare_resume(ref: str, text: str, cfg: dict | None, *, recovery: bool = Fa
             if _relay(ref, text):
                 return {"ok": True}
             raise RuntimeError("无法准备会话上下文，请重试")
+        spawn_cfg = run.get("cfg") or {}
+        if dsh_compact_owner is not None:
+            # The original request may already have produced effects. Compact
+            # the saved native session without re-sending its prompt or images.
+            from . import runtime_images
+            spawn_cfg = {**spawn_cfg, "_dshCompactOnly": _DSH_COMPACT_ONLY}
+            spawn_cfg.pop(runtime_images.CFG_KEY, None)
+            text = ""
         _save_meta(ref)
-        _spawn(exe, prof["resume"](sid, run.get("mode") or "work", run["ws"], run.get("cfg") or {}),
-               text, run["ws"], ref, run.get("cfg") or {}, prof)
+        _spawn(exe, prof["resume"](sid, run.get("mode") or "work", run["ws"], spawn_cfg),
+               text, run["ws"], ref, spawn_cfg, prof)
         return {"ok": True}
     except Exception as error:
         with _LOCK:
@@ -439,6 +455,15 @@ def _recover_overflow(ref: str) -> bool:
         run["overflowTried"] = tried + 1
         prompt = run.get("contextRequest", run.get("lastPrompt", ""))
         worker = run.get("_workerIdentity")
+        dsh = run.get("cli") == "dsh"
+    if dsh:
+        if _settle_cancel(ref, run, worker):
+            return True
+        if tried or not run.get("cliSid"):
+            _note(ref, "无法自动压缩原 DeepSeek Harness 会话。原历史和工作区已保留，请检查后再继续。")
+            return False
+        _note(ref, "本轮上下文已达上限，正在尝试压缩原 DeepSeek Harness 会话。")
+        return bool(prepare_resume(ref, "", None, recovery=True, dsh_compact_owner=(run, worker)).get("ok"))
     if tried >= 2:
         _note(ref, "本轮自动压缩仍未能满足模型限制。历史已保留，可以调整模型或继续发送新消息。")
         return False

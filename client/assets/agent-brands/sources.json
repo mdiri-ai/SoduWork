@@ -8,7 +8,7 @@
     "collectionLicenseSource": "https://github.com/simple-icons/simple-icons/blob/develop/LICENSE.md",
     "simpleIconsDisclaimer": "https://github.com/simple-icons/simple-icons/blob/develop/DISCLAIMER.md",
     "fallbacks": "Unknown runtimes retain the generic shield. Codex and Codex Harness use the local reference-based knot mark recorded below; it is not presented as an official OpenAI asset.",
-    "reviewEvidence": "Sources were checked against the recorded official source or brand-guideline URL before inclusion. SHA-256 values pin the exact local files."
+    "reviewEvidence": "Sources were checked against the recorded official source, brand-guideline URL, or user-supplied artwork before inclusion. SHA-256 values pin the exact local files."
   },
   "pi": {
     "file": "pi.svg",
@@ -22,6 +22,17 @@
     "sha256": "d38eb6b9daebe9708fcc60ae17d51eedb9f1e65661c95cad5c2e1e273b77bf21",
     "displayColor": "#000000",
     "colorNote": "Simple Icons brand color applied to the unchanged path geometry."
+  },
+  "armonel": {
+    "file": "armonel.png",
+    "product": "Armonel",
+    "source": "user-provided-artwork",
+    "collection": "SoduWork local artwork",
+    "artworkOrigin": "unchanged-user-supplied-png",
+    "displayColor": "#111827",
+    "colorNote": "The transparent PNG preserves the supplied monochrome artwork.",
+    "rightsNote": "The Armonel mark was supplied for this integration.",
+    "sha256": "2f50148b4d1b09310e5033016353d9674f3ebc70e74ae205d46f3e75dd7b6bae"
   },
   "opencode": {
     "file": "opencode.svg",

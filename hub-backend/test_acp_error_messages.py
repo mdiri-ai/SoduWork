@@ -1,6 +1,7 @@
 """ACP diagnostics and DSH output recovery preserve native execution evidence."""
 import io
 import json
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -21,6 +22,54 @@ class AcpErrorMessagesTests(unittest.TestCase):
         })
         environment.start()
         self.addCleanup(environment.stop)
+
+    def test_host_cancellation_sends_one_notification_and_cancels_pending_permission(self):
+        with TemporaryDirectory() as folder:
+            acp = bridge.AcpBridge([], folder, "dsh", "workspace", session_id="bound-session")
+            acp.access = SimpleNamespace(enabled=True, call=Mock(return_value={"stopRequested": True}))
+            acp.send = Mock()
+            acp.inbox.put(("message", {"jsonrpc": "2.0", "id": "permission", "method": "session/request_permission",
+                                       "params": {"sessionId": "bound-session", "options": []}}))
+            acp.inbox.put(("message", {"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "cancelled"}}))
+            self.assertEqual(acp.request("session/prompt", {"sessionId": "bound-session"}), {"stopReason": "cancelled"})
+            acp.transition.next_poll = 0
+            acp.transition.tick("session/prompt")
+        messages = [call.args[0] for call in acp.send.call_args_list]
+        self.assertEqual(messages[1:], [
+            {"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": "bound-session"}},
+            {"jsonrpc": "2.0", "id": "permission", "result": {"outcome": {"outcome": "cancelled"}}},
+        ])
+
+    def test_standard_native_cancelled_receipt_is_not_an_adapter_error(self):
+        with TemporaryDirectory() as folder:
+            acp = bridge.AcpBridge([], folder, "dsh", "workspace")
+            with patch.object(acp, "start"), patch.object(acp, "request", side_effect=[
+                {"protocolVersion": 1}, {"sessionId": "bound-session"}, {"stopReason": "cancelled"},
+            ]), patch.object(bridge, "_emit") as emit:
+                self.assertEqual(acp.run("Synthetic task"), 0)
+            emit.assert_any_call({"type": "turn_stopped", "reason": "cancelled"})
+
+    def test_host_cancellation_during_dsh_compaction_keeps_a_neutral_outcome(self):
+        with TemporaryDirectory() as folder:
+            acp = bridge.AcpBridge([], folder, "dsh", "workspace", session_id="bound-session")
+            acp.dsh_compact_only = True
+            acp.dsh_can_compact = True
+
+            def request(method, _params):
+                if method == "initialize":
+                    return {"protocolVersion": 1, "agentCapabilities": {"loadSession": True}}
+                if method == "session/load":
+                    return {}
+                self.assertEqual(method, "session/prompt")
+                acp.transition.stop_requested = True
+                return {"stopReason": "cancelled"}
+
+            with patch.object(acp, "start"), patch.object(acp, "request", side_effect=request), \
+                    patch.object(acp, "_dsh_compaction_available", return_value=True), \
+                    patch.object(bridge, "_emit") as emit:
+                self.assertEqual(acp.run(""), 0)
+            emit.assert_any_call({"type": "turn_stopped", "reason": "cancelled"})
+            self.assertNotIn("dsh_context_compaction_failed", str(emit.call_args_list))
 
     def test_known_dsh_storage_error_is_actionable_and_keeps_original(self):
         for message in (self.raw, self.raw.replace("\\", "/"),
@@ -56,6 +105,29 @@ class AcpErrorMessagesTests(unittest.TestCase):
     def test_unknown_error_is_unchanged(self):
         message = "Internal error: upstream unavailable"
         self.assertEqual(bridge._friendly_bridge_error("dsh", message), message)
+
+    def test_client_resource_failures_return_acp_error_codes(self):
+        with TemporaryDirectory() as folder:
+            acp = bridge.AcpBridge([], folder, 'dsh', 'readonly', session_id='native')
+            path = Path(folder) / 'file.txt'
+            path.write_text('fixture')
+            for method, params, expected in [
+                ('fs/read_text_file', {'path': str(path), 'line': 0}, -32602),
+                ('fs/read_text_file', {'path': str(path.with_suffix('.missing'))}, -32002),
+                ('fs/write_text_file', {'path': str(path), 'content': 'other'}, -32601),
+            ]:
+                with self.subTest(method=method, expected=expected), patch.object(acp, 'send') as send:
+                    acp._incoming({'id': 1, 'method': method, 'params': {'sessionId': 'native', **params}})
+                    self.assertEqual(send.call_args.args[0]['error']['code'], expected)
+            self.assertEqual(path.read_text(), 'fixture')
+
+    def test_missing_prompt_stop_reason_is_a_protocol_error(self):
+        with TemporaryDirectory() as folder:
+            acp = bridge.AcpBridge([], folder, 'dsh', 'readonly')
+            with patch.object(acp, 'start'), patch.object(acp.access, 'apply'), patch.object(bridge, '_emit'), \
+                    patch.object(acp, 'request', side_effect=[{'protocolVersion': 1}, {'sessionId': 'native'}, {}]):
+                with self.assertRaisesRegex(bridge.BridgeError, 'missing stopReason'):
+                    acp.run('test')
 
     def test_kimi_and_verified_qwen_output_limits_do_not_add_host_retries(self):
         cases = [
@@ -132,7 +204,11 @@ class AcpErrorMessagesTests(unittest.TestCase):
                     if tool_status:
                         acp._update({'sessionUpdate': 'tool_call', 'toolCallId': 'running-tool',
                                      'title': 'Unsettled fixture', 'status': tool_status})
-                    return {'stopReason': next(stops)}
+                    reason = next(stops)
+                    if agent == 'dsh' and (reason == 'end_turn' or compact_reply and len(seen) == 2):
+                        acp._update({'sessionUpdate': 'agent_message_chunk',
+                                     'content': {'type': 'text', 'text': 'New work from this prompt'}})
+                    return {'stopReason': reason}
 
                 with patch.object(acp, 'start'), patch.object(acp, 'request', side_effect=request), \
                         patch.object(acp.access, 'apply'), \
@@ -160,6 +236,80 @@ class AcpErrorMessagesTests(unittest.TestCase):
                                          for call in emit.call_args_list))
                 if compact_reply:
                     self.assertNotIn(compact_reply, str(emit.call_args_list))
+
+    def test_dsh_recovery_requires_new_evidence_and_stops_repeating_without_it(self):
+        for evidence, final_reason, expected_stop in [
+            ('empty', 'end_turn', 'output_recovery_no_progress'),
+            ('stale-tool', 'end_turn', 'output_recovery_no_progress'),
+            ('failed-tool', 'end_turn', 'output_recovery_no_progress'),
+            ('thinking', 'max_tokens', 'reasoning_output_limit'),
+            ('thinking', 'end_turn', 'output_recovery_no_progress'),
+            ('repeated-thinking', 'max_tokens', 'reasoning_output_limit'),
+            ('thinking-then-answer', 'end_turn', None),
+            ('thinking-then-tool', 'end_turn', None),
+            ('child-thinking', 'max_tokens', 'output_recovery_no_progress'),
+            ('new-tool', 'end_turn', None),
+            ('host-write', 'end_turn', None),
+        ]:
+            with self.subTest(evidence=evidence), TemporaryDirectory() as workspace:
+                acp = bridge.AcpBridge([], workspace, 'dsh', 'workspace')
+                prompts = []
+
+                def notify(kind, **fields):
+                    acp._update({'sessionUpdate': kind, **fields})
+
+                def tool(identity, status):
+                    notify('tool_call', toolCallId=identity, status='in_progress')
+                    notify('tool_call_update', toolCallId=identity, status=status)
+
+                def request(method, params):
+                    if method == 'initialize':
+                        return {'protocolVersion': 1}
+                    if method == 'session/new':
+                        notify('available_commands_update', availableCommands=[{'name': 'compact'}])
+                        return {'sessionId': 'original-session'}
+                    self.assertEqual(method, 'session/prompt')
+                    self.assertEqual(params['sessionId'], 'original-session')
+                    prompts.append(params['prompt'][0]['text'])
+                    if len(prompts) == 1:
+                        if evidence in {'repeated-thinking', 'thinking-then-answer', 'thinking-then-tool'}:
+                            notify('agent_thought_chunk', content={'type': 'text', 'text': 'Initial thinking'})
+                        else:
+                            notify('agent_message_chunk', content={'type': 'text', 'text': 'Earlier truncated answer'})
+                            tool('previous-call', 'completed')
+                        return {'stopReason': 'max_tokens'}
+                    self.assertEqual(len(prompts), 2)
+                    notify('agent_message_chunk', content={'type': 'text', 'text': '  '})
+                    if evidence in {'thinking', 'repeated-thinking', 'child-thinking'}:
+                        notify('agent_thought_chunk', content={'type': 'text', 'text': 'Thinking only'},
+                               _meta={'dsh': {'subagent': evidence == 'child-thinking'}})
+                    if evidence == 'stale-tool':
+                        tool('previous-call', 'completed')
+                    if evidence in {'new-tool', 'failed-tool'}:
+                        tool('new-call', 'completed' if evidence == 'new-tool' else 'failed')
+                    if evidence == 'thinking-then-answer':
+                        notify('agent_message_chunk', content={'type': 'text', 'text': 'Verified answer'})
+                    if evidence == 'thinking-then-tool':
+                        tool('recovery-tool', 'completed')
+                    if evidence == 'host-write':
+                        acp._write_text_file({'path': str(Path(workspace) / 'result.txt'), 'content': 'new work'})
+                    return {'stopReason': final_reason}
+
+                with patch.object(acp, 'start'), patch.object(acp, 'request', side_effect=request), \
+                        patch.object(acp.access, 'apply'), patch.object(bridge, '_emit') as emit, \
+                        patch.object(acp, '_compact_dsh_history') as compact:
+                    self.assertEqual(acp.run('Original synthetic task'), 2 if expected_stop else 0)
+                continuation = (bridge._DSH_REASONING_CONTINUATION
+                                if evidence in {'repeated-thinking', 'thinking-then-answer', 'thinking-then-tool'}
+                                else bridge._DSH_OUTPUT_CONTINUATION)
+                expected_prompts = ['Original synthetic task', continuation]
+                self.assertEqual(prompts, expected_prompts)
+                compact.assert_not_called()
+                events = [call.args[0] for call in emit.call_args_list]
+                self.assertEqual([item['reason'] for item in events if item['type'] == 'turn_stopped'],
+                                 [expected_stop] if expected_stop else [])
+                self.assertEqual([item['part']['reason'] for item in events if item['type'] == 'step_finish'],
+                                 ['max_tokens', 'stop' if final_reason == 'end_turn' else 'max_tokens'])
 
     def test_task_owned_recovery_does_not_multiply_retries_across_bridge_restarts(self):
         with TemporaryDirectory() as folder, patch.dict(bridge.os.environ, {
@@ -264,6 +414,8 @@ class AcpErrorMessagesTests(unittest.TestCase):
                 self.assertEqual(len(prompts), 2, 'Only the saved-session continuation may follow')
                 self.assertEqual(acp.transition.tools['completed-edit'], 'completed')
                 self.assertEqual(acp.transition.tools['partial-edit'], 'failed')
+                acp._update({'sessionUpdate': 'agent_message_chunk',
+                             'content': {'type': 'text', 'text': 'New recovery result'}})
                 return {'stopReason': 'end_turn'}
 
             with patch.object(acp, 'start'), patch.object(acp, 'request', side_effect=request), \
@@ -444,6 +596,62 @@ class AcpErrorMessagesTests(unittest.TestCase):
         self.assertEqual(event["error"]["message"], bridge._friendly_bridge_error("dsh", self.raw))
         agent.run.assert_called_once_with("synthetic")
         agent.close.assert_called_once_with()
+
+    def test_armonel_reports_the_native_summary_stop_without_replaying_the_prompt(self):
+        prefix = 'Task stopped: compaction_failed. '
+        for detail, expected in (
+            ('Context summary failed before replacing history: Summary was truncated again on a smaller segment; original history was preserved',
+             'context_summary_truncated'),
+            ('Context summary failed before replacing history: Unknown internal detail', 'context_summary_failed'),
+            ('Unknown internal detail', 'context_summary_failed'),
+        ):
+            with self.subTest(reason=expected), TemporaryDirectory() as folder:
+                acp = bridge.AcpBridge([], folder, 'armonel', 'workspace')
+                replies = [{'protocolVersion': 1, 'agentInfo': {'name': 'armonel'},
+                            'agentCapabilities': {'loadSession': True}},
+                           {'sessionId': 'original-session'}, bridge.BridgeError(prefix + detail)]
+                with patch.object(acp, 'start'), patch.object(acp.access, 'apply'), \
+                        patch.object(acp, 'request', side_effect=replies) as request, \
+                        patch.object(bridge, '_emit') as emit:
+                    self.assertEqual(acp.run('synthetic'), 2)
+                self.assertEqual([call.args[0] for call in request.call_args_list],
+                                 ['initialize', 'session/new', 'session/prompt'])
+                self.assertEqual(emit.call_args.args[0], {'type': 'turn_stopped', 'reason': expected})
+
+    def test_context_contract_is_an_armonel_prompt_stop_and_never_exposes_detail(self):
+        internal = {'code': -32603, 'message': 'Task stopped: context_contract. private diagnostic'}
+        meta = {'armonel/stopReason': 'context_contract'}
+        for agent, payload, outcome in (
+            ('armonel', {'error': internal}, 2),
+            ('armonel', {'result': {'stopReason': 'refusal', '_meta': meta}}, 2),
+            ('armonel', {'result': {'stopReason': 'end_turn', '_meta': meta}}, 2),
+            ('armonel', {'result': {'stopReason': 'context_contract'}}, 2),
+            ('kimi', {'result': {'stopReason': 'end_turn', '_meta': meta}}, 0),
+            ('kimi', {'error': internal}, None),
+            ('armonel', {'error': {**internal, 'code': -32602}}, None),
+            ('armonel', {'error': {**internal, 'message': 'Unknown failure: ' + internal['message']}}, None),
+        ):
+            with self.subTest(agent=agent, payload=payload), TemporaryDirectory() as folder:
+                acp = bridge.AcpBridge([], folder, agent, 'workspace')
+                def request(method, _params):
+                    if method == 'initialize':
+                        return {'protocolVersion': 1, 'agentInfo': {'name': agent},
+                                'agentCapabilities': {'loadSession': True}}
+                    if method == 'session/new':
+                        return {'sessionId': 'fixture-session'}
+                    self.assertEqual(method, 'session/prompt')
+                    return acp._unwrap(payload)
+                with patch.object(acp, 'start'), patch.object(acp.access, 'apply'), \
+                        patch.object(acp, 'request', side_effect=request) as calls, patch.object(bridge, '_emit') as emit:
+                    if outcome is None:
+                        with self.assertRaises(bridge.BridgeError):
+                            acp.run('synthetic')
+                    else:
+                        self.assertEqual(acp.run('synthetic'), outcome)
+                self.assertEqual(sum(call.args[0] == 'session/prompt' for call in calls.call_args_list), 1)
+                stops = [call.args[0] for call in emit.call_args_list if call.args[0].get('type') == 'turn_stopped']
+                self.assertEqual(stops, [{'type': 'turn_stopped', 'reason': 'context_contract'}] if outcome == 2 else [])
+                self.assertNotIn('private diagnostic', str(emit.call_args_list))
 
     def test_dsh_output_limit_entry_returns_two_without_an_adapter_error(self):
         with TemporaryDirectory() as folder:

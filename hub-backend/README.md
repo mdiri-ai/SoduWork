@@ -177,6 +177,8 @@ To verify this path with a real Runner and Pi subprocess against a disposable au
 
 ## Concurrent Runner conversations
 
+The desktop subscribes to a running local session over its private Runner pipe. A subscription starts at the last applied event sequence and receives ordered pages containing message fragments, tool events and current session state. Permission and completion updates can arrive without a new message. On reconnect or a sequence gap, the desktop reads the archive from its saved cursor. Clients can also read snapshots while a session is queued or when connected to an older Runner.
+
 Desktop-private and Hub RPCs use bounded work, read, discovery and control lanes. A slow discovery or history read cannot occupy the workers reserved for stopping another conversation. Mutations of one execution reference remain ordered across both transports; stopping it invalidates older requests that have not reached durable admission. Requests rejected for transport capacity are explicitly unaccepted and may be retried with the same business ID. This does not change account authorization, local-model privacy or the adaptive CPU/memory execution budget.
 
 Process creation runs outside the shared session lock. Cancellation retains the exact launch identity until process-tree cleanup is confirmed; an unconfirmed exit does not free its execution slot or authorize a replacement. Event-retention failures preserve the unsaved batch and retry it before resuming Hub-bound admission. An empty current snapshot or an unrelated acknowledgement cannot discard that batch. Desktop-local admission remains independent of Hub event retention.
@@ -258,6 +260,14 @@ one continuation, plus one more only after successful native compaction. If the
 limit persists, the turn is reported as incomplete with retained progress instead
 of a protocol error. Successful continuation clears the earlier truncation;
 protocol and host-cleanup failures retain priority.
+
+When a DSH prompt ends with `max_tokens` after emitting only reasoning,
+ordinary chat asks for a short answer or the next complete tool call in the
+same session. Goal mode records this recovery before resuming the native
+session. A second thinking-only limit with no progress pauses the task.
+Both paths honor the selected model's output limit and reasoning controls.
+The Runner records each prompt's reported token usage separately from the
+session's context occupancy.
 
 For managed model routes, SoduWork explicitly enables and budgets DeepSeek's
 native automatic compaction. It runs between tool steps within the current turn.

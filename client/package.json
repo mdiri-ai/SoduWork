@@ -5,6 +5,8 @@
   "description": "SoduWork - \u4f01\u4e1a\u7ea7 AI Native \u5de5\u4f5c\u5e73\u53f0",
   "main": "main.js",
   "scripts": {
+    "prestart": "node scripts/prepare-armonel-runtime.cjs --source",
+    "vendor:armonel": "node scripts/prepare-armonel-runtime.cjs --vendor",
     "start": "node scripts/start-client.cjs",
     "start:raw": "electron .",
     "test": "node --test --test-concurrency=1 --test-timeout=120000 tests/*.test.cjs tests/*.test.js main/agent-runtime/*.test.js main/agent-runtime/*.test.cjs main/conversation/*.test.js main/pi-session/*.test.js main/conversation/*.test.cjs main/*.test.cjs",
@@ -192,6 +194,7 @@
     "win": {
       "icon": "icon.ico",
       "extraResources": [
+        { "from": ".runtime/armonel/win32-${arch}", "to": "armonel", "filter": ["armonel.exe", "LICENSE", "THIRD_PARTY_LICENSES.txt"] },
         { "from": ".runtime/node/node_modules", "to": "node/node_modules", "filter": ["**/*", "!npm/docs/output/**"] },
         {
           "from": "runner",
@@ -228,6 +231,7 @@
       "identity": null,
       "artifactName": "SoduWork-${version}-mac-${arch}.${ext}",
       "extraResources": [
+        { "from": ".runtime/armonel/darwin-${arch}", "to": "armonel", "filter": ["armonel", "LICENSE", "THIRD_PARTY_LICENSES.txt"] },
         {
           "from": "runner",
           "to": "runner",
@@ -250,6 +254,7 @@
       "syncDesktopName": true,
       "artifactName": "SoduWork-${version}-linux.${ext}",
       "extraResources": [
+        { "from": ".runtime/armonel/linux-${arch}", "to": "armonel", "filter": ["armonel", "LICENSE", "THIRD_PARTY_LICENSES.txt"] },
         {
           "from": "runner",
           "to": "runner",

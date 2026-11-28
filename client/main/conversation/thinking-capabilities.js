@@ -109,4 +109,20 @@ function set(session, enabled) {
   return { ok: true, thinking: view(session) };
 }
 
-module.exports = { LEVELS, profile, view, set, conflict };
+// Keep explicit restrictions distinguishable from display defaults on legacy aliases.
+function declaration(model) {
+  const fields = {};
+  for (const key of ['reasoning', 'supportsReasoningEffort']) {
+    if (typeof model[key] === 'boolean') fields[key] = model[key];
+  }
+  if (typeof model.thinkingFormat === 'string' && model.thinkingFormat.trim()) {
+    fields.thinkingFormat = text(model.thinkingFormat);
+  }
+  if (model.thinkingLevelMap && typeof model.thinkingLevelMap === 'object') {
+    fields.thinkingLevelMap = Object.fromEntries(Object.entries(model.thinkingLevelMap)
+      .filter(([level, value]) => LEVELS.includes(level) && (value === null || typeof value === 'string')));
+  }
+  return fields;
+}
+
+module.exports = { LEVELS, profile, declaration, view, set, conflict };

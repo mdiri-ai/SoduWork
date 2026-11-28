@@ -158,7 +158,8 @@ function create({ raw: initial, options, restored, openNative, disposeNative, pr
         modelName = require('./native-model-catalog').list('codex').models?.[0]?.id || '';
       const nextOptions = { ...options, ref: 'chat-' + crypto.randomUUID(), cwd: raw.cwd, adapterId: agentId,
         sessionTitle: segments.title(record) || raw.historyRow?.()?.title || '',
-        modelName, reasoningEffort: '', resumePath: '', resumeCwd: '', runtimeConversationId: '',
+        modelName, reasoningEffort: '', ...(agentId === 'dsh' ? { thinkingLevel: '' } : {}),
+        resumePath: '', resumeCwd: '', runtimeConversationId: '',
         nativeDispatchId: '', nativeSessionStarted: undefined, verifyLegacySegment: false,
         // A fresh native segment does not replay the original archive's failure receipt.
         retainedHistoryId: '', retainedExecutionFailure: false,

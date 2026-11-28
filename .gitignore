@@ -31,6 +31,7 @@ hub-backend/workspaces/
 client/dist*/
 client/.runtime/
 client/.runtime-cache/
+client/runtime-packages/armonel/
 # Local isolated desktop QA profiles contain account data and caches.
 /client/.codex-runtime-profile-*/
 client/runner/soduwork-runner

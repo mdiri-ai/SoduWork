@@ -95,6 +95,36 @@ test('Runner stopped acknowledgement releases the stop guard, but unknown never 
   stopped = false; terminal = 'unknown';
   await assert.rejects(f.executor.stopNode(f.node), /尚未确认停止/);
 });
+test('a running local plugin node consumes pushed output and recovers from the applied cursor', async t => {
+  const f = setup(t);
+  const rpc = f.runtime.rpc, reads = [];
+  let disposed = 0;
+  f.runtime.rpc = async (op, payload) => {
+    if (op !== 'job.session') return rpc(op, payload);
+    reads.push(payload.since);
+    if (reads.length === 1) return { ok: true, data: { status: 'running', seq: 0, items: [] } };
+    if (reads.length === 2) return { ok: true, data: { ref: payload.ref, status: 'waiting-permission', seq: 0, items: [] } };
+    assert.equal(payload.since, 2, 'recover only after both pushed tool events were applied');
+    return rpc(op, payload);
+  };
+  f.runtime.subscribeSessionUpdates = (ref, since, notify) => {
+    assert.equal(ref, f.node.ref);
+    assert.equal(since, 0);
+    assert.equal(reads.length, 2, 'only subscribe after a native session owns the snapshot');
+    setImmediate(() => {
+      notify({ kind: 'update', since: 0, data: { ref, status: 'running', seq: 2, items: [
+        { seq: 1, kind: 'do', tool: 'write', callId: 'write-plan', text: 'plan.md' },
+        { seq: 2, kind: 'out', tool: 'write', callId: 'write-plan', text: 'written' },
+      ] } });
+      setImmediate(() => notify({ kind: 'resync' }));
+    });
+    return () => { disposed++; };
+  };
+  await f.executor.executeNode(f.node, [], f.record, f.persist);
+  assert.deepEqual(reads, [0, 0, 2]);
+  assert.equal(disposed, 1);
+});
+
 test('editing the plugin version during a run prevents silent version drift', async t => {
   const f = setup(t);
   personal.create(f.app, { ...f.plugin.localDraft, version: '1.0.1', instructions: '新方法' });

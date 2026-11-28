@@ -15,6 +15,7 @@ class Transition:
         self.resumable = False
         self.requested = ""
         self.cancel_sent = False
+        self.stop_requested = False
         self.tools = {}
         self.started_tools = set()
         self.discarded_tools = set()
@@ -63,7 +64,7 @@ class Transition:
         tool_id = str(update.get("toolCallId") or "")
         if update.get("status") == "failed" and tool_id in self.discarded_tools:
             return {"state": "cancelled", "cancelReason": "output-limit", "isError": False}
-        if update.get("status") == "failed" and tool_id in self.blocked:
+        if update.get("status") == "failed" and tool_id in self.blocked and tool_id not in self.started_tools:
             return {"state": "cancelled", "cancelReason": "access-change", "isError": False}
         return {"isError": update.get("status") == "failed"}
 
@@ -80,6 +81,14 @@ class Transition:
             return
         self.next_poll = time.monotonic() + .15
         response = self.report("query")
+        if response.get("stopRequested") is True:
+            self.stop_requested = True
+            self.requested = ""
+            if method == "session/prompt" and self.bridge.session_id and not self.cancel_sent:
+                self.cancel_sent = True
+                self.bridge.send({"jsonrpc": "2.0", "method": "session/cancel",
+                                  "params": {"sessionId": self.bridge.session_id}})
+            return
         self.requested = str(response.get("id") or "") if response.get("requested") else ""
         self.in_process = bool(response.get("inProcess"))
         if not self.requested or method != "session/prompt" or self.cancel_sent:
@@ -117,6 +126,12 @@ class Transition:
             self.report("failed", error="A tool did not finish safely; inspect its result before continuing")
             return False
         reason = str(result.get("stopReason") or "")
+        if (reason == "refusal" and self.bridge.agent_name == "armonel" and self.blocked
+                and not (self.blocked & self.started_tools)
+                and all(self.tools.get(tool_id) == "failed" for tool_id in self.blocked)):
+            # Armonel returns refusal when the host withdraws a pending tool's
+            # approval. The matched, never-started tools prove safe cancellation.
+            reason = "cancelled"
         if reason not in {"", "end_turn", "cancelled"}:
             self.report("failed", error="The Agent did not acknowledge a safe cancellation")
             return False
