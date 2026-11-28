@@ -88,6 +88,27 @@ For old Pi conversations with no ownership record, use **Archive → Import old 
 
 Some older records identify an account but lack verifiable information about the original Hub. They remain stored but hidden; direct opening or importing explains the ownership restriction. Restoring access requires trusted evidence of the original service; the import action cannot take ownership of these records. Keep a backup of the desktop profile and do not delete or manually rewrite ownership records.
 
+## Accept a delivery
+
+When execution finishes, the delivery waits in **pending acceptance** until the request creator confirms it. The acceptance card offers two modes:
+
+- **Manual acceptance**: check the deliverables against the acceptance criteria yourself, then choose **Confirm acceptance**. Expand **View criteria and evidence** when you need to compare them item by item.
+- **Automatic acceptance**: an Agent checks the fixed version item by item in a separate acceptance session. It submits a verdict only when every criterion carries verifiable evidence; otherwise the delivery stays pending with a per-item reason.
+
+Automatic acceptance starts only when three conditions hold together: the request already has acceptance criteria, a fixed delivery version exists, and the delivery contains something verifiable (a file, link, commit or text). A round without a deliverable can only be accepted manually.
+
+A signature is bound to **one delivery version**, not to the working directory. If a new version is submitted, or the request text changes while acceptance is open, automatic acceptance reports that the version changed; reopen acceptance from the request detail.
+
+Messages you may encounter:
+
+| Message in the app | Meaning | What to do |
+| --- | --- | --- |
+| 验收版本已变化，请回到需求详情重新发起分析 (the acceptance version changed) | The request or delivery version changed after the card was opened | Reopen acceptance from the request detail |
+| 需求、交付版本或验收票已经变化，请重新发起验收 (the request, delivery version or ticket changed) | Hub records no longer match the request | Refresh the request and accept again |
+| 需求尚未填写验收标准，请先补充标准或改用人工验收 (no acceptance criteria) | The request has no acceptance criteria | Add criteria, or use manual acceptance |
+| 验收报告必须逐项覆盖全部验收标准 (the report must cover every criterion) | The automatic report does not cover every criterion | Run the check again, or use manual acceptance |
+| 本轮没有可自动核验的交付物，请使用手动验收确认实际结果 (nothing verifiable in this round) | This round has no file, link or text deliverable | Use manual acceptance |
+
 ## Start again and stop
 
 - Use the same launcher next time to keep your data and model settings. Select **Remember account** to prefill your account on this device the next time you sign in to the same Hub.
