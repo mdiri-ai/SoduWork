@@ -107,11 +107,47 @@ test('immediate execution opens the automation chat instead of opening run histo
 test('immediate execution does not duplicate a Hub dispatch error prefix', async () => {
   const c = context(), notices = [];
   c.petSay = text => notices.push(text);
-  c.SoduWorkAPI = { runSchedule: async () => { throw Error('没派出去：当前执行设备没有可用的普通会话执行端'); } };
+  const detail = '没派出去：当前执行设备没有可用的普通会话执行端';
+  c.SoduWorkAPI = { runSchedule: async () => { throw Object.assign(Error(detail), {status:502,detail}); } };
   vm.runInContext('_schRows=[{id:"one",title:"获取天气"}]', c);
   const button = { disabled: false, isConnected: true, setAttribute() {}, removeAttribute() {} };
   await c._schAct('run', 'one', button);
   assert.deepEqual(notices, ['没派出去：当前执行设备没有可用的普通会话执行端']);
+});
+test('uncertain manual-run responses ask the user to check history without retrying dispatch', async () => {
+  for (const error of [new TypeError('Failed to fetch'), Object.assign(Error('Request timed out'), {name:'TimeoutError'}),
+    Object.assign(Error('invalid JSON'), {code:'BAD_JSON',status:0}),
+    ...[408,499,500,502,503,504].map(status => Object.assign(Error('HTTP '+status), {status})),
+    Error('没派出去：an unverified transport message')]) {
+    const c=context(),notices=[];let requests=0;
+    c.petSay=text=>notices.push(text);
+    c.SoduWorkAPI={runSchedule:async()=>{requests++;throw error;}};
+    vm.runInContext('_schRows=[{id:"one",title:"Daily report"}]',c);
+    const button={disabled:false,isConnected:true,setAttribute(){},removeAttribute(){}};
+    await c._schAct('run','one',button);
+    assert.deepEqual(notices,['执行结果未确认，请先查看执行记录，避免重复执行。']);
+    assert.equal(requests,1,'an uncertain result must not trigger another POST');
+    assert.equal(button.disabled,false,'the user retains the existing independent manual-run action');
+  }
+});
+test('definite manual-run rejections keep their original actionable detail', async () => {
+  for (const status of [400,401,403,404,409,413,422,429]) {
+    const c=context(),notices=[],detail='This request was rejected';
+    c.petSay=text=>notices.push(text);
+    c.SoduWorkAPI={runSchedule:async()=>{throw Object.assign(Error(detail),{status,detail});}};
+    vm.runInContext('_schRows=[{id:"one",title:"Daily report"}]',c);
+    await c._schAct('run','one',{disabled:false,setAttribute(){}});
+    assert.deepEqual(notices,['没派出去：'+detail]);
+  }
+});
+test('an unknown old-account run result cannot notify the replacement account', async () => {
+  const c=context(),notices=[];let reject;
+  c.petSay=text=>notices.push(text);
+  c.SoduWorkAPI={runSchedule:()=>new Promise((_,no)=>{reject=no;})};
+  vm.runInContext('_schRows=[{id:"one"}]',c);
+  const pending=c._schAct('run','one',{disabled:false,setAttribute(){}});
+  vm.runInContext('_schScope++',c);reject(new TypeError('Failed to fetch'));await pending;
+  assert.deepEqual(notices,[]);
 });
 test('run entries open the ordinary automation conversation without task binding', async () => {
   const c={globalThis:null,closeSchedulePanel(){c.closed=true;},WorkspaceHost:{open:(...args)=>{c.opened=args;return true;}}};

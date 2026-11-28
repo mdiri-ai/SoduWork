@@ -28,6 +28,24 @@ function boot(locale) {
 
 const CJK = /[\u4e00-\u9fff]/;
 
+test('uncertain manual-run guidance is localized before the toast is shown', async () => {
+  const source=fs.readFileSync(path.join(__dirname,'../components/panels/panels-schedules.js'),'utf8');
+  const message='执行结果未确认，请先查看执行记录，避免重复执行。';
+  for(const locale of ['zh-CN','en-US','ja-JP','ko-KR']) {
+    const context=boot(locale),notices=[];
+    vm.runInContext(source,context);
+    context.petSay=text=>notices.push(text);
+    context.SoduWorkAPI={runSchedule:async()=>{throw new TypeError('Failed to fetch');}};
+    vm.runInContext('_schRows=[{id:"one"}]',context);
+    await context._schAct('run','one',{disabled:false,setAttribute(){}});
+    assert.equal(notices.length,1);
+    assert.equal(notices[0],context.SoduWorkI18n.translateText(message));
+    if(locale==='zh-CN')assert.equal(notices[0],message);
+    else assert.notEqual(notices[0],message,locale);
+    if(locale==='en-US'||locale==='ko-KR')assert.ok(!CJK.test(notices[0]),notices[0]);
+  }
+});
+
 test('yearly binding validation uses the actual message in every supported locale', () => {
   const source = fs.readFileSync(path.join(__dirname, '../components/panels/work-automation-bindings.js'), 'utf8');
   const message = '当前不支持年度执行，请确认时间安排后再创建。';

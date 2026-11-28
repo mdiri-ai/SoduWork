@@ -429,8 +429,17 @@ async function _schAct(act, sid, btn) {
       if (scope !== _schScope) return;
       _schSetRunBusy(runButton, false);
       if (typeof petSay === 'function') {
-        const detail = String(typeof _humanErr === 'function' ? _humanErr(e, '派活失败') : e.message || '派活失败');
-        petSay(detail.startsWith('没派出去：') ? detail : '没派出去：' + detail);
+        const status = Number(e?.status) || 0;
+        // A lost or malformed response can follow a committed run. Only a
+        // rejection or the Hub's explicit dispatch failure proves refusal.
+        const rejected = [400,401,403,404,409,413,422,429].includes(status) ||
+          status === 502 && String(e?.detail || '').startsWith('没派出去：');
+        if (!rejected) {
+          petSay(_schTx('执行结果未确认，请先查看执行记录，避免重复执行。'));
+        } else {
+          const detail = String(typeof _humanErr === 'function' ? _humanErr(e, '派活失败') : e.message || '派活失败');
+          petSay(detail.startsWith('没派出去：') ? detail : '没派出去：' + detail);
+        }
       }
       return;
     }
