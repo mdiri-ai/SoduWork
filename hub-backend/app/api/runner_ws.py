@@ -563,9 +563,12 @@ async def _ingest_delivery(r, message: dict) -> None:
         async with SessionLocal() as session:
             ack, updates = await runner_event_delivery.ingest(session, r, message)
             await session.commit()
-        # A failed send after commit is safe: the Runner retransmits and the
-        # next transaction recognizes the already durable receipt.
-        await r.send(ack)
+        # Replays only acknowledge the receipt. Publish its committed updates
+        # on the first delivery even when the ACK cannot reach the Runner.
+        try:
+            await r.send(ack)
+        except Exception as exc:
+            log.warning("Runner event ACK send failed runner=%s error=%s", r.id, type(exc).__name__)
         await _publish_session_updates(updates)
     except runner_event_delivery.DeliveryRejected as exc:
         await r.send({"op": "session.nack", "version": 1, "runnerId": r.id,

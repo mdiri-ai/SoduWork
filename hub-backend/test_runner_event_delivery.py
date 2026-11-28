@@ -281,16 +281,37 @@ class DurableDeliveryTests(HandoffFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_lost_ack_replays_once_and_does_not_repeat_execution_or_settlement(self):
         await self.seed()
-        message = self.message()
-        self.runner.send.side_effect = ConnectionError("fixture ACK lost")
-        with patch.object(runner_ws, "_publish_session_updates", AsyncMock()) as publish:
+        message = self.message(state="done")
+        self.runner.send.side_effect = [ConnectionError("fixture ACK lost"), None]
+        with patch.object(runner_ws, "_publish_task_owner", new_callable=AsyncMock) as publish, \
+             patch.object(runner_ws, "_schedule_terminal_settlement") as settle:
             await runner_ws._ingest_delivery(self.runner, message)
-            self.runner.send.side_effect = None
+            notifications = [call.args for call in publish.await_args_list]
+            self.assertEqual([(tid, event["type"]) for tid, event in notifications],
+                             [(self.tid, "execution.updated"), (self.tid, "task.updated")])
+            session = notifications[0][1]["session"]
+            self.assertEqual((session["ref"], session["status"]), (self.ref, "done"))
+            self.assertEqual(notifications[1][1]["task"]["id"], self.tid)
+            settle.assert_called_once_with(self.tid, self.ref)
             await runner_ws._ingest_delivery(self.runner, message)
+            self.assertEqual(publish.await_count, 2)
+            settle.assert_called_once_with(self.tid, self.ref)
         row, events = await self.stored()
         self.assertEqual((row.delivery_seq, row.persisted_seq, len(events)), (1, 1, 1))
-        self.assertEqual(publish.call_args.args[0], [])
-        self.assertEqual(self.runner.send.call_args.args[0]["op"], "session.ack")
+        first, replay = [call.args[0] for call in self.runner.send.await_args_list]
+        self.assertEqual(first, replay)
+        self.assertEqual((replay["op"], replay["deliverySeq"], replay["digest"]),
+                         ("session.ack", 1, message["digest"]))
+
+    async def test_cancelling_ack_send_propagates_after_commit(self):
+        await self.seed()
+        self.runner.send.side_effect = asyncio.CancelledError()
+        with patch.object(runner_ws, "_publish_session_updates", new_callable=AsyncMock) as publish:
+            with self.assertRaises(asyncio.CancelledError):
+                await runner_ws._ingest_delivery(self.runner, self.message())
+        publish.assert_not_awaited()
+        row, events = await self.stored()
+        self.assertEqual((row.delivery_seq, len(events)), (1, 1))
 
     async def test_commit_failure_does_not_ack_or_retain_partial_facts(self):
         await self.seed()
@@ -299,8 +320,10 @@ class DurableDeliveryTests(HandoffFixture, unittest.IsolatedAsyncioTestCase):
             session = factory()
             session.commit = AsyncMock(side_effect=OSError("fixture commit failure"))
             return session
-        with patch.object(runner_ws, "SessionLocal", failing_session):
+        with patch.object(runner_ws, "SessionLocal", failing_session), \
+             patch.object(runner_ws, "_publish_session_updates", new_callable=AsyncMock) as publish:
             await runner_ws._ingest_delivery(self.runner, self.message())
+        publish.assert_not_awaited()
         self.runner.send.assert_not_called()
         row, events = await self.stored()
         self.assertEqual((row.delivery_seq, len(events)), (0, 0))
