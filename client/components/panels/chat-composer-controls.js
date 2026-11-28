@@ -381,8 +381,11 @@
             modelRequest = request; selecting = true; flight.stage = 'selection'; flight.selection = request;
             automaticSelections.set(request, flight);
             try { if (!await request) {
+              // A failed automatic replacement must not blank the picker: the
+              // directory read succeeded and its list stays painted for manual
+              // choice, while the acknowledgement failure still blocks sending
+              // with its accurate message.
               flight.error = modelError('MODEL_SELECTION_FAILED', '模型切换未能确认，请重新选择模型后重试；输入已保留。');
-              catalogChanged(flight, 'error', flight.error.message);
               return false;
             } }
             finally { if (modelRequest === request) { modelRequest = null; selecting = false; } }
@@ -414,7 +417,10 @@
       } catch (error) {
         flight.error = modelErrors.has(error) ? error : flight.stage === 'selection'
           ? modelError('MODEL_SELECTION_FAILED', '模型切换未能确认，请重新选择模型后重试；输入已保留。') : catalogError();
-        catalogChanged(flight, 'error', flight.error.message);
+        // A failure after the directory read must not blank the picker: the
+        // selection-stage list stays painted for manual choice, while the
+        // acknowledgement failure still blocks sending with its message.
+        if (flight.stage !== 'selection') catalogChanged(flight, 'error', flight.error.message);
         return false;
       } finally { catalogLoads--; }
     }
