@@ -146,6 +146,21 @@
         : (!canDisable ? '当前模型始终开启思考，不支持关闭'
           : '只对后续发送的消息生效，不会中断当前轮次');
     }
+    // 同名模型（不同 provider/显示名）并存时，按钮标签必须与浮窗勾选指向同一行：
+    // 仅按 name 匹配会把第一条同名行的 label 盖在会话实际选中的模型上。
+    function pickedModelRow(selection, modelFallbackId) {
+      const selected = selection.name || selection.model?.id || modelFallbackId || '';
+      if (!selected) return null;
+      const selectedLabel = selection.model?.label || '';
+      const selectedProvider = selection.providerId || selection.model?.providerId || '';
+      const sameNamed = rows.filter(row => row.name === selected);
+      // 唯一选中：多条同 name（+同 providerId、label 不足区分，如恢复态丢失 label）时只标第一个，
+      // 保证任何数据/恢复场景下都不会出现两个条目同时打钩。
+      const providerMatched = sameNamed.filter(row => selectedProvider ? (row.providerId || '') === selectedProvider : sameNamed.length < 2);
+      if (providerMatched.length <= 1 || !selectedLabel) return providerMatched[0] || null;
+      // label 仅用于多条同 name 同 provider 行间的消歧；唯一命中不因 label 漂移（如本地/恢复态 label=name）丢行。
+      return providerMatched.find(row => row.label === selectedLabel) || providerMatched[0];
+    }
     function render() {
       sessionControls?.render(); runtimePicker?.render();
       const state = options.state(), selection = state.selection || {};
@@ -161,7 +176,7 @@
       lastIdentity = identity;
       lastAdapter = state.adapterId;
       const selectedName = selection.name || selection.model?.id || state.model?.id || '';
-      const updated = catalogScope === modelScope() && rows.find(row => row.name === selectedName);
+      const updated = catalogScope === modelScope() && pickedModelRow(selection, state.model?.id);
       const selectedModel = selection.model || state.model;
       const label = (selectedModel?.unavailable ? selectedModel.label : updated?.label) || selectedModel?.label || selectedModel?.id || '选择模型';
       button.querySelector('span').textContent = label;
@@ -238,13 +253,16 @@
     function list(filter = '') {
       if (paintCatalogStatus()) return;
       const state = options.state(), selection = state.selection || {};
-      const selected = selection.name || selection.model?.id || state.model?.id || '';
+      // 唯一选中：与按钮标签同一匹配规则（name+providerId+label），保证任何数据/恢复场景下
+      // 不会出现两个条目同时打钩，按钮标签与浮窗勾选也不会指向不同的行。
+      const pickedRow = pickedModelRow(selection, state.model?.id);
+      const isPicked = row => row === pickedRow;
       const visible = rows.filter(row => (row.label + ' ' + row.name + ' ' + (row.subtitle || '')).toLowerCase().includes(filter.trim().toLowerCase()));
       const listNode = pop.querySelector('.nmodel-options');
       listNode.setAttribute('aria-busy', 'false');
       listNode.innerHTML = visible.length ? visible.map(row =>
-        '<button type="button" role="option" aria-selected="' + (row.name === selected) +
-        '" data-model-name="' + esc(row.name) + '"><span class="nmodel-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span>' +
+        '<button type="button" role="option" aria-selected="' + isPicked(row) +
+        '" data-model-name="' + esc(row.name) + '"' + (row.providerId ? ' data-model-provider="' + esc(row.providerId) + '"' : '') + '><span class="nmodel-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span>' +
         '<span class="nmodel-row-copy"><b data-user-content>' + esc(row.label) + '</b>' +
         (row.subtitle ? '<small class="nmodel-row-subtitle" data-user-content>' + esc(row.subtitle) + '</small>' : '') + '</span>' +
         '<i class="nmodel-tick" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></i></button>').join('') :
@@ -332,7 +350,7 @@
             (!current.cloudHandoff || !deviceLocal(row));
           rows = (response.usable || []).filter(allowed)
             .sort((a, b) => Number(deviceLocal(b)) - Number(deviceLocal(a)))
-            .map(row => ({ name: row.name, label: row.label || row.name, subtitle: subtitle(row) }));
+            .map(row => ({ name: row.name, providerId: row.providerId || '', label: row.label || row.name, subtitle: subtitle(row) }));
           if (adapter === 'pi' && global.SoduWorkModelChoice) rows.push(...(response.mediaUsable?.image || []).filter(allowed).map(row => ({
             name: SoduWorkModelChoice.imageKey(row), label: '生成图片 · ' + (row.label || row.name), subtitle: subtitle(row),
           })));
@@ -368,7 +386,7 @@
             const request = (async () => {
               const result = latest.draftOnly
                 ? await options.draft.selectModel(target.name, target.label)
-                : await global.soduWorkAPI.conversationSession.selectModel(latest.ref, target.name);
+                : await global.soduWorkAPI.conversationSession.selectModel(latest.ref, target.name, target.providerId);
               if (lifecycle.signal.aborted || scope !== modelScope() || !result?.ok) return false;
               const live = options.state(), liveName = live.selection?.name || live.selection?.model?.id || live.model?.id || '';
               if (liveName !== selected && liveName !== target.name) return false;
@@ -458,14 +476,14 @@
       }
       const choice = event.target.closest('[data-model-name]');
       if (!choice || selecting) return;
-      const ref = options.state().ref, adapterId = options.state().adapterId, name = choice.dataset.modelName, epoch = effortEpoch;
+      const ref = options.state().ref, adapterId = options.state().adapterId, name = choice.dataset.modelName, providerId = choice.dataset.modelProvider || '', epoch = effortEpoch;
       const current = () => epoch === effortEpoch && ref === options.state().ref && adapterId === options.state().adapterId;
       selecting = true; pop.setAttribute('aria-busy', 'true');
       const request = (async () => { try {
         if ((effortRequest && !await effortRequest) || !current()) return false;
         const result = options.state().draftOnly
           ? await options.draft.selectModel(name, rows.find(row => row.name === name)?.label)
-          : await global.soduWorkAPI.conversationSession.selectModel(ref, name);
+          : await global.soduWorkAPI.conversationSession.selectModel(ref, name, providerId);
         if (!current()) return false;
         if (!result || !result.ok) { options.say(result && result.reason || '\u6a21\u578b\u5207\u6362\u5931\u8d25\uff0c\u5f53\u524d\u8bbe\u7f6e\u672a\u6539\u53d8'); return false; }
         options.modelSelected(result.selection);

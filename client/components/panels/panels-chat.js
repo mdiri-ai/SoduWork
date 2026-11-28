@@ -960,7 +960,8 @@
     if (options && !_ref && !_sessionId && !_busy) {
       _sessionOptions = { ..._sessionOptions, adapterId: options.adapterId || 'pi',
         modelName: options.modelName || '', modelLabel: options.modelLabel || options.modelName || '',
-        reasoningEffort: options.reasoningEffort || '', thinkingLevel: options.thinkingLevel || '' };
+        reasoningEffort: options.reasoningEffort || '', thinkingLevel: options.thinkingLevel || '',
+        modelProviderId: options.modelProviderId || '' };
       _model = _sessionOptions.modelName ? { id: _sessionOptions.modelName, label: _sessionOptions.modelLabel } : null;
     }
     _mount();

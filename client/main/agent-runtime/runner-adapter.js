@@ -478,6 +478,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
   const savedSelection = modelPreference.readSelection();
   const explicitModel = typeof opts.modelName === 'string';
   let modelName = explicitModel ? opts.modelName : modelPreference.read() || '';
+  // The queued name alone cannot pick a catalog row: two rows can share a name
+  // while pointing at different provider credentials. Carry the explicit turn's
+  // provider id, or the saved picker choice, into the Hub resolution.
+  const selectionProviderId = explicitModel ? String(opts.modelProviderId || '').trim()
+    : String(savedSelection.providerId || '').trim();
   if (accountModel && (String(modelName).startsWith('local:') ||
       require('../../core/model-choice').imageChoice(modelName)?.name.startsWith('local:'))) {
     throw new RuntimeContractError('RUNNER_MODEL_UNAVAILABLE', '账号型底座不能使用本地模型，请选择账号模型');
@@ -505,7 +510,8 @@ async function createRunnerHandle(request, defaults, initialSession) {
   let prepared = accountModel
     ? { ok: true, model: { id: modelName, name: modelName || displayName, baseUrl: '', key: '' } }
     : await models.fetchModel(identity, modelName, undefined, undefined, false, adapterId,
-      { app, allowLocal: true, allowHistorical: Boolean(resumedRef || opts.resumedConversation) });
+      { app, allowLocal: true, allowHistorical: Boolean(resumedRef || opts.resumedConversation),
+        providerId: selectionProviderId });
   // A Runner archive can outlive the model catalog just like a native Pi archive.
   // Historical model names are hints, not a reason to make the whole conversation
   // unreadable. Retry only resumed conversations with the current default; new
@@ -595,20 +601,20 @@ async function createRunnerHandle(request, defaults, initialSession) {
   };
 
   state.modelSelection = selectionModule.create({
-    name: modelName, model: prepared.model,
+    name: modelName, model: prepared.model, providerId: selectionProviderId,
     generation: accountModel ? undefined : models.generation,
-    async resolve(name) {
+    async resolve(name, providerId) {
       if (!accountModel) return models.fetchModel(identity, name, undefined, undefined, false, adapterId,
-        { app, allowLocal: true });
+        { app, allowLocal: true, providerId });
       if (adapterId !== 'codex') return { ok: false };
       const catalog = await require('./native-model-catalog').list(adapterId);
       const row = (catalog.models || []).find(model => model.id === name);
       return row || !name ? { ok: true, model: { id: name, label: row && row.label || '默认模型' } } : { ok: false };
     },
-    persist: name => {
+    persist: (name, providerId) => {
       if (state.disposed) throw Error('会话已关闭');
       const next = adapterId === 'codex' ? require('./codex-thinking').profile(name, state.thinking?.level) : null;
-      modelPreference.write(name, next?.level);
+      modelPreference.write(name, next?.level, providerId);
     },
     changed: () => {
       if (adapterId === 'codex' && state.modelChoicePending)
@@ -1966,11 +1972,11 @@ async function createRunnerHandle(request, defaults, initialSession) {
         acceptance: state.acceptance, maxSteps: state.maxSteps,
         budgetMinutes: state.budgetMinutes, paused: state.goalPaused };
     },
-    async selectModel(name) {
+    async selectModel(name, providerId) {
       if (state.disposed || state.modelChoicePending) return { ok: false, reason: '会话已关闭或正在切换模型，请稍候' };
       state.modelChoicePending = true;
       try {
-        const result = await state.modelSelection.select(name);
+        const result = await state.modelSelection.select(name, providerId);
         return state.thinking && result.ok ? { ...result, thinking: { ...state.thinking, levels: state.thinking.levels.slice() } } : result;
       } finally { state.modelChoicePending = false; }
     },

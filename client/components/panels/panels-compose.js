@@ -562,6 +562,10 @@
     const accepted = global.NativeChat ? await NativeChat.enter(text || '', chatId || '', Object.assign({
       adapterId,
       modelName: modelSelection.modelName,
+      // Identical model names across providers are distinct rows: the picked
+      // row's providerId must reach the session so the Hub proxy resolves the
+      // exact provider instead of the first same-named one.
+      modelProviderId: modelSelection.providerId || '',
       reasoningEffort: modelSelection.reasoningEffort,
       thinkingLevel: modelSelection.thinkingLevel || '',
       capabilities: [..._pickedCapabilities],
@@ -716,7 +720,11 @@
         const selection = global.ComposeModelPicker?.value?.() || { modelName: _pickedModel };
         return { adapterId: submitAdapter, modelName: selection.modelName || '',
           modelLabel: global.ComposeModelPicker?.label?.() || selection.modelName || '',
-          reasoningEffort: selection.reasoningEffort || '', thinkingLevel: selection.thinkingLevel || '' };
+          reasoningEffort: selection.reasoningEffort || '', thinkingLevel: selection.thinkingLevel || '',
+          // Identical model names across providers are distinct picker rows; carry
+          // the picked provider so the session opens the checked row, not a
+          // name-only match that can land on another provider's model.
+          modelProviderId: selection.providerId || '' };
       },
       isCurrent: currentWorkEntry,
     });

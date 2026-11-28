@@ -111,6 +111,32 @@ test('late existing-chat model catalogs cannot overwrite a newer directory or an
   assert.equal(f.label.textContent, 'fresh');
 });
 
+test('chat button label and popup checkmark pick the same same-named row by provider', async () => {
+  const f = fixture();
+  f.state.selection = { name: 'managed', providerId: 'prov-2', model: { id: 'managed', label: 'Second choice' } };
+  f.controls.render();
+  const pending = f.open(); await tick();
+  f.requests[0].resolve({ usable: [
+    { name: 'managed', providerId: 'prov-1', label: 'First choice' },
+    { name: 'managed', providerId: 'prov-2', label: 'Second choice' }] });
+  await pending;
+  // 仅按 name 匹配会把第一条同名行的 label 盖在会话实际选中的模型上。
+  assert.equal(f.label.textContent, 'Second choice');
+  assert.match(f.field.innerHTML, /aria-selected="true" data-model-name="managed" data-model-provider="prov-2"/);
+});
+
+test('without a saved provider the button label falls back to the selection label, not the first name match', async () => {
+  const f = fixture();
+  f.state.selection = { name: 'managed', model: { id: 'managed', label: 'Second choice' } };
+  f.controls.render();
+  const pending = f.open(); await tick();
+  f.requests[0].resolve({ usable: [
+    { name: 'managed', providerId: 'prov-1', label: 'First choice' },
+    { name: 'managed', providerId: 'prov-2', label: 'Second choice' }] });
+  await pending;
+  assert.equal(f.label.textContent, 'Second choice');
+});
+
 test('a confirmed local model deletion selects the first usable replacement but storage failure does not', async () => {
   const f = fixture(); f.state.selection = { name: 'local:private', model: { id: 'local:private', label: 'Private model', localOnly: true } };
   const opened = f.open(); await tick(); f.requests[0].resolve(catalog); await opened;

@@ -9,7 +9,7 @@ test('Runner model switching keeps one native session and sends the selected con
   const { createRunnerRuntimeAdapter, getRunnerSessionDetails, _uuidV5 } = require('../main/agent-runtime/runner-adapter');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runner-model-'));
   const alias = 'model-switch-test', ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':codex-harness');
-  const calls = []; let round = 0, session;
+  const calls = []; const seen = []; let round = 0, session;
   const runtime = { async rpc(op, payload) {
     calls.push({ op, payload });
     if (op === 'job.dispatch') { round++; return { ok: true, data: { ref } }; }
@@ -20,10 +20,11 @@ test('Runner model switching keeps one native session and sends the selected con
     throw Error('Unexpected RPC ' + op);
   } };
   const adapter = createRunnerRuntimeAdapter({ runnerRuntime: runtime,
-    modelConfig: { fetchModel: async (_, name) => ({ ok: true, model: { ...model(name), baseUrl: 'http://model.invalid' } }) } });
+    modelConfig: { fetchModel: async (_, name, __, ___, ____, _____, options) => {
+      seen.push(options?.providerId); return { ok: true, model: { ...model(name), baseUrl: 'http://model.invalid' } }; } } });
   try {
     session = await adapter.createSession({ runtimeId: 'test', identity: { clientId: 'test' },
-      native: { runner: { openOptions: { ref: alias, cwd: root, modelName: 'a' } } } });
+      native: { runner: { openOptions: { ref: alias, cwd: root, modelName: 'a', modelProviderId: 'p9' } } } });
     const handle = getRunnerSessionDetails(session).handle;
     const first = session.send({ text: 'first' }); assert.equal((await first.completion).ok, true);
     assert.equal((await handle.selectModel('b')).ok, true);
@@ -31,6 +32,7 @@ test('Runner model switching keeps one native session and sends the selected con
     assert.equal(calls.filter(row => row.op === 'job.dispatch').length, 1);
     const next = calls.find(row => row.op === 'job.comment').payload;
     assert.equal(next.ref, ref); assert.equal(next.cfg.llm.model, 'b');
+    assert.equal(seen[0], 'p9', 'the runner send chain carries the turn provider id to the hub resolution');
     assert.equal(session.snapshot().modelSelection.activeModel.id, 'b');
     assert.ok(session.snapshot().messages.filter(row => row.role === 'user').length >= 2);
     assert.doesNotMatch(JSON.stringify(session.snapshot()), /never-render-this-key/);
@@ -160,4 +162,56 @@ test('model resolution preserves quota metadata without exposing arbitrary provi
   await assert.rejects(denied.applyForTurn('b'),error=>error.code==='TOKEN_QUOTA_EXCEEDED' && error.quota===quota);
   const failed=harness({resolve:async()=>({ok:false,reason:'secret provider address'})}).selection;
   assert.doesNotMatch((await failed.select('b')).reason,/secret provider/);
+});
+
+test('switching between same-named rows with different providers still applies', async () => {
+  const seen = [];
+  const { selection, applied } = harness({
+    providerId: 'p1',
+    resolve: async (name, providerId) => { seen.push(providerId); return { ok: true, model: model(name) }; },
+  });
+  assert.equal(selection.needsApply(), false, 'the opening provider must not reapply');
+  assert.equal((await selection.select('a', 'p2')).ok, true, 'a same-named row with another provider is accepted');
+  assert.equal(selection.needsApply(), true, 'same name with a different provider must update the next turn');
+  await selection.applyForTurn('a');
+  assert.deepEqual(applied, ['a']);
+  assert.deepEqual(seen, ['p2', 'p2'], 'both the pick and the turn resolve with the picked provider id');
+  assert.equal(selection.needsApply(), false, 'the applied provider must settle the pending state');
+});
+test('picking a model without a provider id keeps the stored provider choice', async () => {
+  const seen = [], saved = [];
+  const { selection, applied } = harness({ providerId: 'p1',
+    resolve: async (name, providerId) => { seen.push(providerId); return { ok: true, model: model(name) }; },
+    persist: (name, providerId) => saved.push(providerId) });
+  assert.equal((await selection.select('b')).ok, true, 'an omitted provider id keeps the stored choice');
+  assert.deepEqual(seen, ['p1'], 'the stored provider id resolves the pick');
+  assert.deepEqual(saved, ['p1']);
+  assert.equal(selection.view().providerId, 'p1');
+  await selection.applyForTurn('b');
+  assert.deepEqual(applied, ['b']);
+  assert.deepEqual(seen, ['p1', 'p1'], 'the turn also resolves with the stored provider id');
+  assert.equal(selection.needsApply(), false, 'the applied provider settles the pending state');
+});
+test('runner selectModel carries the picked provider id to the session resolution', async () => {
+  const { createRunnerRuntimeAdapter, getRunnerSessionDetails, _uuidV5 } = require('../main/agent-runtime/runner-adapter');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runner-pick-'));
+  const alias = 'pick-provider-test', ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':codex-harness');
+  const seen = []; let session;
+  const runtime = { async rpc(op, payload) {
+    if (op === 'job.dispatch') return { ok: true, data: { ref } };
+    if (op === 'job.comment') return { ok: true, data: { ok: true, state: 'running' } };
+    if (op === 'job.session') return { ok: true, data: { ok: true, status: 'done', items: [] } };
+    throw Error('Unexpected RPC ' + op);
+  } };
+  const adapter = createRunnerRuntimeAdapter({ runnerRuntime: runtime,
+    modelConfig: { fetchModel: async (_, name, __, ___, ____, _____, options) => {
+      seen.push(options?.providerId); return { ok: true, model: { ...model(name), baseUrl: 'http://model.invalid' } }; } } });
+  try {
+    session = await adapter.createSession({ runtimeId: 'test', identity: { clientId: 'test' },
+      native: { runner: { openOptions: { ref: alias, cwd: root, modelName: 'a', modelProviderId: 'p1' } } } });
+    const handle = getRunnerSessionDetails(session).handle;
+    assert.equal((await handle.selectModel('b', 'p2')).ok, true);
+    assert.equal(seen.at(-1), 'p2', 'the picker carries the picked provider id to the session resolution');
+    assert.equal(session.snapshot().modelSelection.providerId, 'p2');
+  } finally { if (session) await session.dispose(); fs.rmSync(root, { recursive: true, force: true }); }
 });

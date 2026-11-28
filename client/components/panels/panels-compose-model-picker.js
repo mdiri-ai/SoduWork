@@ -47,7 +47,7 @@
 
   function state(id) {
     const key = (cloud() ? 'cloud:' : 'local:') + String(id || 'pi');
-    if (!states.has(key)) states.set(key, { modelName: '', reasoningEffort: '', thinkingLevel: '', modelChosen: false });
+    if (!states.has(key)) states.set(key, { modelName: '', providerName: '', reasoningEffort: '', thinkingLevel: '', modelChosen: false });
     return states.get(key);
   }
 
@@ -96,8 +96,17 @@
     }
     const image = imageModels.find(item => global.SoduWorkModelChoice?.imageKey(item) === selected.modelName);
     if (image) return '生成图片 · ' + (image.label || image.name);
-    const model = enterpriseModels.find((item) => item.name === selected.modelName);
+    const model = pickedModel(selected);
     return model ? (model.label || model.name) : tx('选择模型');
+  }
+
+  // Identical model names across providers are distinct rows: match both fields
+  // so only the picked provider's row highlights, instead of every twin. Fall
+  // back to a name-only match when the directory renamed or moved the provider.
+  function pickedModel(selected) {
+    return enterpriseModels.find((item) => item.name === selected.modelName &&
+      (item.providerName || '') === (selected.providerName || '')) ||
+      enterpriseModels.find((item) => item.name === selected.modelName) || null;
   }
 
   function clearStaleManagedSelection(row) {
@@ -126,7 +135,12 @@
       // device-owned models first. Valid current choices stay unchanged.
       const next = available[0];
       selected.unavailable = !next;
-      if (next) { selected.modelName = next; selected.modelChosen = false; }
+      if (next) {
+        const fallback = enterpriseModels.find((item) => item.name === next);
+        selected.modelName = next;
+        selected.providerName = fallback?.providerName || '';
+        selected.modelChosen = false;
+      }
       selected.thinkingLevel = '';
     } else selected.unavailable = false;
   }
@@ -203,6 +217,7 @@
     const thinkingOn = canThink && (!canDisable || (selected.thinkingLevel && selected.thinkingLevel !== 'off'));
     const rows = enterpriseModels.map((item) => ({
         name: item.name,
+        providerName: item.providerName || '',
         label: item.label || item.name,
         sub: [item.providerName ? tx(item.providerName) : '', item.providerKind === 'anthropic' ? 'Anthropic' :
           item.providerKind === 'openai-compat' ? tx('OpenAI 兼容') : '',
@@ -210,6 +225,7 @@
       }));
     if (!cloud() && runtime().id === 'pi' && global.SoduWorkModelChoice) rows.push(...imageModels.map(item => ({
       name: SoduWorkModelChoice.imageKey(item), label: item.label || item.name,
+      providerName: item.providerName || '',
       sub: [tx('生成图片'), item.providerName ? tx(item.providerName) : '', item.keyFrom === 'mine' ? tx('自己的额度') : ''].filter(Boolean).join(' \u00b7 '),
     })));
     const thinkingLabel = !canThink
@@ -223,10 +239,13 @@
       '<span class="cp-thinking-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="M10 2.5v3m0 9v3M2.5 10h3m9 0h3M4.7 4.7l2.1 2.1m6.4 6.4 2.1 2.1m0-10.6-2.1 2.1m-6.4 6.4-2.1 2.1"/><circle cx="10" cy="10" r="3.2"/></svg></span>' +
       '<span class="cp-thinking-copy"><b>\u601d\u8003\u6a21\u5f0f</b><i>' + thinkingLabel + '</i><small>' + thinkingHint + '</small></span>' +
       '<button type="button" class="cp-thinking-switch" role="switch" aria-checked="' + (thinkingOn ? 'true' : 'false') + '" data-thinking-toggle' + (canThink && canDisable ? '' : ' disabled') + '><span></span><em class="sr-only">\u5207\u6362\u601d\u8003\u6a21\u5f0f</em></button></div>';
+    const pickedProvider = selected.providerName || '';
+    const isPickedRow = (item) => item.name === selected.modelName && (item.providerName || '') === pickedProvider;
     return heading(runtime().id === 'pi' && imageModels.length ? '对话与图片模型 · 用于本次会话' : '用于本次会话') +
       '<div class="cp-model-scroll">' + rows.map((item) =>
-        '<button type="button" class="cp-mrow' + (item.name === selected.modelName ? ' on' : '') +
-          '" aria-pressed="' + (item.name === selected.modelName) + '" data-model="' + escape(item.name) + '">' + check() +
+        '<button type="button" class="cp-mrow' + (isPickedRow(item) ? ' on' : '') +
+          '" aria-pressed="' + isPickedRow(item) + '" data-model="' + escape(item.name) + '"' +
+          (item.providerName ? ' data-model-provider="' + escape(encodeURIComponent(item.providerName)) + '"' : '') + '>' + check() +
           '<span class="cp-model-symbol" aria-hidden="true"><svg viewBox="0 0 20 20"><path d="m10 3 2 5 5 2-5 2-2 5-2-5-5-2 5-2Z"/></svg></span><span class="cp-mtxt"><b>' + escape(item.label) + '</b>' +
             (item.sub ? '<i>' + escape(item.sub) + '</i>' : '') + '</span></button>').join('') +
       emptyList() + '</div>' + (!selected.modelName && enterpriseDefaultErrors[runtime().id]
@@ -461,16 +480,16 @@
     }
   }
 
-  function chooseModel(id) {
+  function chooseModel(id, providerName) {
     global.ComposeDirectoryPreferences?.selectionCommitted?.();
     const row = runtime();
     const selected = state(row.id);
     selected.modelChosen = true;
     selected.unavailable = false;
     selected.modelName = String(id || '');
+    selected.providerName = String(providerName || '');
     if (row.id !== 'codex') {
-      const picked = enterpriseModels.find(item => item.name === selected.modelName) ||
-        (selected.modelName ? null : enterpriseModels[0]);
+      const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
       if (!info.supported) selected.thinkingLevel = '';
       else if (!info.canDisable) selected.thinkingLevel = fixedThinkingLevel(info, selected.thinkingLevel);
@@ -568,7 +587,7 @@
       const thinkingToggle = event.target.closest('[data-thinking-toggle]');
       if (thinkingToggle) {
         const selected = state(runtime().id);
-        const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
+        const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
         const info = thinkingProfile(picked);
         if (info.supported && info.canDisable) {
           global.ComposeDirectoryPreferences?.selectionCommitted?.();
@@ -580,7 +599,9 @@
       }
       const model = event.target.closest('[data-model]');
       if (model) {
-        chooseModel(model.getAttribute('data-model'));
+        // Provider names double as locale keys: the DOM attribute stores the
+        // encoded form so the raw key never appears in markup; decode on click.
+        chooseModel(model.getAttribute('data-model'), model.getAttribute('data-model-provider') ? decodeURIComponent(model.getAttribute('data-model-provider')) : null);
         close();
         return;
       }
@@ -695,14 +716,22 @@
   function value() {
     const row = runtime();
     const selected = state(row.id);
-    if (cloud()) return { modelName: row.modelMode === 'managed' ? selected.modelName : '', reasoningEffort: '', thinkingLevel: '' };
+    if (cloud()) {
+      // Cloud sessions resolve their model through the same Hub proxy, so the
+      // picked row's providerId must travel with the name: identical names
+      // across providers would otherwise send with the wrong provider ticket.
+      const picked = row.modelMode === 'managed' ? pickedModel(selected) : null;
+      return { modelName: row.modelMode === 'managed' ? selected.modelName : '',
+        providerId: picked?.providerId || '',
+        reasoningEffort: '', thinkingLevel: '' };
+    }
     if (row.id === 'codex') {
       return { modelName: selected.modelName, reasoningEffort: selected.reasoningEffort };
     }
     if (row.modelMode === 'managed') {
-      const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
+      const picked = pickedModel(selected) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
-      return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
+      return { modelName: selected.modelName, providerId: picked?.providerId || '', reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
         ? fixedThinkingLevel(info, selected.thinkingLevel) : (selected.thinkingLevel || '') };
     }
     return { modelName: '', reasoningEffort: '' };
@@ -728,6 +757,10 @@
     selected.modelName = String(saved.modelName || '');
     selected.reasoningEffort = String(saved.reasoningEffort || '');
     selected.thinkingLevel = String(saved.thinkingLevel || '');
+    // The saved pair carries the provider identity too: without it pickedModel
+    // falls back to a name-only match and paints another twin row's label.
+    selected.providerId = String(saved.providerId || '');
+    selected.providerName = String(saved.providerName || '');
     selected.directoryPreference = true;
     selected.modelChosen = false;
     if (row.modelMode === 'managed') {

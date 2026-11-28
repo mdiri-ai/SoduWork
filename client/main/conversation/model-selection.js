@@ -38,34 +38,41 @@ function publicModel(model) {
 
 // A choice belongs to future submissions, never to the currently streaming turn.
 // Queue items capture a name, not credentials. The runtime changes only at a turn boundary.
-function create({ name = '', model, resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
+function create({ name = '', model, providerId = '', resolve, apply, persist = () => {}, changed = () => {}, generation = () => 0 }) {
   name = canonicalName(name, model);
-  let selected = name, active = name, selectedModel = model, activeModel = model;
+  let selected = name, active = name, selectedModel = model, activeModel = model,
+    selectedProvider = String(providerId || '').trim(), activeProvider = String(providerId || '').trim();
   let selecting = false;
   let appliedGeneration = generation();
+  // Two catalog rows can share a name while pointing at different provider
+  // credentials. A switch between them keeps the name unchanged, so the stored
+  // provider ids must be compared too before a turn reuses the applied runtime.
   const needsApply = name => name !== active || generation() !== appliedGeneration ||
-    (name === selected && (selectedModel?.runtimeRevision || selectedModel?.configRevision) !==
-      (activeModel?.runtimeRevision || activeModel?.configRevision));
+    (name === selected && ((selectedModel?.runtimeRevision || selectedModel?.configRevision) !==
+      (activeModel?.runtimeRevision || activeModel?.configRevision) || selectedProvider !== activeProvider));
   return {
     capture: () => selected,
     needsApply: name => needsApply(name === undefined ? selected : name),
-    view: () => ({ name: selected, activeName: active, model: publicModel(selectedModel),
+    view: () => ({ name: selected, providerId: selectedProvider, activeName: active, model: publicModel(selectedModel),
       activeModel: publicModel(activeModel), pending: needsApply(selected) }),
-    async select(name) {
+    async select(name, providerId) {
       if (typeof name !== 'string' || name.length > require('../../core/model-choice').nameLimit(name) || /[\r\n\0]/.test(name))
         return { ok: false, reason: '模型名称无效' };
       name = name.trim();
       if (selecting) return { ok: false, reason: '正在更新模型，请稍候' };
       selecting = true;
       try {
-        const resolved = await resolve(name);
+        // Callers that omit the provider id keep the stored provider choice;
+        // an empty string switches back to the default provider row.
+        const pickedProvider = providerId === undefined ? selectedProvider : String(providerId || '').trim();
+        const resolved = await resolve(name, pickedProvider);
         if (!resolved || !resolved.ok || !resolved.model) return { ok: false,
           reason: require('../../core/token-quota').detail(resolved)
             ? '当前 AI 使用额度暂不可用，请查看额度详情' : '该模型当前不可用，请刷新模型列表后重试',
           ...require('../../core/token-quota').fields(resolved) };
         name = canonicalName(name, resolved.model);
-        await persist(name);
-        selected = name; selectedModel = resolved.model; changed();
+        await persist(name, pickedProvider, resolved.model);
+        selected = name; selectedModel = resolved.model; selectedProvider = pickedProvider; changed();
         return { ok: true, selection: this.view() };
       } catch (_) { return { ok: false, reason: '模型设置未保存，请重试；当前模型未改变' }; }
       finally { selecting = false; }
@@ -73,7 +80,10 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
     async applyForTurn(name = selected) {
       if (!needsApply(name)) return;
       const applyingGeneration = generation();
-      const resolved = await resolve(name);
+      // The queued provider id belongs to the selected row. A different name in
+      // the queue predates the current picker choice; resolving it with the new
+      // provider could pair an old name with the wrong provider credential.
+      const resolved = await resolve(name, name === selected ? selectedProvider : '');
       if (!resolved || !resolved.ok || !resolved.model) throw Object.assign(
         new Error(require('../../core/token-quota').detail(resolved)
           ? '当前 AI 使用额度暂不可用，请查看额度详情' : '本轮所选模型不可用，队列已暂停，请调整模型后重试'),
@@ -81,6 +91,7 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
       try { await apply(resolved.model, name); }
       catch (_) { throw new Error('模型未能切换，队列已暂停，原会话与历史已保留'); }
       active = canonicalName(name, resolved.model); activeModel = resolved.model;
+      activeProvider = name === selected ? selectedProvider : '';
       appliedGeneration = applyingGeneration;
       if (selected === name) selectedModel = resolved.model;
       changed();
@@ -99,23 +110,26 @@ function preference(app, ref) {
       value = JSON.parse(fs.readFileSync(file, 'utf8'));
     } catch (_) { return {}; }
     return { ...(typeof value.name === 'string' ? { name: canonicalName(value.name) } : {}),
-      ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}) };
+      ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort } : {}),
+      ...(typeof value.providerId === 'string' ? { providerId: value.providerId } : {}) };
   };
   return {
     read() { return readSelection().name; },
     readSelection,
-    write(name, reasoningEffort = readSelection().reasoningEffort) {
+    write(name, reasoningEffort = readSelection().reasoningEffort, providerId = readSelection().providerId) {
       if (!file) return;
       name = canonicalName(name);
       // Reopening a conversation must not rewrite an unchanged saved choice.
       // A transient destination lock may block new choices, but not restoration.
       const current = readSelection();
-      if (current.name === name && current.reasoningEffort === reasoningEffort) return;
+      if (current.name === name && current.reasoningEffort === reasoningEffort &&
+        current.providerId === providerId) return;
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const tmp = file + '.' + crypto.randomUUID() + '.tmp';
       try {
         fs.writeFileSync(tmp, JSON.stringify({ name,
-          ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}) }), { mode: 0o600, flag: 'wx' });
+          ...(typeof reasoningEffort === 'string' ? { reasoningEffort } : {}),
+          ...(typeof providerId === 'string' && providerId ? { providerId } : {}) }), { mode: 0o600, flag: 'wx' });
         replaceFileSync(tmp, file);
       } catch (cause) {
         const error = new Error('会话模型设置未能保存，请检查本机存储后重试；当前 Agent 和对话已保留', { cause });

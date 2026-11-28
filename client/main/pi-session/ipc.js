@@ -818,7 +818,10 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         // Established archives still require their persisted task binding.
         requireTaskBinding: Boolean(opts.requireTaskBinding) && !work.bindCreatedTask,
         thinkingLevel: spec.thinkingLevel,
-        ...(typeof opts.modelName === 'string' ? { modelName: spec.modelName } : {}),
+        // Identical model names across providers are distinct picker rows; carry
+        // the picked provider so the opened session pins the checked row.
+        ...(typeof opts.modelName === 'string' ? { modelName: spec.modelName,
+          modelProviderId: String(opts.modelProviderId || '').trim() } : {}),
         reasoningEffort: spec.reasoningEffort,
         intent: spec.intent,
         goal: spec.goal,

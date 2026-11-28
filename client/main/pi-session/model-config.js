@@ -190,7 +190,8 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
   const agent = custom ? 'custom-acp' : requestedAgent;
   const accountScope = accountScopeKey(identity);
   const cacheKey = hub + '|' + String(identity.clientId || '') + '|' + accountScope + '|' + agent + '|' +
-    String(modelName || '') + '|' + (ignoreAgentPreference ? 'without-preference' : 'with-preference');
+    String(modelName || '') + '|' + (ignoreAgentPreference ? 'without-preference' : 'with-preference') + '|' +
+    String(options.providerId || '');
   const cacheable = fetchImpl === global.fetch && !!accountScope;
   if (cacheable && force) {
     _modelCache.delete(cacheKey);
@@ -215,8 +216,10 @@ async function fetchModel(identity, modelName = '', timeoutMs = 8000, fetchImpl 
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
   try {
+    const providerId = String(options.providerId || '').trim();
     const query = '?agent=' + encodeURIComponent(agent) + (String(modelName || '').trim()
       ? '&model=' + encodeURIComponent(String(modelName).trim()) : '') +
+      (providerId ? '&provider=' + encodeURIComponent(providerId) : '') +
       (ignoreAgentPreference ? '&ignore_preference=1' : '');
     const res = await fetchWithDeviceAuthRetry(identity,
       hub + '/api/v1/ai-proxy/config' + query, {
