@@ -1927,6 +1927,20 @@
       if (!report?.checks) return { ...labels, state: 'failed' };
       return { ...labels, state: 'ready', report };
     },
+    async discoverMyModels(providerId) {
+      // Read-only name listing for a saved personal service on the Hub. Local
+      // device services already read /models during the connection test.
+      var scope = domainScope();
+      var catalog = await localModelCatalog();
+      if (!sameDomainScope(scope)) throw staleTaskScope();
+      var nativeId = deviceProviderId(providerId);
+      if (deviceProvider(providerId) || (catalog?.providers || []).some(row => row.id === nativeId))
+        throw new Error('本地服务会在测试连接时自动读取模型列表，请点击"保存并测试连接"');
+      requirePersonalProvider(providerId, await managedModelOwners(scope));
+      var r = await jfetch('/my-models/' + encodeURIComponent(nativeId) + '/discover',
+        { method: 'POST', body: JSON.stringify({}) });
+      mark(true); return r;
+    },
     async checkMyModelCapabilities(body, options) {
       body = body || {};
       options?.signal?.throwIfAborted();

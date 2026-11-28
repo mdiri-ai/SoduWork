@@ -30,9 +30,15 @@ _ENDPOINT_PURPOSES = {
 
 def _headers(kind: str, key: str) -> dict:
     if kind == "anthropic":
-        return {"x-api-key": key, "anthropic-version": "2023-06-01",
-                "Accept": "application/json"}
-    return {"Authorization": "Bearer " + key, "Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if key:
+            headers["x-api-key"] = key
+            headers["anthropic-version"] = "2023-06-01"
+        return headers
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    return headers
 
 
 def _paths(kind: str, base: str) -> tuple[str, ...]:
@@ -121,13 +127,18 @@ def _candidates(payload) -> list[dict] | None:
     return [_candidate(name, entries) for name, entries in by_name.items()]
 
 
-async def discover(base: str, key: str, kind: str = "openai-compat", *, allow_empty=False) -> dict:
-    """Return legacy names and classified candidates without probing individual models."""
+async def discover(base: str, key: str, kind: str = "openai-compat", *,
+                   allow_empty=False, allow_empty_key: bool = False) -> dict:
+    """Return legacy names and classified candidates without probing individual models.
+
+    allow_empty_key lets keyless personal gateways through; org providers keep
+    requiring a credential because their stored key is never legitimately empty.
+    """
     base = str(base or "").strip().rstrip("/")
     if not base.startswith(("http://", "https://")):
         return {"ok": False, "models": [], "code": "model.discovery.invalid-url",
                 "detail": "先填写以 http(s):// 开头的服务地址"}
-    if not str(key or "").strip():
+    if not str(key or "").strip() and not allow_empty_key:
         return {"ok": False, "models": [], "code": "model.discovery.missing-key",
                 "detail": "先配置组织密钥"}
     client = httpx.AsyncClient(trust_env=False, follow_redirects=False,
