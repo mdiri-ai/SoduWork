@@ -108,7 +108,13 @@ async def init_db() -> None:
 # Compatibility columns used only during adoption of pre-Alembic databases.
 # Existing columns are unchanged; normal versioned upgrades use Alembic.
 _WANT_COLUMNS = {
-    "model_def": [("advertised_ctx_window", "INTEGER")],
+    "model_def": [
+        ("advertised_ctx_window", "INTEGER"),
+        # Accounts (User IDs) allowed to use the model; an empty list means every account may use it.
+        # Literal JSON, not {json}: that placeholder renders TEXT on SQLite, which would
+        # drift from the ORM's JSON declaration under Alembic's type comparison.
+        ("allowed_user_ids", "JSON NOT NULL DEFAULT '[]'"),
+    ],
     "ai_usage_event": [("reported_chat_session_id", "VARCHAR(180)")],
     "attachment": [
         # Associate new evidence with its execution and workflow node while retaining legacy compatibility.
@@ -270,12 +276,6 @@ _WANT_COLUMNS = {
         ("auth_version", "INTEGER DEFAULT 1"),
         ("positions", "{json}"),
         ("domains", "{json}"),
-    ],
-    "model_def": [
-        # Accounts (User IDs) allowed to use the model; an empty list means every account may use it.
-        # Literal JSON, not {json}: that placeholder renders TEXT on SQLite, which would
-        # drift from the ORM's JSON declaration under Alembic's type comparison.
-        ("allowed_user_ids", "JSON NOT NULL DEFAULT '[]'"),
     ],
     "integration": [
         ("last_pull_at", "{ts}"),
