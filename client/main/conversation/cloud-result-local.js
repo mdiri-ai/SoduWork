@@ -33,16 +33,21 @@ async function create({ app, directory, owner, items, ids, guard }) {
   const parent = path.join(anchor, 'local-results', createHash('sha256').update(owner).digest('hex'));
   assertNoLinks(anchor, parent); await fs.mkdir(parent, { recursive: true }); assertNoLinks(anchor, parent);
   const cwd = await fs.mkdtemp(path.join(parent, 'result-'));
-  for (const file of captured) {
-    const target = path.join(cwd, file.relative);
-    assertNoLinks(anchor, target); await fs.mkdir(path.dirname(target), { recursive: true }); assertNoLinks(anchor, target);
-    await fs.writeFile(target, file.bytes, { flag: 'wx', mode: 0o600 });
+  try {
+    for (const file of captured) {
+      const target = path.join(cwd, file.relative);
+      assertNoLinks(anchor, target); await fs.mkdir(path.dirname(target), { recursive: true }); assertNoLinks(anchor, target);
+      await fs.writeFile(target, file.bytes, { flag: 'wx', mode: 0o600 });
+    }
+    await guard();
+    const first = selected[0], filePath = path.join(cwd, first.relative), stat = await fs.stat(filePath);
+    return { ok: true, cwd, title: first.name || path.basename(filePath),
+      preview: /\.(?:html?|xhtml|md|txt|csv|json|pdf|png|jpe?g|gif|webp|svg|mp4|webm)$/i.test(filePath),
+      file: { path: filePath, name: path.basename(filePath), size: stat.size,
+        lastModified: stat.mtimeMs, kind: /\.pdf$/i.test(filePath) ? 'pdf' : 'file', nativeReference: true } };
+  } catch (error) {
+    await fs.rm(cwd, { recursive: true, force: true }).catch(() => {});
+    throw error;
   }
-  await guard();
-  const first = selected[0], filePath = path.join(cwd, first.relative), stat = await fs.stat(filePath);
-  return { ok: true, cwd, title: first.name || path.basename(filePath),
-    preview: /\.(?:html?|xhtml|md|txt|csv|json|pdf|png|jpe?g|gif|webp|svg|mp4|webm)$/i.test(filePath),
-    file: { path: filePath, name: path.basename(filePath), size: stat.size,
-      lastModified: stat.mtimeMs, kind: /\.pdf$/i.test(filePath) ? 'pdf' : 'file', nativeReference: true } };
 }
 module.exports = { create };
