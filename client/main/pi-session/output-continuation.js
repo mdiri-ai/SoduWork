@@ -2,6 +2,7 @@
    unbounded agent loop. Pi reports `stopReason: "length"` when the provider
    reaches its output-token ceiling; that is not a successful completion. */
 const contextRecovery = require('./context-recovery');
+const { LEVELS } = require('../conversation/thinking-capabilities');
 const MARKER = '<soduwork-internal-output-continue>';
 const protocolGuard = require('../agent-runtime/protocol-guard');
 const handoff = require('./action-handoff');
@@ -126,6 +127,53 @@ function isContinuationPrompt(value) {
   return String(value || '').includes(MARKER);
 }
 
+// Scope the adjustment to the first SDK request for this internal continuation.
+// AgentSession.setThinkingLevel would persist a preference in the user's archive.
+async function recoverReasoning(session, prompt, run) {
+  const agent = session.agent, prepare = agent?.prepareRequest;
+  if (typeof prepare !== 'function' || !session.model?.reasoning || typeof session.getAvailableThinkingLevels !== 'function') return run();
+  let used = false;
+  async function prepareRecovery(request, signal) {
+    const prepared = await prepare.call(this, request, signal);
+    const model = prepared?.model ?? request.model;
+    const tail = (prepared?.context ?? request.context)?.messages?.at(-1);
+    const content = tail?.content;
+    if (used || signal?.aborted || model !== session.model || tail?.role !== 'user' ||
+        !(content === prompt || Array.isArray(content) && content.some(block => block.type === 'text' && block.text === prompt))) return prepared;
+    used = true;
+    const current = prepared?.thinkingLevel ?? request.thinkingLevel;
+    const level = recoveryLevel(model, current, session.getAvailableThinkingLevels());
+    return level ? { ...prepared, thinkingLevel: level } : prepared;
+  }
+  agent.prepareRequest = prepareRecovery;
+  try { return await run(); }
+  finally { if (agent.prepareRequest === prepareRecovery) agent.prepareRequest = prepare; }
+}
+
+function recoveryLevel(model, current, available) {
+  if (!current || current === 'off') return;
+  const mapping = model.thinkingLevelMap || {}, compat = model.compat || {};
+  const rank = level => LEVELS.indexOf(mapping[level] ?? level);
+  // Pi's template-based Qwen transport emits an enable switch even when
+  // generic catalog metadata also advertises support for effort levels.
+  if (compat.supportsReasoningEffort && !['qwen-chat-template', 'chat-template'].includes(compat.thinkingFormat)) {
+    // Low is the common portable effort. Only use minimal when the service
+    // explicitly mapped that extended level, and never increase wire effort.
+    for (const level of ['low', 'minimal']) {
+      const needsMapping = level === 'minimal' || compat.thinkingFormat === 'ant-ling';
+      if (available.includes(level) && (!needsMapping || typeof mapping[level] === 'string') &&
+          rank(level) >= 0 && rank(level) < rank(current)) return level;
+    }
+  }
+  // Some transports implement a switch instead of multiple effort levels.
+  // Leave mandatory thinking enabled and never rely on an omitted parameter
+  // to disable an OpenAI-compatible server's default reasoning.
+  const explicitOff = ['openai', 'baseten'].includes(compat.thinkingFormat) && compat.supportsReasoningEffort &&
+    ['off', 'none', 'disabled'].includes(mapping.off);
+  const toggle = ['zai', 'qwen', 'qwen-chat-template', 'deepseek', 'openrouter', 'together', 'string-thinking'].includes(compat.thinkingFormat);
+  if (available.includes('off') && (explicitOff || toggle)) return 'off';
+}
+
 async function complete(session, accumulator, initialPrompt, initialOptions, hooks) {
   const cfg = hooks || {};
   const max = Number.isFinite(Number(cfg.maxContinuations))
@@ -149,7 +197,7 @@ async function complete(session, accumulator, initialPrompt, initialOptions, hoo
   let continuations = 0, reasoningContinuations = 0;
   let why = reason();
   let loopDetected = looksLikeOutputLoop(accumulator, messageFrom, toolFrom, '');
-  // Keep the same archive, model budget, reasoning preference and tool results.
+  // Keep the same archive, total output budget, saved preference and tool results.
   // One reasoning recovery consumes the ordinary continuation budget; progress
   // or a later text truncation must not reset this allowance.
   const reasoningReady = () => why !== 'reasoning-limit' || reasoningContinuations === 0 &&
@@ -163,7 +211,10 @@ async function complete(session, accumulator, initialPrompt, initialOptions, hoo
     const previousWhy = why;
     if (stopped() || !reasoningReady()) break;
     if (why === 'reasoning-limit') reasoningContinuations += 1;
-    await contextRecovery.prompt(session, accumulator, continuationPrompt(continuations, why), { images: [] }, cfg);
+    const prompt = continuationPrompt(continuations, why);
+    const resume = () => contextRecovery.prompt(session, accumulator, prompt, { images: [] }, cfg);
+    if (why === 'reasoning-limit') await recoverReasoning(session, prompt, resume);
+    else await resume();
     loopDetected = looksLikeOutputLoop(accumulator, messageFrom, turnToolFrom, previousText);
     why = reason();
     // A second promise with no actual tool progress is enough. Rephrasing

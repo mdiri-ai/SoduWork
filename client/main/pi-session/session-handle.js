@@ -238,6 +238,8 @@ submit(text, turnAttachments, sendOptions) {
         ctx.run.stopKind === 'agent-stall' ? Number(ctx.run.terminalAt || 0) : 0;
       const turn = { ...sendOptions, modelName: sendOptions?.taskId && !sendOptions.controlled && typeof sendOptions.modelName === 'string'
         ? sendOptions.modelName : ctx.modelSelection.capture(),
+        refreshAfterReasoningLimit: !sendOptions?.internal && !sendOptions?.taskId && !sendOptions?.controlled &&
+          sendOptions?.source !== 'automation' && ctx.acc.state.incompleteReason === 'reasoning-limit',
         sentAt: messageTime.epoch(sendOptions?.sentAt) || Date.now() };
       // This queue override is derived from main-process run state. Never let
       // renderer-supplied options manufacture a terminal-stall recovery.

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const native = require('../../main/conversation/device-history-native.cjs');
 const segments = require('../../main/conversation/runtime-segments');
 
-async function create(app, root, sessions) {
+async function create(app, root, sessions, screenshots = []) {
   const identity = require('../../tests/helpers/platform-session-fixture.cjs').identity();
   const session = { historyEntry: require('../../main/pi-session/session').historyEntry, findBySessionId: () => null };
   const store = require('../../main/conversation/replica-store.cjs').create(path.join(root, 'legacy.sqlite'));
@@ -15,20 +15,35 @@ async function create(app, root, sessions) {
   fs.mkdirSync(fileRoot, { recursive: true });
   const owner = segments.scope(identity), creator = { account: 'one', hub: identity.hub };
   const sendAt = Date.now() - 3600000;
-  function websiteArchive(id, cwd, heading, sentAt) {
+  function websiteArchive(id, cwd, heading, sentAt, gallery = []) {
     const content = html(heading);
     fs.mkdirSync(cwd, { recursive: true });
     fs.writeFileSync(path.join(cwd, 'index.html'), content);
+    let reply = heading + '，已创建 `index.html`。';
+    if (gallery.length) {
+      const directory = path.join(cwd, 'shots');
+      fs.mkdirSync(directory);
+      for (const { name, bytes } of gallery) fs.writeFileSync(path.join(directory, name), bytes);
+      const items = gallery.map(({ name }) => ({ url: 'shots/' + name }));
+      reply += '\n\n```soduwork-media\n' + JSON.stringify({ type: 'gallery', items }) + '\n```';
+    }
     const entries = [{ type: 'session', id, cwd, timestamp: new Date(sentAt - 100).toISOString() },
       { type: 'custom', customType: 'soduwork.access.policy', data: require('../../main/access-control/policy').create('full', cwd) }, ...[
       { role: 'user', content: '创建' + heading, submissionId: 'user-' + id },
       { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: 'write1', name: 'write', arguments: { path: 'index.html', content } }] },
       { role: 'toolResult', toolCallId: 'write1', toolName: 'write', isError: false, content: [] },
-      { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: heading + '，已创建 `index.html`。' }] },
+      { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: reply }] },
     ].map((message, index) => ({ type: 'message', message: { ...message, timestamp: sentAt + index * 20 } }))];
+    if (gallery.length) {
+      // Old Pi used the scratch allocation and its completion time to attest binary outputs.
+      const times = gallery.map(({ name }) => fs.statSync(path.join(cwd, 'shots', name)));
+      const end = Math.ceil(Math.max(...times.map(stat => Math.max(stat.ctimeMs, stat.mtimeMs))));
+      entries.at(-1).timestamp = new Date(end).toISOString();
+    }
     const file = path.join(fileRoot, id + '.jsonl');
     fs.writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join('\n'));
-    return { id, cwd, adapterId: 'pi', path: file, count: entries.length - 2, workOwner: owner, creator };
+    return { id, cwd, adapterId: 'pi', path: file, count: entries.length - 2, workOwner: owner, creator,
+      ...(gallery.length ? { ref: path.basename(cwd) } : {}) };
   }
   async function saveLegacy(row) {
     const [registered] = await history.register([row]);
@@ -39,7 +54,12 @@ async function create(app, root, sessions) {
     await store.saveConversationTranscript(row.id, snapshot.messages, guard);
     return snapshot;
   }
-  const row = websiteArchive(randomUUID(), path.join(root, 'temp', 'chat-abcdef-1111'), oldHeading, sendAt);
+  async function createDeliverables() {
+    const files = require('./legacy-pi-deliverables.cjs')(root, fileRoot, owner, creator);
+    for (const legacy of [files.siteRow, files.sheetRow]) await saveLegacy(legacy);
+    return files;
+  }
+  const row = websiteArchive(randomUUID(), path.join(root, 'temp', 'chat-abcdef-1111'), oldHeading, sendAt, screenshots);
   await saveLegacy(row);
   const currentDir = path.join(root, 'temp', 'chat-abcdef-2222');
   fs.mkdirSync(currentDir, { recursive: true });
@@ -88,7 +108,7 @@ async function create(app, root, sessions) {
   await segments.save(app, { version: 1, id: logicalId, owner, originAdapter: 'pi', cwd: active.cwd,
     deviceHistoryComplete: true, segments: [part(retired)], active: part(active), prefix, at: Date.now() });
   await saveLegacy({ ...active, id: logicalId, runtimeConversationId: logicalId });
-  return { id: row.id, cwd: row.cwd, retiredId: logicalId, oldHeading, newHeading, continued,
+  return { id: row.id, cwd: row.cwd, retiredId: logicalId, oldHeading, newHeading, continued, createDeliverables,
     preview: id => history.open(id, { historyPreview: true, allowContinuation: true }), close: () => history.close() };
 }
 module.exports = { create };

@@ -891,6 +891,7 @@
        updates still use _patchLiveStream above; current files are decorated
        only after the whole turn has settled. */
     const deliverySnapshot = { ...ctx._snap, deliveryPending: Boolean(ctx._pending || ctx._snap?.deliveryPending),
+      historyPackagePickerReady: ctx._historyPackagePickerReady,
       historyImagesLoading: ctx._snap.localReplica === true && ctx._outAt === '' && typeof ctx._api?.()?.outputs === 'function' };
     const settledNow = !global.ChatDeliveries || global.ChatDeliveries.isSettled(deliverySnapshot);
     const restoreReading = _preserveReadingPosition(scroll, list);

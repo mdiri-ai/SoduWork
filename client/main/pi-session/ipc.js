@@ -531,7 +531,9 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
               if (event) _attach(handle, require('../conversation/app-surfaces.cjs').forSender(BrowserWindow, event.sender));
               else _detach(handle);
               _wire(BrowserWindow, handle);
-              return _openReply(handle, { resumed: true, attached: true, localReplica: true });
+              const historyMedia = await projection.initialHistoryMedia?.().catch(() => []);
+              historyAccess.assertCurrent(app, captured);
+              return _openReply(handle, { resumed: true, attached: true, localReplica: true, ...(historyMedia?.length ? { historyMedia } : {}) });
             } catch (error) {
               if (handle) await closeFailedOpen(handle);
               else await projection.close?.();

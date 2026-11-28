@@ -83,10 +83,72 @@ function dependencyTarget(webRoot, requested, ref) {
   return ref.startsWith('/') ? path.posix.join(webRoot, ref.slice(1)) : path.posix.join(path.posix.dirname(requested), ref);
 }
 
+// An early v2 refresh could pin a successful write before the same Pi turn
+// finished editing it. Keep its issued ID and that turn's dependency receipts,
+// but store the draft as resources so released clients only list the final file.
+function preservePiDrafts(prior, history, files, recoveredIds) {
+  const versions = prior?.versions || [];
+  const edits = new Map(), turns = new Map();
+  const { VERIFIED_EDIT_BASE } = require('./pi-history-artifacts.cjs');
+  for (const entry of [...(history.items || []), ...(history.resources || [])]) {
+    const base = entry[VERIFIED_EDIT_BASE];
+    if (!base || entry.archiveOnly || entry.source?.adapterId !== 'pi' || !entry.source.turnId) continue;
+    const file = files.get(entry.metadata.relative);
+    if (!file || file.sha256 === base || !same(entry.stamp, file.sourceStamp)) continue;
+    if (recoveredIds && !recoveredIds.has(versionId(entry.source.turnId, file.relative, file.sha256))) continue;
+    edits.set(versionId(entry.source.turnId, entry.metadata.relative, base), entry);
+    turns.set(entry.source.turnId, []);
+  }
+  if (!edits.size) return versions;
+  const replaced = new Set();
+  for (const version of versions) {
+    const turn = turns.get(version.turnId);
+    if (!turn || version.piEditDraft) continue;
+    turn.push(version);
+    const entry = edits.get(version.versionId);
+    if (entry && version.source?.adapterId === 'pi' && version.source.turnId === version.turnId &&
+        version.source.sessionId === entry.source.sessionId &&
+        version.source.userMessageIndex === entry.source.userMessageIndex &&
+        version.turnId === entry.source.turnId && version.relative === entry.metadata.relative &&
+        version.sha256 === entry[VERIFIED_EDIT_BASE]) replaced.add(version);
+  }
+  if (!replaced.size) return versions;
+  const retained = versions.filter(version => !replaced.has(version));
+  for (const turn of turns.values()) {
+    const drafts = turn.filter(version => replaced.has(version));
+    if (!drafts.length) continue;
+    const turnId = 'pi-edit-draft:' + digest(JSON.stringify(drafts.map(version => version.versionId).sort()));
+    const ownerKey = source => JSON.stringify([source?.sessionId, source?.adapterId, source?.userMessageIndex]);
+    const owners = new Set(drafts.map(file => ownerKey(file.source)));
+    for (const old of turn) {
+      if (!owners.has(ownerKey(old.source)) || old.source.turnId !== old.turnId) continue;
+      const original = replaced.has(old) && !old.resource;
+      retained.push({ ...old, turnId, source: { sessionId: old.source.sessionId, adapterId: old.source.adapterId, turnId },
+        resource: true, piEditDraft: original ? 'original' : 'resource',
+        versionId: original ? old.versionId : versionId(turnId, old.relative, old.sha256) });
+    }
+  }
+  return retained;
+}
+
+// A retired native workspace can supply immutable versions, while the active
+// workspace keeps its own inventory and current generation.
+function mergePiOrigin(prior, recovered, history) {
+  if (!recovered.versions?.length) return prior;
+  const committed = new Map(recovered.files.map(file => [file.relative, file]));
+  const recoveredIds = new Set(recovered.versions.map(file => file.versionId));
+  const versions = preservePiDrafts(prior, history, committed, recoveredIds);
+  const key = file => JSON.stringify([file.turnId, file.relative]);
+  const recorded = new Set(versions.map(key));
+  const added = recovered.versions.filter(file => !recorded.has(key(file)));
+  return !added.length && versions === prior.versions ? prior : { ...prior, versions: [...versions, ...added] };
+}
+
 // The archive receipt, not a filename supplied by the model, identifies the bytes.
 // Keep each completed turn's first committed version when a later capture retries.
 function record(archive, prior, history, dependencyRows) {
-  const versions = [...(prior?.versions || [])];
+  const committed = new Map(archive.files.map(file => [file.relative, file]));
+  const versions = [...preservePiDrafts(prior, history, committed)];
   const turnPath = (turnId, relative) => JSON.stringify([turnId, relative]);
   const indices = new Map(versions.map((row, index) => [turnPath(row.turnId, row.relative), index]));
   const aliasOwners = new Map(), aliasCounts = new Map();
@@ -95,7 +157,6 @@ function record(archive, prior, history, dependencyRows) {
     aliasCounts.set(row.turnId, (aliasCounts.get(row.turnId) || 0) + (row.aliases?.length || 0));
   }
   let metadataChanged = false;
-  const committed = new Map(archive.files.map(file => [file.relative, file]));
   const newDeliveries = [], identifiedDeliveries = new Map();
   const candidates = dependencyRows || [...(history.items || []), ...(history.resources || [])].filter(row => row.source?.turnId);
   const byName = new Map(candidates
@@ -278,8 +339,11 @@ function mergedReader(groups, guard, authorize) {
   };
 }
 
-async function readers(profile, id, archive, guard, authorize = guard) {
-  const entries = archive?.versions || [];
+async function readers(profile, id, archive, guard, authorize = guard, requestedId) {
+  const versions = archive?.versions || [];
+  const draft = requestedId && versions.find(file => file.piEditDraft === 'original' && 'version:' + file.versionId === requestedId);
+  const entries = draft ? versions.filter(file => file.turnId === draft.turnId && file.piEditDraft)
+    : versions.filter(file => !file.piEditDraft);
   if (!entries.length) return [];
   await authorize();
   if (!fs.lstatSync(profile).isDirectory()) throw Error('成果目录无效');
@@ -295,7 +359,7 @@ async function readers(profile, id, archive, guard, authorize = guard) {
     byTurn.set(version.turnId, turn);
     const group = turn.groups.get(root) || { version: 1, root, items: [], resources: [], ids: new Map(), proofs: [] };
     turn.groups.set(root, group);
-    group[version.resource ? 'resources' : 'items'].push({ metadata: version.metadata, source: version.source, stamp: checked.stamp });
+    group[version.resource && version.piEditDraft !== 'original' ? 'resources' : 'items'].push({ metadata: version.metadata, source: version.source, stamp: checked.stamp });
     group.ids.set(path.resolve(root, version.relative), { versionId: version.versionId, versionHash: version.sha256 });
     if (!version.metadata.previewOf) group.proofs.push({ relative: version.relative, aliases: version.aliases,
       root, sha256: version.sha256, stamp: checked.stamp });
@@ -484,4 +548,4 @@ async function exportCopy(options) {
   return copies.find(copy => copy.versionId === version.versionId);
 }
 
-module.exports = { dependencies, record, unassignedTurn, pinLegacyDeliveries, list, readers, exportCopy, exportTurn };
+module.exports = { dependencies, record, mergePiOrigin, unassignedTurn, pinLegacyDeliveries, list, readers, exportCopy, exportTurn };

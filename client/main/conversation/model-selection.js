@@ -70,10 +70,10 @@ function create({ name = '', model, resolve, apply, persist = () => {}, changed 
       } catch (_) { return { ok: false, reason: '模型设置未保存，请重试；当前模型未改变' }; }
       finally { selecting = false; }
     },
-    async applyForTurn(name = selected) {
-      if (!needsApply(name)) return;
+    async applyForTurn(name = selected, refresh = false) {
+      if (!refresh && !needsApply(name)) return;
       const applyingGeneration = generation();
-      const resolved = await resolve(name);
+      const resolved = await resolve(name, refresh);
       if (!resolved || !resolved.ok || !resolved.model) throw Object.assign(
         new Error(require('../../core/token-quota').detail(resolved)
           ? '当前 AI 使用额度暂不可用，请查看额度详情' : '本轮所选模型不可用，队列已暂停，请调整模型后重试'),

@@ -33,11 +33,12 @@ async function seed(app, root) {
     fs.mkdirSync(cwd, { recursive: true });
     const archive = path.join(app.getPath('userData'), 'pi-agent', 'sessions', id + '.jsonl');
     fs.mkdirSync(path.dirname(archive), { recursive: true });
+    const builder = { 'history-app': 'local:app-developer', 'history-method': 'local:plugin-builder',
+      'history-unrecorded': 'local:plugin-builder' }[id];
     fs.writeFileSync(archive, [
       { type: 'session', id, cwd },
-      { type: 'message', message: { role: 'user', content: 'Synthetic task', ...(id === 'history-unrecorded'
-        ? { plugins: [{ pluginId: 'local:plugin-builder', name: 'Builder' }] } : {}) } },
-      { type: 'message', message: { role: 'assistant', content: id === 'history-unrecorded'
+      { type: 'message', message: { role: 'user', content: 'Synthetic task', ...(builder ? { plugins: [{ pluginId: builder, name: 'Builder' }] } : {}) } },
+      { type: 'message', message: { role: 'assistant', content: builder
         ? 'Created delivery/soduwork-plugin-draft.json' : 'Synthetic answer' } },
     ].map(entry => JSON.stringify(entry)).join('\n'));
     return { id, adapterId: 'pi', path: archive, cwd, count: 2, workOwner: scope(identity()),

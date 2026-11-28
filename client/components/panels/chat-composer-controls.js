@@ -116,10 +116,11 @@
         toggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
         toggle.classList.toggle('is-on', enabled);
       }
-      if (label) label.textContent = !supported
-        ? '当前模型不提供可控思考'
-        : (!canDisable ? '已开启 · 模型固定思考'
-          : (enabled ? '已开启 · 中等强度' : '已关闭 · 更快响应'));
+      if (label) {
+        const fallback = !supported ? '当前模型不提供可控思考' : enabled ? '已开启' : '已关闭';
+        label.textContent = (supported && global.ComposeModelPicker?.thinkingStatus?.(enabled, thinking.displayLevel ?? thinking.level))
+          || global.SoduWorkI18n?.translateText?.(fallback) || fallback;
+      }
       if (hint) hint.textContent = !supported
         ? '切换到支持推理的模型后可使用'
         : (!canDisable ? '当前模型始终开启思考，不支持关闭'

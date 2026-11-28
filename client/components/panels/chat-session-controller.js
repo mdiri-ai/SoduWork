@@ -264,6 +264,11 @@ async function _ensureOnce(chatId, epoch, ownerScope = ctx._draftOwnerScope?.() 
       ctx._boundFromServer = expectedTaskId ? serverTaskIds.has(expectedTaskId) : serverTaskIds.size > 0;
       ctx._model = got.model;
       ctx._snap = openedSnapshot;
+      if (got.localReplica && openedSnapshot.localReplica && !ctx._outAt && Array.isArray(got.historyMedia) && got.historyMedia.length) {
+        // Only this newly authorized handle supplies gallery receipts. The
+        // normal output refresh still owns all deliverables and package state.
+        ctx._outs = got.historyMedia;
+      }
       global.SoduWorkQuotaNotice?.modelChanged?.(openedSnapshot.modelSelection?.model || got.model,
         got.adapterId || openedSnapshot.adapterId || ctx._sessionOptions.adapterId || 'pi', ctx._mount?.());
       ctx._rememberConversationSnapshot(ctx._sessionId || chatId, ctx._snap);

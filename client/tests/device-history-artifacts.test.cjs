@@ -182,6 +182,213 @@ test('old Pi scratch allocations recover shell-generated files only with the ori
   assert.equal(await recover(row), null);
 });
 
+test('Pi compares Windows source roots without crossing another directory, drive or traversal', () => {
+  const { sameWorkspace } = require('../main/conversation/pi-history-artifacts.cjs');
+  const cwd = 'C:\\Users\\测试\\SoduWork\\temp\\chat-abcdef-1234';
+  assert.equal(sameWorkspace(cwd, 'c:/Users/测试/SoduWork/temp/chat-abcdef-1234/', path.win32), true);
+  for (const other of [cwd + '-other', cwd.replace('C:', 'D:'), cwd.replace('测试', '别的用户'),
+    cwd.replace('Users', 'users'), cwd.replace('Users', 'Other\\..\\Users'), cwd.slice(2)])
+    assert.equal(sameWorkspace(cwd, other, path.win32), false);
+});
+
+test('Windows resolves actual long and short native root spellings while rejecting a junction or a different directory',
+  { skip: process.platform !== 'win32' }, t => {
+    const f = fixture(t), { sameWorkspace } = require('../main/conversation/pi-history-artifacts.cjs');
+    const alias = path.join(f.workRoot, 'alias');
+    fs.symlinkSync(f.cwd, alias, 'junction');
+    assert.equal(sameWorkspace(alias, f.cwd), false);
+    const alternate = path.join(path.dirname(f.cwd), path.basename(f.cwd).toUpperCase());
+    if (fs.existsSync(alternate))
+      assert.equal(sameWorkspace(alternate, f.cwd), fs.realpathSync.native(alternate) === fs.realpathSync.native(f.cwd));
+    const short = require('node:child_process').execFileSync('cmd.exe',
+      ['/d', '/c', 'for %I in (.) do @echo %~sI'], { cwd: f.cwd, encoding: 'utf8', windowsHide: true }).trim();
+    assert.equal(sameWorkspace(short, f.cwd), true);
+    assert.equal(sameWorkspace(path.dirname(short), f.cwd), false);
+  });
+
+test('a configured work-root alias retains its allocated scratch; links inside that allocation do not', async t => {
+  const f = fixture(t), alias = path.join(f.workRoot, 'configured-alias');
+  fs.symlinkSync(f.workRoot, alias, 'junction');
+  const { started, ended } = completedWindow(t, [f.write('report.pdf', '%PDF-test')]);
+  async function recover(name) {
+    const cwd = path.join(alias, 'temp', name), row = { ...f.row, cwd };
+    return project.capture({ row, workRoot: alias, workspace: { id: row.id, cwd, taskId: name, started, ended } });
+  }
+  assert.deepEqual((await recover(f.taskId)).items.map(i => i.metadata.relative), ['report.pdf']);
+  const other = 'chat-another-1234';
+  fs.symlinkSync(f.cwd, path.join(f.workRoot, 'temp', other), 'junction');
+  assert.equal(await recover(other), null);
+});
+
+test('completed Pi edit chains attest to the final UTF-8 bytes and originating turn only for deterministic edits', async t => {
+  const f = fixture(t), id = 'project-pi';
+  const entries = [{ type: 'session', id, cwd: f.cwd }];
+  const user = text => ({ type: 'message', message: { role: 'user', content: text } });
+  const first = user('write'), second = user('correct the black icon');
+  const turns = new Map([[first, { turnId: 'first', userMessageIndex: 0 }], [second, { turnId: 'correction', userMessageIndex: 3 }]]);
+  function call(name, args, result) {
+    const key = 'call-' + entries.length;
+    entries.push({ type: 'message', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: key, name, arguments: args }] } },
+    { type: 'message', message: { role: 'toolResult', toolName: name, toolCallId: key, isError: false, ...result } });
+  }
+  entries.push(first);
+  const original = '\uFEFF<h1>Huawei</h1>\r\n<svg/>\r\n';
+  for (const file of ['huawei.htm', 'ambiguous.htm', 'tampered.htm', 'failed.htm', 'overlap.htm'])
+    call('write', { path: path.join(f.cwd, file), content: original });
+  entries.push(second);
+  const edits = [{ oldText: '<svg/>\n', newText: '<svg fill="white"/>\n' }, { oldText: 'Huawei', newText: '华为' }];
+  call('edit', { path: 'huawei.htm', edits });
+  call('edit', { path: 'ambiguous.htm', edits: [{ oldText: '<', newText: 'x' }] });
+  call('edit', { path: 'tampered.htm', edits });
+  call('edit', { path: 'failed.htm', edits }, { isError: true });
+  call('edit', { path: 'overlap.htm', edits: [{ oldText: 'Huawei', newText: 'ok' }, { oldText: 'wei', newText: 'bye' }] });
+  call('edit', { path: 'unproven.htm', edits });
+  entries.push({ type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [] } });
+  f.write('huawei.htm', '\uFEFF<h1>华为</h1>\r\n<svg fill="white"/>\r\n');
+  for (const file of ['ambiguous.htm', 'tampered.htm', 'failed.htm', 'overlap.htm', 'unproven.htm']) f.write(file, original);
+  const row = { ...f.row, id, adapterId: 'pi', ref: 'now-a-resumed-project' };
+  const result = require('../main/conversation/pi-history-artifacts.cjs').evidence(entries, row, 'native-digest', turns);
+  assert.equal(result.localWorkspace, undefined);
+  const recovered = await project.capture({ row, journal: result.localJournal, nativePiEvidence: true });
+  assert.deepEqual(new Map(recovered.items.map(file => [file.metadata.relative, file.source.turnId])),
+    new Map([['huawei.htm', 'correction'], ['failed.htm', 'first']]));
+});
+
+test('only the final same-turn edit can correct an earlier immutable Pi write receipt', () => {
+  const { evidence } = require('../main/conversation/pi-history-artifacts.cjs');
+  const cwd = path.resolve('edit-chain'), user = { type: 'message', message: { role: 'user', content: 'create site' } };
+  const entries = [{ type: 'session', cwd }, user];
+  const turns = new Map([[user, { turnId: 'turn', userMessageIndex: 0 }]]);
+  function complete(name, args) {
+    const id = 'tool-' + entries.length;
+    entries.push({ type: 'message', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id, name, arguments: { path: 'logo.htm', ...args } }] } },
+    { type: 'message', message: { role: 'toolResult', toolName: name, toolCallId: id, isError: false } });
+  }
+  const receipt = () => evidence(entries, { id: 'pi', cwd }, 'rev', turns).localJournal.files[0];
+  complete('write', { content: 'initial' });
+  complete('edit', { edits: [{ oldText: 'initial', newText: 'intermediate' }] });
+  assert.equal(receipt().piEditBaseSha256, undefined);
+  assert.equal(receipt().piTurn, undefined);
+  complete('edit', { edits: [{ oldText: 'intermediate', newText: 'final' }] });
+  entries.push({ type: 'message', message: { role: 'assistant', stopReason: 'stop', content: [] } });
+  assert.equal(receipt().piEditBaseSha256, crypto.createHash('sha256').update('initial').digest('hex'));
+  assert.equal(receipt().after.hash, crypto.createHash('sha256').update('final').digest('hex'));
+  assert.equal(receipt().piTurn.turnId, 'turn');
+});
+
+test('Pi native edits share a bounded replay budget across different files and do not reuse an unverified base', () => {
+  const { evidence } = require('../main/conversation/pi-history-artifacts.cjs');
+  const cwd = path.resolve('pi-edit-budget'), row = { id: 'bounded', cwd };
+  const entries = [{ type: 'session', id: row.id, cwd }], content = 'prefix' + 'x'.repeat(256 * 1024);
+  function complete(name, args) {
+    const id = String(entries.length);
+    entries.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'toolCall', id, name, arguments: args }] } },
+      { type: 'message', message: { role: 'toolResult', toolName: name, toolCallId: id, isError: false } });
+  }
+  for (let n = 0; n < 20; n++) {
+    const path = 'bounded-' + n + '.htm';
+    complete('write', { path, content });
+    complete('edit', { path, edits: [{ oldText: 'prefix', newText: 'replacement' }] });
+  }
+  complete('write', { path: 'independent.htm', content: 'independent' });
+  const { localJournal } = evidence(entries, row, 'native', new Map());
+  const matched = localJournal.files.filter(change => change.path.startsWith('bounded-'));
+  assert.ok(matched.length > 0 && matched.length < 20);
+  assert.ok(matched.every(change => change.after.size === content.length + 5));
+  assert.ok(localJournal.files.some(change => change.path === 'independent.htm'));
+});
+
+for (const source of ['equivalent native root', 'completed scan cursor', 'first migration with offline originals']) test(
+  'legacy Pi reopens edited HTML and scratch XLSX/PNG exactly once: ' + source, async t => {
+    const trailingSeparator = source !== 'completed scan cursor', firstMigration = source.startsWith('first');
+    let history, store;
+    const f = fixture(t, () => history?.close()), id = crypto.randomUUID(), app = { getPath: () => f.workRoot };
+    const identity = require('./helpers/platform-session-fixture.cjs').identity();
+    const db = path.join(f.workRoot, 'history.sqlite'), file = path.join(f.workRoot, 'pi-agent/sessions', id + '.jsonl');
+    const initial = '<html><svg/></html>', html = '<html><svg fill="white"/></html>';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aGZsAAAAASUVORK5CYII=', 'base64');
+    const sheet = require('../e2e/fixtures/legacy-pi-deliverables.cjs').workbook();
+    const names = new Map([['huawei.htm', Buffer.from(html)], ['huawei-preview.png', png], ['销售.xlsx', sheet]]);
+    const started = Date.now() - 5000, ended = Date.now() + 1000;
+    for (const [name, bytes] of names) {
+      const target = f.write(name, bytes), at = (ended + 0.75) / 1000;
+      fs.utimesSync(target, at, at);
+    }
+    const tooLate = f.write('other.xlsx', 'unrelated');
+    fs.utimesSync(tooLate, (ended + 1.5) / 1000, (ended + 1.5) / 1000);
+    t.mock.timers.enable({ apis: ['Date'], now: ended + 2000 });
+    const target = path.join(f.cwd, 'huawei.htm');
+    const events = [{ role: 'user', content: 'make a Huawei website and report' }];
+    function call(name, args) {
+      const key = 'tool-' + events.length;
+      events.push({ role: 'assistant', stopReason: 'toolUse', content: [{ type: 'toolCall', id: key, name, arguments: args }] },
+        { role: 'toolResult', toolName: name, toolCallId: key, isError: false, content: [{ type: 'text', text: 'ok' }] });
+    }
+    call('write', { path: target, content: initial });
+    call('bash', { command: 'python generate_report_and_preview.py' });
+    call('edit', { path: target, edits: [{ oldText: '<svg/>', newText: '<svg fill="white"/>' }] });
+    events.push({ role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'huawei.htm、huawei-preview.png、销售.xlsx、other.xlsx' }] });
+    const iso = at => new Date(at).toISOString();
+    const entries = [{ type: 'session', version: 3, id, cwd: trailingSeparator ? f.cwd + path.sep : f.cwd, timestamp: iso(started) },
+      ...events.map((message, i) => ({ type: 'message', id: 'entry-' + i, message, timestamp: iso(i ? ended : started) }))];
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const original = entries.map(e => JSON.stringify(e)).join('\n');
+    fs.writeFileSync(file, original);
+    const row = { id, cwd: f.cwd, ref: f.taskId, adapterId: 'pi', path: file, count: events.length,
+      workOwner: require('../main/platform-connections/runtime.cjs').scope(identity), creator: { account: 'one', hub: identity.hub } };
+    const session = { historyEntry: async () => ({ ok: true, entry: row }),
+      archivedConversation: async () => null, findBySessionId: () => null };
+    function start() {
+      store = require('../main/conversation/replica-store.cjs').create(db);
+      history = require('../main/conversation/shared-history.cjs').create({ app, session, store, identityOf: () => identity, workRoot: () => f.workRoot });
+    }
+    start();
+    const [registered] = await history.register([row]);
+    const { snapshot, coverage, localJournal } = await native.read({ app, session, row, guard() {} });
+    coverage.sources[0].artifactEvidenceVersion = 2;
+    const guard = { expectedRevision: registered.replicaRevision, expectedCatalogRevision: registered.revision, expectedTransferId: '' };
+    const prior = trailingSeparator ? {} : { localArtifactHistory: { version: 1, root: f.cwd, items: [], resources: [],
+      recordedUntil: ended, packageRecordedUntil: ended, turnId: localJournal.turnId, packageTurnId: localJournal.turnId } };
+    if (!firstMigration) await store.saveDeviceHistory(id, { snapshot, coverage, ...prior }, guard);
+    assert.ok((await store.saveConversationTranscript(id, snapshot.messages, guard)).ok);
+    const dialogue = store.conversationTranscriptDigest(id);
+    fs.renameSync(f.cwd, f.cwd + '-offline');
+    if (firstMigration) await history.backfill(id);
+    else await (await history.open(id, { historyPreview: true })).close();
+    assert.equal((await store.deviceHistory(id)).coverage.sources[0].artifactEvidenceVersion, firstMigration ? 0 : 2);
+    fs.renameSync(f.cwd + '-offline', f.cwd);
+    const view = await history.open(id, { historyPreview: true });
+    await view.close();
+    const saved = await store.deviceHistory(id);
+    assert.deepEqual(saved.snapshot, snapshot);
+    assert.equal(store.conversationTranscriptDigest(id), dialogue);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    for (const [name, bytes] of names) assert.deepEqual(fs.readFileSync(path.join(f.cwd, name)), bytes);
+    assert.equal(saved.coverage.sources[0].artifactEvidenceVersion, require('../main/conversation/pi-history-artifacts.cjs').VERSION);
+    const archive = saved.localArtifactHistory?.archive;
+    assert.deepEqual(archive?.versions.filter(v => !v.resource).map(v => v.relative).sort(), [...names.keys()].sort());
+    assert.equal(archive.versions.find(v => v.relative === 'huawei.htm').turnId, 'pi-history:' + id + ':entry-0');
+    assert.match(archive.versions.find(v => v.relative === '销售.xlsx').turnId, /^pi-archive:[a-f0-9]{64}$/);
+    await history.close(); start();
+    assert.ok((await store.conversationTranscript(id)).length);
+    const capture = t.mock.method(project, 'capture');
+    fs.renameSync(f.cwd, f.cwd + '-removed');
+    const again = await history.open(id, { historyPreview: true });
+    await again.close();
+    assert.equal(capture.mock.callCount(), 0, 'ordinary reopen does not repeat file recovery');
+    assert.equal((await store.deviceHistory(id)).digest, saved.digest);
+    const released = process.env.SODUWORK_STOCK_CLIENT || path.join(__dirname, '..');
+    const cold = require(path.join(released, 'main/conversation/artifact-versions.cjs'));
+    const groups = await cold.readers(f.workRoot, id, archive, () => {});
+    for (const group of groups) for (const item of group.reader.snapshot().items) {
+      assert.ok(group.reader.verify(item.path));
+      assert.deepEqual(fs.readFileSync(item.path), names.get(item.relative));
+    }
+    assert.equal(groups.length, 3);
+  });
+
 test('first open migrates a legacy Pi write from the native archive and previews its verified bytes', async t => {
   let history;
   const f = fixture(t, () => history?.close()), app = { getPath: () => f.workRoot };
@@ -285,7 +492,7 @@ test('retired Pi writes retain their original turn and bytes beside a newer same
   const archive = require('../main/conversation/device-artifact-archive.cjs');
   const collected = await project.capture({ row, journal, verifiedTurn: true });
   const prior = await archive.preserve(f.workRoot, id, collected, null, () => {});
-  await store.saveDeviceHistory(id, { ...body, localArtifactHistory: prior }, { expectedRevision: registered.replicaRevision });
+  await store.saveDeviceHistory(id, { ...body, localArtifactHistory: prior, localPiOriginReviewed: id }, { expectedRevision: registered.replicaRevision });
   fs.renameSync(old.path, old.path + '.gone');
   const missing = await history.prepareContinuation(id, { refresh: true });
   assert.equal(missing.artifactHistory.archive.generation, prior.archive.generation);
@@ -295,6 +502,10 @@ test('retired Pi writes retain their original turn and bytes beside a newer same
     if (entry?.historyProtection) throw Object.assign(Error('restricted original'), { historyAccessFailure: true });
   } }), /restricted original/);
   restriction = null;
+  fs.renameSync(path.join(f.cwd, 'index.html'), path.join(f.cwd, 'index.offline'));
+  await history.prepareContinuation(id, { refresh: true });
+  assert.ok(!(await store.deviceHistory(id)).localPiOriginEvidenceVersion);
+  fs.renameSync(path.join(f.cwd, 'index.offline'), path.join(f.cwd, 'index.html'));
   const diverged = structuredClone(record);
   diverged.prefix.tools.find(tool => tool.name === 'write').args.content = 'a different receipt';
   assert.equal(await native.originalPiJournal({ app, session, row, record: diverged, guard() {} }), null);

@@ -81,8 +81,14 @@ if (typeof electron === 'string') {
     const relative = JSON.parse(fs.readFileSync(path.join(root, 'package-location.json'), 'utf8'));
     const packagePath = path.join(cwd, relative);
     const originalBytes = fs.readFileSync(packagePath);
-    const handle = { ref: 'live-created-skill', cwd, sessionId: skillChat, inFlight: () => false,
-      outputSnapshot: () => require('../main/pi-session/outputs').scan(cwd, 0, 1) };
+    function liveHandle(ref, id) {
+      const folder = path.join(root, 'workspaces', id);
+      return { ref, cwd: folder, sessionId: id, inFlight: () => false,
+        outputSnapshot: () => require('../main/pi-session/outputs').scan(folder, 0, 1) };
+    }
+    const handle = liveHandle('live-created-skill', skillChat);
+    const live = new Map([handle, liveHandle('live-app', 'history-app'), liveHandle('live-plugin', 'history-method')]
+      .map(item => [item.ref, item]));
     assert.match(packagePath, /\.skill$/);
     const artifact = require('../main/conversation/artifact-runtime').snapshot(handle).items.find(item => item.path === packagePath);
     assert.equal(artifact.pluginDraft, true, 'The generated skill must expose a conversation install action');
@@ -93,10 +99,12 @@ if (typeof electron === 'string') {
     require('../main/pi-session/plugin-draft').installIpc(ipcMain, registry, app);
     async function activate(id) {
       if (current?.historyPreview) await current.close();
-      current = id === handle.ref ? handle : await history.open(id, { historyPreview: true, allowContinuation: true });
+      current = live.get(id) || await history.open(id, { historyPreview: true, allowContinuation: true });
       assert.ok(current);
       const snapshot = current.historyPreview ? current.uiSnapshot() : {};
       if (current.historyPreview) assert.equal(snapshot.messages.length, 2);
+      if (id === 'history-app') assert.equal(snapshot.historicalPackageKind, 'app');
+      if (id === 'history-method' || id === 'history-unrecorded') assert.equal(snapshot.historicalPackageKind, 'plugin');
       return js(`showDelivery(${JSON.stringify(current.ref)}, ${JSON.stringify(snapshot)})`);
     }
     const listener = net.createServer(); await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
@@ -177,9 +185,15 @@ if (typeof electron === 'string') {
       await SoduWorkAPI.registerClient();
       const delivery = document.getElementById('delivery'), message = delivery.innerHTML;
       window.showDelivery = async (ref, snapshot) => {
+        delivery.innerHTML = ChatOutputLinks.decorate(message, [], ref, { ...snapshot, historyPackagePickerReady: false });
+        if (delivery.querySelector('[data-choose-history-package]')) throw Error('Package picker shown before its index was loaded');
         const files = await ChatOutputLinks.load(soduWorkAPI.conversationSession, ref, [], []);
         window.indexedFiles = files;
-        delivery.innerHTML = ChatOutputLinks.decorate(message, files, ref, snapshot);
+        delivery.innerHTML = ChatOutputLinks.decorate(message, files, ref, { ...snapshot, historyPackagePickerReady: true });
+        if (snapshot.historicalPackageKind && files.some(file => file.historicalPackageKind === snapshot.historicalPackageKind &&
+            file.pluginValidation?.state === 'ready') && delivery.querySelector('[data-choose-history-package]')) {
+          throw Error('A verified package must keep its standard install action');
+        }
         return delivery.querySelectorAll('[data-install-plugin-draft]').length;
       };
       document.getElementById('delivery').onclick = event => {
@@ -332,8 +346,26 @@ if (typeof electron === 'string') {
     assert.deepEqual(Buffer.from(historical.skillPackage.base64, 'base64'), originalBytes);
     assert.notDeepEqual(originalBytes, fs.readFileSync(packagePath));
     report.cases.push('The original history card reads the exact archived package after the live workspace changes');
+    for (const ref of ['live-app', 'live-plugin']) {
+      assert.equal(await activate(ref), 1, 'A freshly generated package uses the standard installation card');
+      assert.equal(await js("document.querySelector('[data-choose-history-package]') === null"), true);
+    }
     await require('./fixtures/created-plugin-history.cjs').verify({ app, root, activate, click, js, until, report });
     assert.equal(await activate('history-unrecorded'), 0);
+    const layout = await js(`(() => {
+      const card = document.querySelector('[data-choose-history-package]').closest('.nplugin-draft');
+      return [720, 240].map(width => {
+        card.style.width = width + 'px';
+        const copy = card.querySelector('.nplugin-draft-copy').getBoundingClientRect();
+        const button = card.querySelector('button').getBoundingClientRect();
+        const bounds = card.getBoundingClientRect();
+        card.style.removeProperty('width');
+        const separated = copy.bottom <= button.top || copy.right <= button.left;
+        return copy.width > width / 2 && button.right <= bounds.right && separated;
+      });
+    })()`);
+    assert.deepEqual(layout, [true, true], 'the recovery description and button fit both wide and narrow chat panes');
+    report.cases.push('Opening complete app and plugin history skips the recovery picker; confirmed missing packages fit wide and narrow panes');
     const choose = electron.dialog.showOpenDialog;
     try {
       const folder = path.join(root, 'workspaces', 'history-unrecorded');

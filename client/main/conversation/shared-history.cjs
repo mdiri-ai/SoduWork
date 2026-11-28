@@ -372,7 +372,7 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
       access.assertDeviceReadable(app, row.id, currentActor(captured), row);
       if (!readable(row)) throw Error('会话归属已变化，请重新打开成果');
     };
-    const authorize = async () => {
+    async function verifyArchive() {
       const latest = await resolve(row.id, captured);
       if (!latest || latest.deleted || latest.cwd !== row.cwd || !readable(latest) ||
           await store.deviceHistoryVersion(row.id) !== digest)
@@ -384,30 +384,43 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         } });
       guard();
       if (!readable(latest)) throw Error('会话归属已变化，请重新打开成果');
+    }
+    // A gallery starts several reads together. Share only the in-flight
+    // verification and check each caller's live handle and principal again.
+    let checking;
+    const authorize = async () => {
+      guard();
+      checking ||= verifyArchive().finally(() => { checking = null; });
+      await checking;
+      guard();
     };
     return { guard, authorize, deliveryLink: require('./delivery-workspace.cjs').historyLinks(row, content.localArtifactHistory) };
   }
   function bindTurnArtifacts(handle, getId, captured, current) {
     const runtime = require('./artifact-runtime');
-    let lastDigest, readers;
-    runtime.bindTurnArchives(handle, async () => {
+    let lastDigest, readers, draftIds = new Set();
+    runtime.bindTurnArchives(handle, async requestedId => {
       current();
       const id = getId();
       if (!id) return [];
       scoped.guard(captured);
       const version = await store.deviceHistoryVersion(id);
       if (!version) return [];
-      if (version === lastDigest) return readers;
+      if (version === lastDigest && !draftIds.has(requestedId)) return readers;
       const row = await resolve(id, captured), content = await store.deviceHistory(id);
       if (content?.digest !== version || !row) return [];
       const guards = artifactGuards(row, content, captured, current);
       if (!guards) return [];
+      const archive = content.localArtifactHistory.archive;
+      const priorIds = new Set((archive?.versions || []).filter(file => file.piEditDraft === 'original').map(file => 'version:' + file.versionId));
       const result = await require('./artifact-versions.cjs').readers(app.getPath('userData'), row.id,
-        content.localArtifactHistory.archive, guards.guard, guards.authorize);
+        archive, guards.guard, guards.authorize, requestedId);
       for (const { reader } of result) reader.deliveryLink = guards.deliveryLink;
       current();
       scoped.guard(captured);
+      if (priorIds.has(requestedId)) return result;
       lastDigest = version;
+      draftIds = priorIds;
       readers = result;
       return readers;
     });
@@ -542,6 +555,10 @@ function create({ app, session, workRoot, identityOf = () => require('./requirem
         view.historyArtifacts = require('./device-history-artifacts.cjs').archivedView(
           app.getPath('userData'), row.id, row.cwd, content.localArtifactHistory, guards.guard, guards.authorize);
         view.historyArtifacts.deliveryLink = guards.deliveryLink;
+        const history = content.localArtifactHistory;
+        const scope = JSON.stringify([captured.readScope, captured.historyEpoch, row.id, content.digest]);
+        view.initialHistoryMedia = () => require('./history-gallery.cjs').initial({
+          profile: app.getPath('userData'), row, history, view, guards, scope });
       }
     }
     const load = view.loadHistory;

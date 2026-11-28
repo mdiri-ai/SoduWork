@@ -45,6 +45,8 @@ test('thinking profiles distinguish controllable, always-on, and unavailable mod
     setThinkingLevel: (level) => { applied = level; },
   };
   assert.equal(view(alwaysSession).canDisable, false);
+  assert.equal(view({ ...alwaysSession, model: { compat: { supportsReasoningEffort: false } } }).displayLevel, '');
+  assert.equal(view({ ...alwaysSession, model: { thinkingLevelMap: { medium: 'high' } } }).displayLevel, 'high');
   assert.equal(set(alwaysSession, false).ok, false);
   assert.equal(applied, '');
   const switchableSession = {
@@ -79,6 +81,20 @@ test('GLM 5.3 wire identities expose only supported mandatory thinking levels', 
   assert.match(conflict({ id: 'glm-5.3', thinkingLevelMap: { low: 'minimal' } }), /仅支持/);
 });
 
+test('only a declared switchable Z.ai Flash route enables off', () => {
+  const route = { id: 'public-alias', wireModelId: 'glm_5.3_flash', thinkingMode: 'controllable', thinkingFormat: 'zai' };
+  for (const override of [{}, { thinkingLevelMap: { off: 'none' } }]) {
+    const value = { ...route, ...override };
+    assert.equal(conflict(value), '');
+    assert.notEqual(profile(value).thinkingLevelMap.off, null);
+  }
+  for (const override of [{ thinkingMode: 'auto' }, { thinkingMode: 'always' }, { thinkingAlwaysOn: true },
+    { thinkingLevelMap: { off: null } }, { thinkingFormat: 'openai' }, { wireModelId: 'glm-5.3' }]) {
+    assert.equal(profile({ ...route, ...override }).thinkingLevelMap.off, null);
+  }
+  assert.equal(profile({ id: 'gateway-alias', label: 'GLM-5.3-flash' }).reasoning, false);
+});
+
 test('an explicit thinking protocol enables an opaque alias without overriding an explicit disable', () => {
   assert.equal(profile({ id: 'private-alias', thinkingFormat: 'zai' }).reasoning, true);
   assert.equal(profile({ id: 'private-alias', thinkingFormat: 'zai', thinkingMode: 'none' }).reasoning, false);
@@ -92,10 +108,13 @@ test('real Pi transport honors mandatory GLM 5.3 reasoning and explicit alias pr
     { id: 'glm_5.3_flash', reasoning: 'off', expected: 'low' },
     { id: 'glm-5.3', reasoning: 'medium', expected: 'high' },
     { id: 'glm-5.3-flash', reasoning: 'max', expected: 'max' },
+    { id: 'glm-5.3-flash', thinkingMode: 'controllable', thinkingFormat: 'zai', reasoning: 'off', expected: 'disabled' },
+    { id: 'glm-5.3-flash', thinkingMode: 'controllable', thinkingFormat: 'zai', reasoning: 'low', expected: 'low', switchable: true },
+    { id: 'glm-5.3-flash', thinkingMode: 'controllable', thinkingFormat: 'zai', thinkingLevelMap: { off: null }, reasoning: 'off', expected: 'low' },
     { id: 'private-alias', thinkingFormat: 'zai', reasoning: 'off', expected: 'disabled' },
     { id: 'private-alias', label: 'glm5.3', reasoning: 'off', expected: 'unknown' },
   ]) {
-    const { reasoning, expected, ...config } = spec;
+    const { reasoning, expected, switchable, ...config } = spec;
     const provider = piProvider({ ...config, baseUrl: 'https://fixture.invalid/v1', maxOutputTokens: 4096 });
     const model = { ...provider.models[0], api: provider.api, provider: 'soduwork', baseUrl: provider.baseUrl };
     let request;
@@ -114,7 +133,7 @@ test('real Pi transport honors mandatory GLM 5.3 reasoning and explicit alias pr
     } else if (expected === 'disabled') {
       assert.equal(request.thinking.type, 'disabled'); assert.equal(request.reasoning_effort, undefined);
     } else {
-      assert.deepEqual(getSupportedThinkingLevels(model), ['low', 'high', 'max']);
+      assert.deepEqual(getSupportedThinkingLevels(model), switchable ? ['off', 'low', 'high', 'max'] : ['low', 'high', 'max']);
       assert.deepEqual(request.thinking, { type: 'enabled', clear_thinking: false });
       assert.equal(request.reasoning_effort, expected);
     }

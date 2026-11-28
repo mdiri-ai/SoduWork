@@ -402,6 +402,63 @@ if (typeof electron === 'string') {
     for (const result of [recovered.known, recovered.inferred, recovered.noOriginal, recovered.ambiguous])
       assert.equal(result.replies.at(-1).link, 'current-index');
     report.cases.push({ restoredWorkspace: 'card and Markdown resolve to the original in an empty or same-name workspace; ambiguous files stay at session scope' });
+    const refreshed = await run(`(() => {
+      const site = { name: 'index.html', relative: 'index.html', kind: 'website', title: 'LUMEN STUDIO',
+        primary: true, size: 42, at: 10, originalArtifactId: 'site' };
+      const version = (digit, turnId, userMessageIndex, extra = {}) => {
+        const id = digit.repeat(64);
+        return { ...site, ...extra, versionId: id, artifactId: 'version:' + id, turnId, userMessageIndex };
+      };
+      const provisional = version('1', 'pi-archive:legacy');
+      const first = version('2', 'pi-history:first', 0);
+      const subdir = version('3', 'pi-history:first', 0, { relative: 'examples/index.html', originalArtifactId: 'examples-site' });
+      const later = version('4', 'second', 2);
+      const messages = [{ role: 'user' }, { role: 'assistant', done: true },
+        { role: 'user', submissionId: 'second' }, { role: 'assistant', done: true }];
+      function render(messages, files, localReplica) {
+        const html = messages.map((m, i) => m.role === 'user'
+          ? '<div class="nmsg user" data-chat-node="message:' + i + '"></div>'
+          : '<div class="nmsg ai" data-output-task="" data-delivery-final="true" data-chat-node="message:' + i +
+            '" data-delivery-current="' + (i === messages.length - 1) + '"><div class="ntext">' +
+            (i === 1 ? '已完成 <code>index.html</code>，可以继续编辑 <code>index.html</code>。' : '完成') + '</div></div>').join('');
+        const decorated = ChatOutputLinks.decorate(html, files, 'refresh-card', { status: 'idle', messages, localReplica }, list);
+        ChatDomPatch.patchList(list, decorated);
+        return [...list.querySelectorAll('.ndelivery')].map(card => ({
+          owner: card.closest('.nmsg')?.dataset.chatNode || 'session',
+          ids: [...card.querySelectorAll('[data-delivery-export-version]')].map(b => b.dataset.deliveryExportVersion.slice(8, 9)).sort(),
+        }));
+      }
+      list.replaceChildren();
+      return [render(messages.slice(0, 2), [provisional], true),
+        render(messages, [provisional], false), render(messages, [provisional], false),
+        render(messages, [first, subdir, later], true)];
+    })()`);
+    const at = (owner, ...ids) => ({ owner, ids });
+    assert.deepEqual(refreshed, [[at('message:1', '1')], [at('session', '1')], [at('session', '1')],
+      [at('message:1', '2', '3'), at('message:3', '4')]]);
+    report.cases.push({ archivedDeliveryRefresh: 'one immutable ID is mounted once after its inferred owner changes; distinct paths and rounds remain actionable' });
+    const actual = await require('./fixtures/legacy-website-versions.cjs')(fs.realpathSync.native(scratch));
+    const siteCards = await run(`(samples => Object.fromEntries(Object.entries(samples).map(([name, { files, snapshot }]) => {
+      list.replaceChildren();
+      const html = snapshot.messages.map((m, i) => m.role === 'user'
+        ? '<div class="nmsg user" data-chat-node="message:' + i + '"></div>'
+        : '<div class="nmsg ai" data-output-task="" data-delivery-final="true" data-chat-node="message:' + i +
+          '" data-delivery-current="' + (i === snapshot.messages.length - 1) + '"><div class="ntext">' + m.blocks[0].text + '</div></div>').join('');
+      ChatDomPatch.patchList(list, ChatOutputLinks.decorate(html, files, 'native-original', snapshot, list));
+      return [name, { cards: [...list.querySelectorAll('.ndelivery')].map(card => ({
+        id: card.querySelector('header [data-open-app]')?.dataset.openApp, owner: card.closest('.nmsg')?.dataset.chatNode || 'session',
+        actions: !!card.querySelector('[data-delivery-reveal]') && !!card.querySelector('[data-delivery-retry]'),
+      })), links: [...list.querySelectorAll('.ntext [data-open-app]')].map(link => link.dataset.openApp) }];
+    })))(${JSON.stringify(actual)})`);
+    const originalId = actual.original.files.find(f => f.versionId).artifactId;
+    assert.deepEqual(siteCards.original.cards, [{ id: originalId, owner: 'message:1', actions: true }]);
+    assert.deepEqual(siteCards.original.links, [originalId, originalId]);
+    const currentId = actual.copied.files.find(f => !f.versionId).artifactId;
+    assert.deepEqual(siteCards.copied.cards.map(card => card.id).sort(), [originalId, currentId].sort());
+    const newId = actual.second.files.find(f => f.turnId === 'second').artifactId;
+    assert.notEqual(newId, originalId);
+    assert.deepEqual(siteCards.second.cards.map(card => card.id).sort(), [originalId, newId].sort());
+    report.cases.push({ nativeWebsite: 'real scanner and archived bytes resolve both links and the card to the original; copies and later versions retain independent IDs' });
     report.ok = true;
   }).catch(error => { report.error = error.stack || String(error); }).finally(() => {
     fs.mkdirSync(output, { recursive: true });

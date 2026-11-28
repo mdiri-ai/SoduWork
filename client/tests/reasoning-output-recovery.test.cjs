@@ -71,12 +71,12 @@ test('reasoning recovery respects the total continuation cap and unsettled contr
 
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const { resultState } = require('../main/pi-session/task-turn');
-async function nativeFixture(t) {
+async function nativeFixture(t, modelOptions = {}, thinkingLevel = 'medium') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-reasoning-recovery-'));
   const f = await require('../e2e/fixtures/resumed-pi.cjs').create(root, { signal: t.signal,
-    modelOptions: { maxOutputTokens: 4096, reasoning: true, thinkingFormat: 'openai', supportsReasoningEffort: true } });
+    modelOptions: { maxOutputTokens: 4096, reasoning: true, thinkingFormat: 'openai', supportsReasoningEffort: true, ...modelOptions } });
   t.after(async () => { await f.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  await f.open({ thinkingLevel: 'medium' });
+  await f.open({ thinkingLevel });
   return f;
 }
 function reasoningLength(response) {
@@ -99,13 +99,13 @@ for (const withTool of [false, true]) {
       assert.equal(body.messages.filter(row => row.role === 'user' && JSON.stringify(row.content).includes('Complete the isolated request.')).length, 1);
       assert.match(JSON.stringify(body.messages.at(-1)), /较小的未完成步骤/);
       if (withTool) assert.ok(body.messages.some(row => row.role === 'tool'));
-      return { text: 'Completed using the retained results.' };
+      return body.reasoning_effort === 'low' ? { text: 'Completed using the retained results.' } : { respond: reasoningLength };
     });
     const result = await f.handle.submit('Complete the isolated request.').completion;
     assert.equal(resultState(result), 'completed', JSON.stringify({ failure: result.failureKind, status: f.handle.snapshot().statusText }));
     assert.equal(f.requests.length, withTool ? 3 : 2);
     assert.ok(f.requests.every(row => (row.max_tokens ?? row.max_completion_tokens) === 4096));
-    assert.ok(f.requests.every(row => row.reasoning_effort === 'medium'));
+    assert.deepEqual(f.requests.map(row => row.reasoning_effort), withTool ? ['medium', 'medium', 'low'] : ['medium', 'low']);
     assert.equal(f.handle.sessionId, id);
     assert.match(JSON.stringify(f.handle.snapshot().messages), /Preserved reasoning checkpoint/);
     assert.deepEqual(f.handle.snapshot().thinking, thinking);
@@ -116,6 +116,95 @@ for (const withTool of [false, true]) {
     assert.equal(f.handle.snapshot().messages.filter(row => row.role === 'user').length, 2);
   });
 }
+
+test('one recovery uses a provider-supported level and subsequent tool requests keep the saved level', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t, { thinkingMode: 'always', thinkingFormat: 'zai',
+    thinkingLevelMap: { off: null, minimal: null, low: 'low', medium: null, high: 'high' } }, 'high');
+  f.reply((_body, count) => count === 1 ? { respond: reasoningLength }
+    : count === 2 ? { tool: 'web_search', args: { query: 'new-work' } } : { text: 'Done.' });
+  assert.equal(resultState(await f.handle.submit('Complete the request.').completion), 'completed');
+  assert.deepEqual(f.requests.map(row => row.reasoning_effort), ['high', 'low', 'high']);
+  assert.ok(f.requests.every(row => row.thinking.type === 'enabled'));
+  assert.equal(fs.readFileSync(f.executed, 'utf8'), 'new-work\n');
+  assert.equal(f.handle.snapshot().thinking.level, 'high');
+});
+
+test('GLM-5.3-Flash at low uses its declared Z.ai off switch only for the recovery request', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t, { id: 'glm-5.3-flash', thinkingMode: 'controllable', thinkingFormat: 'zai' }, 'low');
+  f.reply(body => body.thinking?.type === 'disabled' ? { text: 'Completed.' } : { respond: reasoningLength });
+  assert.equal(resultState(await f.handle.submit('Complete the report.').completion), 'completed');
+  assert.deepEqual(f.requests.map(row => [row.thinking.type, row.reasoning_effort]), [['enabled', 'low'], ['disabled', undefined]]);
+  assert.ok(f.requests.every(row => (row.max_tokens ?? row.max_completion_tokens) === 4096));
+  assert.equal(f.handle.snapshot().thinking.level, 'low');
+});
+
+test('template-based Qwen switches its actual wire flag instead of lowering an unused effort value', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t, { thinkingMode: 'controllable', thinkingFormat: 'qwen-chat-template' });
+  f.reply(body => body.chat_template_kwargs.enable_thinking ? { respond: reasoningLength } : { text: 'Completed.' });
+  assert.equal(resultState(await f.handle.submit('Complete the report.').completion), 'completed');
+  assert.deepEqual(f.requests.map(row => row.chat_template_kwargs.enable_thinking), [true, false]);
+  assert.equal(f.handle.snapshot().thinking.level, 'medium');
+});
+
+test('toggle-only always-on providers keep mandatory thinking for recovery', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t, { thinkingMode: 'always', thinkingFormat: 'qwen', supportsReasoningEffort: false });
+  f.reply((_body, count) => count === 1 ? { respond: reasoningLength } : { text: 'Short answer.' });
+  assert.equal(resultState(await f.handle.submit('Complete the request.').completion), 'completed');
+  assert.deepEqual(f.requests.map(row => row.enable_thinking), [true, true]);
+  assert.ok(f.requests.every(row => row.reasoning_effort === undefined));
+});
+
+test('after reasoning truncation a user continuation reads edited limits in the same Pi session', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t);
+  const config = require('../main/pi-session/model-config');
+  const refreshed = t.mock.method(config, 'fetchSelection', async (_identity, name, _ms, _fetch, force) => {
+    assert.equal(name, 'fixture-model');
+    assert.equal(force, true);
+    return { ok: true, model: { ...f.handle.model, maxOutputTokens: 8192, runtimeRevision: 'updated' } };
+  });
+  const sessionId = f.handle.sessionId;
+  f.reply((_body, count) => count <= 2 ? { respond: reasoningLength } : { text: 'Finished with edited limit.' });
+  assert.equal((await f.handle.submit('Complete the report.').completion).failureKind, 'output-incomplete');
+  assert.equal(refreshed.mock.callCount(), 0);
+  assert.equal(resultState(await f.handle.submit('Continue.').completion), 'completed');
+  assert.equal(resultState(await f.handle.submit('New task.').completion), 'completed');
+  assert.equal(f.handle.sessionId, sessionId);
+  assert.deepEqual(f.requests.map(row => row.max_tokens ?? row.max_completion_tokens), [4096, 4096, 8192, 8192]);
+  assert.equal(refreshed.mock.callCount(), 1);
+});
+
+test('a continuation uses the newly selected model and duplicate submissions share one request', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t);
+  f.reply((_body, count) => count <= 2 ? { respond: reasoningLength } : { text: 'New model answered.' });
+  assert.equal((await f.handle.submit('Complete my request.').completion).failureKind, 'output-incomplete');
+  const next = { ...f.handle.model, id: 'replacement-model', maxOutputTokens: 6144 };
+  const lookups = [];
+  t.mock.method(require('../main/pi-session/model-config'), 'fetchSelection', async (_identity, name, _ms, _fetch, force) => {
+    lookups.push([name, force]);
+    return { ok: true, model: next };
+  });
+  assert.equal((await f.handle.selectModel(next.id)).ok, true);
+  const first = f.handle.submit('Continue.', [], { submissionId: 'retry-the-report' });
+  const duplicate = f.handle.submit('Continue.', [], { submissionId: 'retry-the-report' });
+  assert.equal(first.queueId, duplicate.queueId);
+  assert.equal(resultState(await first.completion), 'completed');
+  assert.deepEqual(lookups, [[next.id, false], [next.id, true]]);
+  assert.equal(f.requests.length, 3);
+  assert.equal(f.requests[2].model, next.id);
+  assert.equal(f.requests[2].max_tokens ?? f.requests[2].max_completion_tokens, 6144);
+});
+
+test('a revoked model cannot receive the manual continuation', { timeout: 30000 }, async t => {
+  const f = await nativeFixture(t);
+  f.reply(() => ({ respond: reasoningLength }));
+  assert.equal((await f.handle.submit('Complete my request.').completion).failureKind, 'output-incomplete');
+  const refresh = t.mock.method(require('../main/pi-session/model-config'), 'fetchSelection', async () => ({ ok: false }));
+  const result = await f.handle.submit('Continue.').completion;
+  assert.equal(result.ok, false);
+  assert.equal(refresh.mock.callCount(), 1);
+  assert.equal(f.requests.length, 2);
+  assert.equal(fs.existsSync(f.executed), false);
+});
 
 test('repeated native reasoning truncation pauses queued work after one recovery', { timeout: 30000 }, async t => {
   const f = await nativeFixture(t);

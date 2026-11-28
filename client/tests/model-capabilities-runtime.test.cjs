@@ -22,6 +22,28 @@ test('saved output budget and native capability metadata reach both Pi configura
  assert.equal(outputLimit({maxOutputTokens:40000,contextWindow:8192}),8192);
 });
 
+test('Hub model identity and declared Flash control survive registration with the Pi SDK', async () => {
+ const {getSupportedThinkingLevels} = await import('../node_modules/@earendil-works/pi-ai/dist/models.js');
+ const identity = {hub:'http://fixture-flash', clientId:'fixture', secret:'fixture'};
+ for (const [configFields, expected] of [
+  [{model:'glm-5.3-flash', reasoning:true, thinkingMode:'controllable', thinkingFormat:'zai'}, ['off','low','high','max']],
+  [{model:'glm-5.3-flash', reasoning:true, thinkingMode:'controllable', thinkingFormat:'zai', thinkingLevelMap:{off:null}}, ['low','high','max']],
+  [{model:'glm-5.3-flash', reasoning:true, thinkingMode:'controllable'}, ['low','high','max']],
+  [{model:'glm-5.3-flash'}, ['low','high','max']],
+  [{model:'gateway-opaque', label:'GLM-5.3-flash'}, ['off']],
+ ]) {
+  const response = {ok:true, key:'fixture-key', ...configFields};
+  const got = await config.fetchModel(identity,configFields.model,1000,async()=>({ok:true,json:async()=>response}),true);
+  assert.equal(got.ok,true);
+  const registered = piProvider(got.model).models[0];
+  assert.equal(registered.id,configFields.model);
+  assert.deepEqual(getSupportedThinkingLevels(registered),expected);
+  const runner = require('../main/agent-runtime/runner-config.cjs').create(got.model,'qwen').llm;
+  assert.equal(runner.model,configFields.model);
+  if (registered.reasoning) assert.equal(runner.thinkingLevelMap.off === null,!expected.includes('off'));
+ }
+});
+
 test('real Pi wire budgets preserve explicit limits and default below a 32768-token provider cap', async () => {
  const { pathToFileURL } = require('node:url');
  const { streamSimple } = await import(pathToFileURL(path.resolve(__dirname,

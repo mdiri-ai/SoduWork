@@ -246,25 +246,35 @@
     const config = value.config && typeof value.config === 'object' ? value.config : {};
     const mode = String(value.thinkingMode || config.thinkingMode || '').trim().toLowerCase();
     const key = String(value.wireModelId || value.modelName || value.name || value.id || '').toLowerCase();
-    const fixedGlm = /(?:^|\/)glm[-_]?5[._]3(?:[-_]?flash)?$/i.test(key);
+    const glm = /(?:^|\/)glm[-_]?5[._]3(?:[-_]?flash)?$/i.test(key);
     const reasoning = typeof value.reasoning === 'boolean' ? value.reasoning
       : (typeof config.reasoning === 'boolean' ? config.reasoning : null);
-    if (mode === 'none' || fixedGlm && reasoning === false) return { supported: false, canDisable: false };
+    if (mode === 'none' || glm && reasoning === false) return { supported: false, canDisable: false };
     const format = value.thinkingFormat || config.thinkingFormat || value.reasoningFormat || value.format;
     const hinted = Boolean(format) || /(?:deepseek|glm|zhipu|qwen|qwq|think|thinking|reason|reasoner|\br1\b|\bo[134]\b|gpt-5)/.test(key);
     const supported = ['always', 'controllable'].includes(mode) || (reasoning === null ? hinted : reasoning);
-    const map = { ...(fixedGlm ? { minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' } : {}),
+    const map = { ...(glm ? { minimal: null, low: 'low', medium: null, high: 'high', xhigh: null, max: 'max' } : {}),
       ...(value.thinkingLevelMap || config.thinkingLevelMap || {}) };
-    if (fixedGlm || mode === 'always' || value.thinkingAlwaysOn || config.thinkingAlwaysOn) map.off = null;
+    const declaredFlashSwitch = glm && /flash$/.test(key) && mode === 'controllable' && format === 'zai';
+    if ((glm && !declaredFlashSwitch) || mode === 'always' || value.thinkingAlwaysOn || config.thinkingAlwaysOn) map.off = null;
     const levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].filter(level => map[level] !== null &&
       (!['xhigh', 'max'].includes(level) || map[level] !== undefined));
-    return { supported, canDisable: supported && levels.includes('off'), levels,
+    const defaultEffort = format ? format !== 'qwen' : !/qwen|qwq/.test(key);
+    const effort = value.supportsReasoningEffort ?? config.supportsReasoningEffort ?? defaultEffort;
+    return { supported, canDisable: supported && levels.includes('off'), levels, map,
+      showEffort: effort && !['qwen-chat-template', 'chat-template'].includes(format),
       onLevel: levels.includes('medium') ? 'medium' : levels.find(level => level !== 'off') || 'low',
       unknown: !supported && reasoning === null };
   }
 
-  function fixedThinkingLevel(info, selected) {
-    return info.levels?.includes(selected) ? selected : info.onLevel;
+  function managedThinkingLevel(info, selected) {
+    if (!info.supported || info.canDisable && !selected) return '';
+    return info.levels.includes(selected) ? selected : info.onLevel;
+  }
+
+  function thinkingStatus(enabled, level) {
+    const status = tx(enabled ? '已开启' : '已关闭');
+    return enabled && EFFORT_LABELS[level] ? status + ' · ' + tx(EFFORT_LABELS[level]) : status;
   }
 
   function managedHtml(selected) {
@@ -272,7 +282,8 @@
     const thinkingInfo = thinkingProfile(selectedModel);
     const canThink = thinkingInfo.supported;
     const canDisable = thinkingInfo.canDisable;
-    const thinkingOn = canThink && (!canDisable || (selected.thinkingLevel && selected.thinkingLevel !== 'off'));
+    const level = managedThinkingLevel(thinkingInfo, selected.thinkingLevel);
+    const thinkingOn = Boolean(level && level !== 'off');
     const rows = enterpriseModels.map((item) => ({
         name: item.name,
         provider: item.providerId || '',
@@ -287,10 +298,7 @@
     })));
     const isSelected = item => item.name === selected.modelName &&
       (!selected.choice?.provider || item.provider === selected.choice.provider);
-    const thinkingLabel = !canThink
-      ? '\u5f53\u524d\u6a21\u578b\u4e0d\u63d0\u4f9b\u53ef\u63a7\u601d\u8003'
-      : (!canDisable ? '\u5df2\u5f00\u542f \u00b7 \u6a21\u578b\u56fa\u5b9a\u601d\u8003'
-        : (thinkingOn ? '\u5df2\u5f00\u542f \u00b7 \u4e2d\u7b49\u5f3a\u5ea6' : '\u5df2\u5173\u95ed \u00b7 \u66f4\u5feb\u54cd\u5e94'));
+    const thinkingLabel = thinkingStatus(thinkingOn, thinkingInfo.showEffort && (thinkingInfo.map[level] ?? level));
     const thinkingHint = !canThink ? '\u8bf7\u5207\u6362\u5230\u63a8\u7406\u6a21\u578b\u540e\u4f7f\u7528'
       : (!canDisable ? '\u5f53\u524d\u6a21\u578b\u4e0d\u652f\u6301\u5173\u95ed\u601d\u8003' : '\u53ea\u5bf9\u672c\u6b21\u65b0\u5efa\u7684\u4f1a\u8bdd\u751f\u6548');
     const thinking = !canThink ? '<div class="cp-model-summary"><span>思考模式</span><span>' +
@@ -563,8 +571,7 @@
       const picked = enterpriseModels.find(item => item.name === selected.modelName) ||
         (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
-      if (!info.supported) selected.thinkingLevel = '';
-      else if (!info.canDisable) selected.thinkingLevel = fixedThinkingLevel(info, selected.thinkingLevel);
+      selected.thinkingLevel = managedThinkingLevel(info, selected.thinkingLevel);
     }
     if (row.id === 'codex') { reconcileEffort(selected); nativeView = 'effort'; searchQuery = ''; }
     render();
@@ -881,8 +888,7 @@
     if (row.modelMode === 'managed') {
       const picked = enterpriseModels.find(item => item.name === selected.modelName) || (selected.modelName ? null : enterpriseModels[0]);
       const info = thinkingProfile(picked);
-      return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: info.supported && !info.canDisable
-        ? fixedThinkingLevel(info, selected.thinkingLevel) : (selected.thinkingLevel || '') };
+      return { modelName: selected.modelName, reasoningEffort: '', thinkingLevel: managedThinkingLevel(info, selected.thinkingLevel) };
     }
     return { modelName: '', reasoningEffort: '' };
   }
@@ -932,6 +938,7 @@
     unavailableReason: () => runtime().id === 'codex' && !cloud() ? nativeReason : '',
     hasManualChoice: () => state(runtime().id).modelChosen,
     usesSwitchDefault: () => state(runtime().id).useSwitchDefault === true,
+    thinkingStatus,
     nativeEffort: { html: effortCard, paint: paintEffortCard, levels: effortChoices, defaultLevel: defaultEffort },
     label: () => currentLabel(runtime(), state(runtime().id)) };
   const scopeChanged = () => {

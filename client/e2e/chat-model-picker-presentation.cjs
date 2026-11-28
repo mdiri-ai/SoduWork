@@ -67,10 +67,11 @@ if (typeof electron === 'string') {
         {name:'qwen-plus',label:'通义千问 Plus',providerName:'阿里云百炼（通义）',keyFrom:'enterprise'},
         ...Array.from({length:10},(_,i)=>({name:'other-'+i,label:'推理模型 '+i,providerName:'其他服务商'}))];
       state.selection={name:models[0].name,model:models[0]};state.thinking={supported:true,canDisable:true,enabled:false};
-      window.thinkingCalls=[];soduWorkAPI.conversationSession.setThinking=async(ref,enabled)=>{thinkingCalls.push({ref,enabled});state.thinking.enabled=enabled;return{ok:true,thinking:state.thinking}};
+      window.thinkingCalls=[];soduWorkAPI.conversationSession.setThinking=async(ref,enabled)=>{thinkingCalls.push({ref,enabled});state.thinking.enabled=enabled;state.thinking.level=enabled?'low':'off';return{ok:true,thinking:state.thinking}};
       controls.render();void 0;
     `);
     await open();
+    assert.equal(await js('document.querySelector("[data-thinking-label]").textContent'), '已关闭');
     assert.equal(await js('document.querySelector(".nmodel-heading>span").textContent'), '用于本次会话');
     assert.equal(await js('document.querySelector(".nmodel-heading>b").textContent'), '选择模型');
     assert.equal(await js('document.querySelector("[data-model-name=qwen-max] .nmodel-row-subtitle").textContent'), '阿里云百炼（通义） · 自己的额度');
@@ -102,10 +103,12 @@ if (typeof electron === 'string') {
     await click('[data-thinking-toggle]');
     assert.deepEqual(await js('thinkingCalls'), [{ ref: 'isolated-chat', enabled: true }]);
     assert.equal(await js('document.querySelector("[data-thinking-toggle]").getAttribute("aria-checked")'), 'true');
-    await js('state.thinking.canDisable=false;controls.render()');
+    assert.equal(await js('document.querySelector("[data-thinking-label]").textContent'), '已开启 · 低');
+    await js('state.thinking.canDisable=false;state.thinking.level="high";controls.render()');
     assert.equal(await js('document.querySelector("[data-thinking-toggle]").disabled'), true);
     assert.ok(await js('document.querySelector(".nmodel-pop").contains(document.activeElement)'), 'Disabling a focused toggle retains picker keyboard access');
-    assert.match(await js('document.querySelector("[data-thinking-label]").textContent'), /固定思考/);
+    assert.equal(await js('document.querySelector("[data-thinking-label]").textContent'), '已开启 · 高');
+    assert.match(await js('document.querySelector("[data-thinking-hint]").textContent'), /始终开启思考，不支持关闭/);
     await js('state.thinking.supported=false;controls.render()');
     assert.equal(await js('document.querySelector("[data-thinking-toggle]").disabled'), true);
     await key('Escape');

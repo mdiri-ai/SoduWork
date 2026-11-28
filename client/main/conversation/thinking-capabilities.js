@@ -13,18 +13,27 @@ const GLM_LEVEL_MAP = { off: null, minimal: null, low: 'low', medium: null,
 
 function text(value) { return String(value == null ? '' : value).trim().toLowerCase(); }
 
-function mandatoryThinking(value) {
+function wireId(value) {
+  return text(value?.wireModelId || value?.id || value?.model || value?.name);
+}
+function glm53(value) {
   // Match a wire identity, never a display label or an arbitrary provider name.
-  return /(?:^|\/)glm[-_]?5[._]3(?:[-_]?flash)?$/.test(text(value?.wireModelId || value?.id || value?.model || value?.name));
+  return /(?:^|\/)glm[-_]?5[._]3(?:[-_]?flash)?$/.test(wireId(value));
+}
+function switchableFlash(value) {
+  const format = text(value.thinkingFormat || value.reasoningFormat || value.format);
+  return /flash$/.test(wireId(value)) && text(value.thinkingMode) === 'controllable' &&
+    format === 'zai' && value.thinkingAlwaysOn !== true;
 }
 
 function conflict(value) {
-  if (!mandatoryThinking(value)) return '';
+  if (!glm53(value)) return '';
   if (text(value?.thinkingMode) === 'none' || value?.reasoning === false) {
-    return 'GLM-5.3 系列不支持关闭思考，请将模型思考模式设为始终开启并选择有效强度';
+    return '当前 GLM-5.3 配置不支持关闭思考。请按模型服务声明设置思考模式和支持的强度。';
   }
-  if (value?.thinkingLevelMap && Object.values(value.thinkingLevelMap)
-    .some(mapped => mapped !== null && !['low', 'high', 'max'].includes(mapped))) {
+  if (value?.thinkingLevelMap && Object.entries(value.thinkingLevelMap)
+    .some(([level, mapped]) => mapped !== null && !['low', 'high', 'max'].includes(mapped) &&
+      !(level === 'off' && mapped === 'none' && switchableFlash(value)))) {
     return 'GLM-5.3 系列仅支持 low、high、max 思考强度，请检查模型的思考级别映射';
   }
   const levels = { ...GLM_LEVEL_MAP, ...value?.thinkingLevelMap };
@@ -36,7 +45,7 @@ function conflict(value) {
 
 function profile(model) {
   const value = model && typeof model === 'object' ? model : {};
-  const id = text(value.wireModelId || value.id || value.model || value.name);
+  const id = wireId(value);
   const provider = text(value.provider || value.providerName || value.providerId);
   const key = id + ' ' + provider;
   const explicit = typeof value.reasoning === 'boolean' ? value.reasoning : null;
@@ -55,8 +64,8 @@ function profile(model) {
   else if (!format && /(?:think|thinking|reason|reasoner|r1\b|o1\b|o3\b|o4\b|gpt-5)/.test(key)) {
     format = 'openai'; hinted = true;
   }
-  const mandatory = mandatoryThinking(value);
-  const reasoning = mode === 'none' || mandatory && explicit === false ? false
+  const glm = glm53(value);
+  const reasoning = mode === 'none' || glm && explicit === false ? false
     : (mode === 'always' || mode === 'controllable' ? true
       : (explicit === null ? hinted : explicit));
   if (!reasoning) return { reasoning: false, levels: ['off'], format: '', supportsReasoningEffort: false };
@@ -64,10 +73,13 @@ function profile(model) {
     ? Object.fromEntries(Object.entries(value.thinkingLevelMap)
       .filter(([level, mapped]) => LEVELS.includes(level) && (mapped === null || typeof mapped === 'string')))
     : {};
-  if (mandatory) {
-    // GLM 5.3 standard endpoints reject disabled/minimal/medium. Pi clamps a
-    // requested off level to low without pretending that thinking is disabled.
-    Object.assign(thinkingLevelMap, { ...GLM_LEVEL_MAP, ...thinkingLevelMap, off: null });
+  if (glm) {
+    // Only an explicit Flash switch on the service's Z.ai route enables off.
+    // An omitted off mapping lets Pi send thinking.type=disabled.
+    const mapped = { ...GLM_LEVEL_MAP, ...thinkingLevelMap };
+    if (!switchableFlash(value)) mapped.off = null;
+    else if (!Object.hasOwn(thinkingLevelMap, 'off')) delete mapped.off;
+    Object.assign(thinkingLevelMap, mapped);
   }
   // Some OpenAI-compatible gateways always emit hidden reasoning and reject
   // every attempt to disable it. Marking `off` as null makes Pi clamp the
@@ -94,8 +106,12 @@ function view(session) {
     ? session.getAvailableThinkingLevels().map(String).filter(Boolean) : ['off'];
   const available = levels.length ? levels : ['off'];
   const canDisable = available.includes('off');
+  const model = session.model;
+  const effortEnabled = supported && model?.compat?.supportsReasoningEffort !== false &&
+    !['qwen-chat-template', 'chat-template'].includes(model?.compat?.thinkingFormat);
+  const displayLevel = effortEnabled && level !== 'off' ? model?.thinkingLevelMap?.[level] ?? level : '';
   return { supported: Boolean(supported), enabled: Boolean(supported && level !== 'off'),
-    canDisable: Boolean(supported && canDisable), level: supported ? level : 'off', levels: available };
+    canDisable: Boolean(supported && canDisable), level: supported ? level : 'off', displayLevel, levels: available };
 }
 
 function set(session, enabled) {

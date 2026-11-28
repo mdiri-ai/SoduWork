@@ -97,22 +97,40 @@ if (typeof electron === 'string') {
   }
   app.whenReady().then(async () => {
     const bridge = require('../main/agent-runtime/pi-session-bridge'); bridge.get = ref => sessions.get(ref);
-    require('../main/pi-session/artifact-ipc').install({ app, ipcMain, BrowserWindow, session: sessions, workDir: () => root });
+    let heldIndex;
+    const artifactIpc = { handle(channel, handler) {
+      ipcMain.handle(channel, async (event, ...args) => {
+        if (channel === 'pi-session-outputs' && heldIndex && args[0] === heldIndex.ref) {
+          heldIndex.requested = true;
+          await heldIndex.promise;
+        }
+        return handler(event, ...args);
+      });
+    } };
+    require('../main/pi-session/artifact-ipc').install({ app, ipcMain: artifactIpc, BrowserWindow, session: sessions, workDir: () => root });
     ipcMain.handle('pi-session-snapshot', (_event, ref) => ({ ok: true, snapshot: sessions.get(ref)?.snapshot() }));
     require('../main/work-preview').install({ app, ipcMain, BrowserWindow, WebContentsView, shell: { openExternal: async () => { throw Error('No external navigation in fixture'); } } });
-    legacyHistory = await require('./fixtures/legacy-pi-website.cjs').create(app, root, sessions);
+    const screenshots = ['top', 'works', 'process', 'contact'].map((name, index) => ({
+      name: name + '.png', bytes: electron.nativeImage.createFromBitmap(
+        Buffer.alloc(4 * (index + 1), 255), { width: index + 1, height: 1 }).toPNG(),
+    }));
+    legacyHistory = await require('./fixtures/legacy-pi-website.cjs').create(app, root, sessions, screenshots);
     const legacyId = legacyHistory.id;
+    const { siteRow, sheetRow, site, excel, bytes, heading } = await legacyHistory.createDeliverables();
+    const legacyIds = new Set([legacyId, legacyHistory.retiredId, siteRow.id, sheetRow.id]);
     let continuation;
     ipcMain.handle('pi-session-open-application', () => ({ ok: true, handled: false }));
     ipcMain.handle('access-preferences-get', () => ({ ok: true, mode: 'standard' }));
     ipcMain.handle('pi-session-runtimes', () => ({ ok: true, runtimes: catalog.runtimes() }));
     ipcMain.handle('pi-session-open', async (_event, options) => {
-      if (![legacyId, legacyHistory.retiredId].includes(options.chatId)) return restore(options.adapterId || 'pi');
+      if (!legacyIds.has(options.chatId)) return restore(options.adapterId || 'pi');
       const view = options.chatId === legacyId && continuation
         ? await legacyHistory.continued(continuation === 'collision') : await legacyHistory.preview(options.chatId);
       sessions.set(view.ref, view);
+      if (heldIndex) heldIndex.ref = view.ref;
+      const historyMedia = await view.initialHistoryMedia?.();
       return { ok: true, ref: view.ref, cwd: view.cwd, sessionId: view.sessionId, adapterId: 'pi',
-        localReplica: Boolean(view.localReplica), snapshot: view.snapshot() };
+        localReplica: Boolean(view.localReplica), historyMedia, snapshot: view.snapshot() };
     });
     ipcMain.handle('pi-session-history', () => ({ ok: true, chats: [] }));
     ipcMain.handle('pi-session-runtime-models', () => ({ ok: true, items: [] }));
@@ -194,7 +212,8 @@ if (typeof electron === 'string') {
       await js('NativeChat.reset();void 0;');
       report.cases.push(spec.id + ': nested Markdown auto-opens; filename is marked clickable; actual mouse closes and reopens the right preview');
     }
-    await js(fs.readFileSync(path.join(client, 'components/panels/chat-deliveries.js'), 'utf8'));
+    for (const file of ['chat-media', 'chat-deliveries'])
+      await js(fs.readFileSync(path.join(client, 'components/panels', file + '.js'), 'utf8'));
     win.showInactive();
     await js('SoduWorkI18n.setLocale("zh-CN");void 0;');
     async function website(heading) {
@@ -227,30 +246,86 @@ if (typeof electron === 'string') {
       assert.equal(await js('ChatWorkbench.state().open'), true);
       return visibleWebsite;
     }
+    async function captureWebsite(heading, filename) {
+      let image;
+      await until(async () => {
+        const view = await website(heading);
+        view.webContents.invalidate();
+        try { image = await view.webContents.capturePage(); }
+        catch (error) {
+          // The native preview may still be painting its first compositor frame.
+          if (error.message === 'UnknownVizError') return false;
+          throw error;
+        }
+        return !image.isEmpty();
+      });
+      fs.writeFileSync(path.join(out, filename), image.toPNG());
+    }
     const reset = async () => {
       await js('NativeChat.reset();void 0;');
       await until(() => win.contentView.children.length === 0);
     };
     const enter = id => js('NativeChat.enter("",' + JSON.stringify(id) + ',{adapterId:"pi"});void 0');
     for (let visit = 0; visit < 2; visit++) {
+      heldIndex = Promise.withResolvers();
       await enter(legacyId);
+      const gallery = '.nmsg.ai .noutput-gallery';
+      await until(() => js(`(() => {
+        const group = document.querySelector('${gallery}');
+        group?.scrollIntoView({ block: 'center' });
+        return Array.from(group?.querySelectorAll('img') || []).map(image => image.naturalWidth).join(',') === '1,2,3,4';
+      })()`));
+      assert.equal(heldIndex.requested, true, 'The full output index is still pending when all four images are visible');
+      assert.equal(await js(`document.querySelector('${gallery}').innerText.includes('正在读取图片')`), false);
+      heldIndex.resolve();
+      heldIndex = null;
       const link = visit ? 'document.querySelector(".ndelivery [data-open-app]")'
         : 'Array.from(document.querySelectorAll(".nmsg.ai [data-open-app]")).find(e => e.textContent === "index.html")';
       await until(() => js('Boolean(' + link + ')'));
+      await until(() => js('Array.from(document.querySelectorAll(".ndelivery [data-delivery-title]")).filter(el => el.textContent === ' +
+        JSON.stringify(legacyHistory.oldHeading) + ').length === 1'));
       await click('document.querySelector("#nchatMode")');
       await until(() => js(`!document.querySelector('#nchatAccessPop').hidden &&
         document.querySelector('[data-access-mode="full"]').matches('[aria-pressed="true"]:enabled')`));
       await click('document.querySelector("#nchatMode")');
       await click(link);
-      const visibleWebsite = await website(legacyHistory.oldHeading);
-      if (visit) {
-        const pixels = await visibleWebsite.webContents.capturePage();
-        assert.ok(!pixels.isEmpty());
-        fs.writeFileSync(path.join(out, 'legacy-pi-website-preview.png'), pixels.toPNG());
-      }
-      await reset();
+      if (visit) await captureWebsite(legacyHistory.oldHeading, 'legacy-pi-website-preview.png');
+      else await website(legacyHistory.oldHeading);
+      if (visit === 0) {
+        await enter(legacyHistory.retiredId);
+        await until(() => js('document.querySelector("#nchatList").innerText.includes(' + JSON.stringify(legacyHistory.newHeading) + ')'));
+        assert.equal(await js('document.querySelector(".noutput-gallery") === null'), true, 'The other chat has no gallery');
+      } else await reset();
     }
+    report.cases.push('Four archived screenshots decode before the full index on cold open and after switching to another chat and back. Its arrival leaves one website card.');
     report.cases.push('Pi 1.13.19 archive: full permission remains selected and available; click the historical HTML filename, reopen the chat, click its delivery card and verify the original heading in the right WebContentsView');
+    const filenameLink = name => 'Array.from(document.querySelectorAll(".nmsg.ai .ntext [data-open-app]")).find(link => link.textContent === ' + JSON.stringify(name) + ')';
+    const matchingCards = name => 'Array.from(document.querySelectorAll(".ndelivery-heading [data-open-app]"))' +
+      '.filter(button => button.dataset.openApp === (' + filenameLink(name) + ')?.dataset.openApp)';
+    await enter(siteRow.id);
+    await until(() => js(matchingCards(site) + '.length === 1'));
+    await click(filenameLink(site));
+    await website(heading);
+    await reset();
+
+    await enter(sheetRow.id);
+    await until(() => js(matchingCards(excel) + '.length === 1'));
+    // Intercept the operating-system handoff so the real click can be verified
+    // against the archived workbook without launching a browser or Office.
+    const originalOpen = electron.shell.openExternal;
+    let workbookUrl;
+    try {
+      electron.shell.openExternal = async url => { workbookUrl = url; };
+      await click(matchingCards(excel) + '[0]');
+      await until(() => Boolean(workbookUrl));
+      const url = new URL(workbookUrl);
+      assert.equal(url.hostname, '127.0.0.1');
+      const response = await fetch(url);
+      assert.equal(response.status, 200);
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+    } finally { electron.shell.openExternal = originalOpen; }
+    await reset();
+    report.cases.push('Historical .htm and .xlsx: click the edited site and original workbook from the reopened replies and verify the final heading and file bytes.');
     for (const scenario of ['empty', 'collision', 'retired']) {
       continuation = scenario;
       await enter(scenario === 'retired' ? legacyHistory.retiredId : legacyId);
@@ -267,12 +342,8 @@ if (typeof electron === 'string') {
         await click(target);
         return website(heading);
       }
-      const oldPage = await checkResult(legacyHistory.oldHeading, '.ndelivery [data-open-app]');
-      if (scenario === 'collision') {
-        const image = await oldPage.webContents.capturePage();
-        assert.ok(!image.isEmpty());
-        fs.writeFileSync(path.join(out, 'continued-pi-website-preview.png'), image.toPNG());
-      }
+      await checkResult(legacyHistory.oldHeading, '.ndelivery [data-open-app]');
+      if (scenario === 'collision') await captureWebsite(legacyHistory.oldHeading, 'continued-pi-website-preview.png');
       await checkResult(legacyHistory.oldHeading, '.ntext [data-open-app]');
       await reset();
       report.cases.push({

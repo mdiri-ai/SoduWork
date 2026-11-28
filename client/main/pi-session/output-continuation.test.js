@@ -94,8 +94,8 @@ function fakeSession(acc, reasons) {
   });
   thinkingOnlyAcc.markIncomplete(thinkingOnly.incompleteReason);
   assert.equal(thinkingOnlyAcc.snapshot().status, 'incomplete');
-  assert.match(thinkingOnlyAcc.snapshot().statusText, /单次输出上限.*检查模型管理中的最大输出量/);
-  assert.match(thinkingOnlyAcc.snapshot().statusText, /部分模型不支持关闭思考/);
+  assert.match(thinkingOnlyAcc.snapshot().statusText, /单次输出上限.*调整模型的最大输出量或切换模型/);
+  assert.match(thinkingOnlyAcc.snapshot().statusText, /在本对话发送“继续”/);
   assert.equal(thinkingOnlySession.calls, 2,
     'repeated thinking-only length stops must end after one bounded recovery');
 

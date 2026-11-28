@@ -113,4 +113,4 @@ async function migrate({ app, row, store, data, assertCurrent }) {
   return result;
 }
 
-module.exports = { migrate };
+module.exports = { migrate, media };

@@ -225,7 +225,8 @@ test('unknown alias thinking is service-controlled while explicit and canonical 
     await f.picker.ready(); f.choose(model.name);
     assert.equal(f.picker.value().thinkingLevel, expected, model.name);
     if (expected === 'low') {
-      assert.match(f.nodes.cpModelPop.innerHTML, /模型固定思考/);
+      assert.match(f.nodes.cpModelPop.innerHTML, /已开启 · 低/);
+      assert.match(f.nodes.cpModelPop.innerHTML, /不支持关闭思考/);
       assert.match(f.nodes.cpModelPop.innerHTML, /data-thinking-toggle disabled/);
     } else if (model.config.thinkingMode === 'auto') {
       assert.match(f.nodes.cpModelPop.innerHTML, /由服务决定 · 未确认/);
@@ -244,6 +245,28 @@ test('declared alias protocols expose thinking controls while explicit off polic
     f.requests[0].resolve({ usable: [{ name: 'local:model-' + 'b'.repeat(32), modelName: 'gateway-model', config }] }); await f.picker.ready();
     assert.equal(f.nodes.cpModelPop.innerHTML.includes('data-thinking-toggle'), supported);
     assert.doesNotMatch(f.nodes.cpModelPop.innerHTML, /由服务决定 · 未确认/);
+  }
+});
+
+test('new conversations use the declared Flash switch and restore only available effort levels', async () => {
+  const f = fixture(); f.start();
+  const model = { name: 'glm-5.3-flash', config: { thinkingMode: 'controllable', thinkingFormat: 'zai' } };
+  f.requests[0].resolve({ usable: [model] }); await f.picker.ready();
+  for (const [saved, level, label] of [['off','off','已关闭'], ['high','high','已开启 · 高'], ['medium','low','已开启 · 低']]) {
+    assert.equal(await f.picker.restoreSelection({adapterId:'pi',modelName:model.name,thinkingLevel:saved}),true);
+    assert.equal(f.picker.value().thinkingLevel,level);
+    assert.ok(f.nodes.cpModelPop.innerHTML.includes(label));
+    assert.doesNotMatch(f.nodes.cpModelPop.innerHTML,/data-thinking-toggle disabled/);
+  }
+});
+
+test('the new-chat label uses the requested wire effort and omits effort for switch-only services', async () => {
+  for (const [extra, label] of [[{thinkingLevelMap:{low:'high'}}, '已开启 · 高'], [{supportsReasoningEffort:false}, '已开启']]) {
+    const f = fixture(); f.start();
+    const model = { name:'glm-5.3-flash', config:{thinkingMode:'controllable',thinkingFormat:'zai',...extra} };
+    f.requests[0].resolve({usable:[model]}); await f.picker.ready();
+    await f.picker.restoreSelection({adapterId:'pi',modelName:model.name,thinkingLevel:'low'});
+    assert.ok(f.nodes.cpModelPop.innerHTML.includes('<i>' + label + '</i>'));
   }
 });
 

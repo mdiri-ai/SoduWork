@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const native = require('./device-history-native.cjs');
 const archive = require('./device-artifact-archive.cjs');
+const piArtifacts = require('./pi-history-artifacts.cjs');
 const { hasUnresolvedTools } = require('./tool-terminal-receipts.cjs');
 const { withTranscript } = require('./conversation-body.cjs');
 const { mergeNativeEvidence } = require('./history-evidence.cjs');
@@ -13,6 +14,19 @@ const SCHEMA = 'soduwork.device-history/v1';
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fields = ['id', 'title', 'adapterId', 'modelName', 'taskId', 'taskTitle', 'taskIds', 'taskBindings', 'activeTaskId',
   'createdAt', 'at', 'count', 'state', 'status', 'archived', 'creator', 'usedHarnesses'];
+function oldPiEvidence(data, id) {
+  return data?.coverage?.sources?.some(source => source.id === id && source.adapterId === 'pi' &&
+    !(source.artifactEvidenceVersion >= piArtifacts.VERSION));
+}
+function reviewedPiOrigin(data) {
+  return data?.localPiOriginReviewed && data?.localPiOriginEvidenceVersion >= piArtifacts.VERSION;
+}
+function archivedPiWrites(history, changes) {
+  if (!changes?.length) return true;
+  const archived = new Map((history?.archive?.files || []).map(file => [file.relative, file.sha256]));
+  const { eligible } = require('./device-history-artifacts.cjs');
+  return changes.every(change => !eligible(change.path, true) || archived.get(change.path) === change.after.hash);
+}
 function metadata(row) { return Object.fromEntries(fields.filter(key => row[key] !== undefined).map(key => [key, row[key]])); }
 function replayedUsage(snapshot, row) {
   const usage = require('./used-harnesses');
@@ -182,7 +196,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     const journal = original.journal, prior = data.localArtifactHistory, profile = app.getPath('userData');
     const sameRoot = prior?.root === journal?.cwd;
     const collected = journal && await require('./device-history-artifacts.cjs').capture({
-      row: { ...row, cwd: journal.cwd, adapterId: 'pi' }, journal, nativePiEvidence: true, previous: sameRoot ? prior : undefined });
+      row: { ...row, cwd: journal.cwd, adapterId: 'pi' }, journal, nativePiEvidence: true, recheckPiEvidence: !reviewedPiOrigin(data), previous: sameRoot ? prior : undefined });
     if (journal && !collected?.items?.length) return;
     const backup = collected && await archive.preserve(profile, row.id, collected, sameRoot ? prior : undefined, check);
     if (journal && !backup?.archive) return;
@@ -190,14 +204,15 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     // A newer workspace may already have its own index.html. Keep its current
     // inventory and attach only retired versions that have their own bytes.
     if (backup?.archive && prior?.archive && !sameRoot) {
-      const versions = prior.archive.versions || [];
-      const key = file => JSON.stringify([file.turnId, file.relative]);
-      const recorded = new Set(versions.map(key));
-      const added = (backup.archive.versions || []).filter(file => !recorded.has(key(file)));
-      history = added.length ? { ...prior, archive: { ...prior.archive, versions: [...versions, ...added] } } : prior;
+      const merged = require('./artifact-versions.cjs').mergePiOrigin(prior.archive, backup.archive, collected);
+      history = merged === prior.archive ? prior : { ...prior, archive: merged };
     }
+    // A valid older generation can contain other outputs or this file's first
+    // draft. Finish only when each eligible receipt has its actual final bytes.
+    const complete = !journal || backup?.archive && !backup.archivePending && !backup.archive.omitted &&
+      archivedPiWrites(backup, journal.files);
     return { data: { ...data, ...(history ? { localArtifactHistory: history } : {}),
-      ...(!journal || backup?.archive && !backup.archivePending && !backup.archive.omitted ? { localPiOriginReviewed: original.id } : {}) },
+      ...(complete ? { localPiOriginReviewed: original.id, localPiOriginEvidenceVersion: piArtifacts.VERSION } : {}) },
       backup: backup?.archive };
   }
   async function refresh(id, { verify, journal, legacyUpgrade } = {}) {
@@ -257,7 +272,8 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
       previous = await restoreArchiveReceipts(row, previous, check, false);
       expected.expectedHistoryDigest = previous?.digest ?? null;
       if (previous?.localPiOriginReviewed) data.localPiOriginReviewed = previous.localPiOriginReviewed;
-      const original = !data.localPiOriginReviewed && !previous?.imported && !row.deviceTransferId &&
+      if (previous?.localPiOriginEvidenceVersion) data.localPiOriginEvidenceVersion = previous.localPiOriginEvidenceVersion;
+      const original = !reviewedPiOrigin(data) && !previous?.imported && !row.deviceTransferId &&
         !check.evidence().historyProtection && allowsArtifacts(check.evidence()) && native.retiredPiOrigin(manifest)
         ? await native.originalPiJournal({ app, session, row, record: manifest, guard: check, previousSources: previous?.coverage?.sources }) : null;
       const workspace = data.localWorkspace, nativeJournal = data.localJournal;
@@ -277,6 +293,9 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
       }
       check(previous?.historyProtection ? { historyProtection: previous.historyProtection } : undefined);
       if (check.evidence().historyProtection === 'account') data.historyProtection = 'account';
+      const priorPi = previous?.coverage?.sources?.find(source => source.id === row.id && source.adapterId === 'pi');
+      const repairPi = !row.deliveryWorkspaceKey && (oldPiEvidence(previous, row.id) ||
+        !priorPi && Boolean(workspace || nativeJournal));
       const identity = data.imported && journal ? identityOf() : null;
       const receivingTurn = currentReceiver(row, data, manifest, identity);
       if (!data.historyProtection && (receivingTurn || !data.imported && allowsArtifacts(check.evidence()))) {
@@ -287,6 +306,7 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
         // The terminal callback owns collection in a managed delivery directory.
         // A passive replay must not attribute unrelated project changes to it.
         const collected = row.deliveryWorkspaceKey ? prior : await require('./device-history-artifacts.cjs').capture({ row, previous: prior,
+          recheckPiEvidence: !receivingTurn && !journal && repairPi,
           journal: journal || (!receivingTurn && nativeJournal), nativePiEvidence: !receivingTurn && !journal && Boolean(nativeJournal),
           ...(!receivingTurn ? { workspace, workRoot: workspace ? workRoot?.() : null, retained: manifest?.artifactHistory } : {}) });
         const artifacts = archive.retain(prior, collected);
@@ -303,6 +323,14 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
           }
           if (receivingTurn) data.localArtifactHistory.transferId = row.deviceTransferId;
         }
+      }
+      if (repairPi && !data.imported && !data.historyProtection && (journal ||
+          row.cwd && !await fs.realpath(row.cwd).catch(() => null) ||
+          !archivedPiWrites(data.localArtifactHistory, nativeJournal?.files.filter(change => change.piEditBaseSha256)))) {
+        // A terminal callback, disconnected volume or unavailable edited final
+        // cannot complete this review. Retry from the native proof on open.
+        const source = data.coverage.sources.find(source => source.id === row.id);
+        if (source) source.artifactEvidenceVersion = priorPi?.artifactEvidenceVersion || 0;
       }
       const current = await resolve(id); check();
       if (!current || current.deleted || current.replicaRevision !== row.replicaRevision ||
@@ -421,14 +449,13 @@ function create({ app, session, store, resolve, guard, authorize, authorizeConti
     const checkLocalArtifacts = local && allowsArtifacts(check.evidence());
     const checkLocalTail = local && allowUndispatchedTail && (!preferRecorded || dialogue.at(-1)?.role === 'user') &&
       !shared && !verify && usesDeviceDialogue(check.evidence());
-    const manifest = (checkLocalTail || checkLocalArtifacts && !data?.localPiOriginReviewed)
+    const manifest = (checkLocalTail || checkLocalArtifacts && !reviewedPiOrigin(data))
       ? require('./runtime-segments').read(app, row.id) : null;
     // A v1.13.20 replica can contain a complete native body and dialogue but
     // no Pi file receipts. Bind the recovered archive on that first visit.
     const legacyPi = checkLocalArtifacts &&
-      (!row.deliveryWorkspaceKey && data?.coverage?.sources?.some(source => source.id === row.id &&
-        source.adapterId === 'pi' && !(source.artifactEvidenceVersion >= 2)) ||
-        !data?.localPiOriginReviewed && native.retiredPiOrigin(manifest));
+      (!row.deliveryWorkspaceKey && oldPiEvidence(data, row.id) ||
+        !reviewedPiOrigin(data) && native.retiredPiOrigin(manifest));
     const checkTail = checkLocalTail && manifest && !manifest.deviceShared && !manifest.deviceTransferId &&
       (manifest.active?.started === false || manifest.historyRecovery?.transcriptTail);
     const recorded = preferRecorded && dialogue.length && (checkTail || continuationPreview) ? withTranscript(data, dialogue) : null;

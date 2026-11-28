@@ -5,6 +5,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const piArtifacts = require('./pi-history-artifacts.cjs');
 const MAX_BYTES = 128 * 1024 * 1024;
 const EMPTY_JOURNAL = crypto.createHash('sha256').digest('hex');
 const failure = (code, message) => Object.assign(Error(message), { code });
@@ -170,9 +171,9 @@ async function pi(app, session, id, guard, previous, row, { retired = false } = 
   // The retired segment's indexed native cwd, not a newer logical chat's cwd,
   // must agree with the JSONL before a write can be verified on disk.
   const workspace = retired ? { id: row.id, cwd: found.entry.cwd } : row;
-  return { snapshot, source: { id, adapterId: 'pi', revision, byteLength: bytes.length, artifactEvidenceVersion: 2 },
+  return { snapshot, source: { id, adapterId: 'pi', revision, byteLength: bytes.length, artifactEvidenceVersion: piArtifacts.VERSION },
     ...(retired || id === row.id && !row.deliveryWorkspaceKey
-      ? require('./pi-history-artifacts.cjs').evidence(entries, workspace, revision, turns) : {}) };
+      ? piArtifacts.evidence(entries, workspace, revision, turns) : {}) };
 }
 function canonicalJson(value) {
   return JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item)
@@ -528,11 +529,13 @@ async function originalPiJournal({ app, session, row, record, guard, previousSou
     // Public prose can stay unchanged when a tool call is replaced. The
     // frozen prefix must also contain the same completed writes and arguments.
     const frozenTools = new Map(prefix.tools.map(tool => [tool.id, tool]));
-    const matches = saved.snapshot.tools.filter(tool => tool.name === 'write' && tool.state === 'done').every(tool => {
+    const matches = saved.snapshot.tools.filter(tool => ['write', 'edit'].includes(tool.name) && tool.state === 'done').every(tool => {
       const frozen = frozenTools.get(id + ':' + tool.id) || frozenTools.get(tool.id);
       return frozen?.name === tool.name && frozen.state === tool.state && canonicalJson(frozen.args) === canonicalJson(tool.args);
     });
-    if (matches) return { id, journal: saved.localJournal };
+    if (matches && (saved.artifactWorkspaceMatched ||
+        !saved.snapshot.tools.some(tool => ['write', 'edit'].includes(tool.name) && tool.state === 'done')))
+      return { id, journal: saved.localJournal };
   }
   return null;
 }

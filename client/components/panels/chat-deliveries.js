@@ -193,13 +193,26 @@
   function decorate(root, files, ref, snapshot = {}) {
     if (!root || !ref || !isSettled(snapshot)) return;
     files = filesOutsideInstallCards(root, files, ref, snapshot);
+    const versions = files.filter(file => file.versionId);
+    if (versions.length) {
+      // Settled renders can carry a card from an earlier reply even after a
+      // refresh moves its immutable version to another reply or session scope.
+      const verified = new Set(versions.map(key));
+      for (const card of root.querySelectorAll('[data-delivery]')) {
+        const group = groups.get(card.dataset.delivery);
+        if (group?.ref !== ref || group.scope !== scope()) continue;
+        const keep = group.files.filter(file => !file.versionId || !verified.has(key(file)));
+        if (keep.length === group.files.length) continue;
+        if (keep.length) card.replaceWith(deliveryCard(root.ownerDocument, keep, ref, snapshot));
+        else card.remove();
+      }
+    }
     const summaryOnly = snapshot.delivery?.presentation === 'summary' || snapshot.deliveryPresentation === 'summary' ||
       snapshot.deliveryMode === 'git' || snapshot.cloudHandoff?.deliveryMode === 'git';
     if (snapshot.localReplica === true && !snapshot.cloudHandoff?.taskId) {
       if (!summaryOnly) decorateHistoryFiles(root, files, ref, snapshot);
       return;
     }
-    const versions = files.filter(file => file.versionId);
     if (versions.length && !summaryOnly) {
       const active = [...root.querySelectorAll('.nmsg.ai')].filter(message =>
         message.dataset.deliveryCurrent !== 'false' && message.dataset.deliveryFinal !== 'false').at(-1);

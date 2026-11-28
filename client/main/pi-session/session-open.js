@@ -533,7 +533,7 @@ async function open(opts) {
   const modelSelection = require('../conversation/model-selection').create({
     name: modelName, model: prep.model,
     generation: modelConfig.generation,
-    resolve: async name => {
+    resolve: async (name, refresh = false) => {
       // Keep strict Hub deployments usable after the 30-minute device session
       // expires.  The fallback request still handles older compatibility
       // deployments, but renewing here avoids sending a stale session at all.
@@ -543,7 +543,7 @@ async function open(opts) {
           if (fresh) identity.session = fresh;
         } catch (_) { /* fetchSelection will perform the bounded secret fallback */ }
       }
-      return modelConfig.fetchSelection(identity, name, 8000, global.fetch, false, 'pi', { app });
+      return modelConfig.fetchSelection(identity, name, 8000, global.fetch, refresh, 'pi', { app });
     },
     persist: name => piSession.sessionManager.appendCustomEntry('soduwork.model.selection', { name }),
     changed: () => _emit({ kind: 'model-selection' }),
@@ -698,7 +698,11 @@ async function open(opts) {
       next.preparingAt = Date.now();
     const completion = turnQueue.run(next, async () => {
       if (next.options.controlled) return next.options.controlled.execute(handle, next.text, next.attachments);
-      await modelSelection.applyForTurn(next.options.modelName);
+      // An edit from the Hub in another client may not have sent a catalog
+      // notification to this open session. Re-resolve the user's selection
+      // when they resume after an exhausted reasoning turn.
+      const refresh = next.options.refreshAfterReasoningLimit && acc.state.incompleteReason === 'reasoning-limit';
+      await modelSelection.applyForTurn(next.options.modelName, refresh);
       next.preparingAt = 0;
       if (next.stopRequested) return { ok: true, cancelled: true, manualStop: true };
       const result = await handle.send(next.text, next.attachments, { ...next.options, fromQueue: true });

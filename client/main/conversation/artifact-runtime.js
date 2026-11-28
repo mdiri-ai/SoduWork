@@ -22,6 +22,10 @@ const { root: deliveryRoot } = require('./delivery-workspace.cjs');
 const facadeSources = new WeakMap();
 const archiveSource = handle => facadeSources.get(handle) || handle;
 const turnArchives = new WeakMap();
+const galleryVersions = new WeakMap();
+const galleryImages = new Map();
+const GALLERY_CACHE_BYTES = 24 * 1024 * 1024;
+let galleryBytes = 0;
 const continuationArchives = new WeakMap();
 const archiveReaders = new WeakMap();
 const RECORDS = new Map();
@@ -123,29 +127,61 @@ async function snapshotAsync(session) {
 async function viewSnapshotAsync(session) {
   const current = await appendArchivedItems(session, await snapshotAsync(session));
   if (!turnArchives.has(archiveSource(session)) || !current) return current;
-  const archived = await turnArtifacts(session);
+  const archived = visibleVersions(await turnArtifacts(session));
+  require('./legacy-website-reply.cjs').locate(session, current.items, archived);
+  return { ...current, items: [...current.items, ...archived] };
+}
+function visibleVersions(archived) {
   const provisional = file => /^(?:legacy|pi)-archive:/.test(file.turnId);
   const revision = file => JSON.stringify([file.relative, file.at, file.versionHash]);
   // A later native replay can identify the turn that produced a previously
   // unassigned backup. Keep issued IDs readable, but show that revision once.
   const located = new Set(archived.filter(file => !provisional(file)).map(revision));
-  return { ...current, items: [...current.items, ...archived.filter(file => !provisional(file) || !located.has(revision(file)))] };
+  return archived.filter(file => !provisional(file) || !located.has(revision(file)));
+}
+
+function retainGalleryImage(key, encoded) {
+  if (!key || encoded.length > GALLERY_CACHE_BYTES / 2) return;
+  if (galleryImages.has(key)) {
+    galleryBytes -= galleryImages.get(key).length;
+    galleryImages.delete(key);
+  }
+  while (galleryBytes + encoded.length > GALLERY_CACHE_BYTES || galleryImages.size >= 64) {
+    const oldest = galleryImages.keys().next().value;
+    galleryBytes -= galleryImages.get(oldest).length;
+    galleryImages.delete(oldest);
+  }
+  galleryImages.set(key, encoded);
+  galleryBytes += encoded.length;
 }
 
 async function turnArtifacts(session, requestedId) {
   if (!turnArchives.has(archiveSource(session))) return [];
   const versions = [], checked = new Set();
-  for (const { reader, turnId, userMessageIndex } of await turnArchives.get(archiveSource(session))()) {
-    if (!checked.has(reader.authorize)) { await reader.authorize(); checked.add(reader.authorize); }
-    for (const file of reader.snapshot().items) {
-      if (!/^[a-f0-9]{64}$/.test(file.versionId) || !turnId || requestedId && requestedId !== 'version:' + file.versionId) continue;
-      const item = { ...file, artifactId: 'version:' + file.versionId, originalArtifactId: file.artifactId,
-        turnId, userMessageIndex, changedInTurn: false, pluginDraft: false, actions: ['open'] };
-      archiveReaders.set(item, reader);
-      versions.push(item);
-    }
+  for (const group of await turnArchives.get(archiveSource(session))(requestedId)) {
+    if (!checked.has(group.reader.authorize)) { await group.reader.authorize(); checked.add(group.reader.authorize); }
+    versions.push(...versionItems(group, requestedId));
   }
   return versions;
+}
+function versionItems({ reader, turnId, userMessageIndex }, requestedId) {
+  const versions = [];
+  for (const file of reader.snapshot().items) {
+    if (!/^[a-f0-9]{64}$/.test(file.versionId) || !turnId || requestedId && requestedId !== 'version:' + file.versionId) continue;
+    const item = { ...file, artifactId: 'version:' + file.versionId, originalArtifactId: file.artifactId,
+      turnId, userMessageIndex, changedInTurn: false, pluginDraft: false, actions: ['open'] };
+    archiveReaders.set(item, reader);
+    versions.push(item);
+  }
+  return versions;
+}
+
+function prepareHistoryGallery(session, groups, originals, scope) {
+  const current = originals?.snapshot().items || [];
+  for (const item of current) archiveReaders.set(item, originals);
+  const items = [...current, ...visibleVersions(groups.flatMap(group => versionItems(group)))];
+  galleryVersions.set(archiveSource(session), { scope, items: new Map(items.map(file => [file.artifactId, file])) });
+  return decorate(session.ref, { items }, session);
 }
 // A historical package must be backed by one turn's verified file set.
 async function resolveVersionGroup(session, ids) {
@@ -307,7 +343,16 @@ async function resolveAsync(session, artifactId) {
   return resolveSnapshot(session, artifactId, await snapshotAsync(session));
 }
 
-async function resolveView(session, artifactId) {
+async function resolveView(session, artifactId, galleryImage = false) {
+  const index = galleryImage && galleryVersions.get(archiveSource(session));
+  const indexed = index && index.items.get(artifactId);
+  if (indexed) {
+    const reader = archiveReaders.get(indexed);
+    await reader.authorize();
+    if (!reader.verify(indexed.path)) return { ok: false, reason: '成果文件已改变或无法读取' };
+    return { ok: true, item: indexed, path: indexed.path, stat: fs.statSync(indexed.path), historyArtifacts: reader,
+      galleryScope: index.scope };
+  }
   if (typeof artifactId === 'string' && artifactId.startsWith('version:')) {
     const [item] = await turnArtifacts(session, artifactId);
     const reader = archiveReaders.get(item);
@@ -375,6 +420,7 @@ function publicArtifact(ref, item, link) {
     preview: Boolean(item && item.preview),
     primary: item ? item.primary !== false : true,
     ...(archiveReaders.has(item) ? { archivedReadOnly: true } : {}),
+    ...(archiveReaders.has(item) && Number.isSafeInteger(item.legacyReplyIndex) ? { legacyReplyIndex: item.legacyReplyIndex } : {}),
     ...(archiveReaders.has(item) && item.versionId && item.previewOf ? { previewOf: item.previewOf } : {}),
     ...(item?.versionId && item.turnId && archiveReaders.has(item) ?
       { versionId: item.versionId, turnId: item.turnId, userMessageIndex: item.userMessageIndex, originalArtifactId: item.originalArtifactId } : {}),
@@ -677,7 +723,8 @@ async function action(session, ref, artifactId, rawAction, deps) {
     return { ok: true, artifactId, status: 'stopped' };
   }
   const legacyImage = (actionName === 'image' || actionName === 'image-full') && typeof artifactId?.imagePath === 'string';
-  const found = legacyImage ? await resolveLegacyImage(session, artifactId.imagePath) : await resolveView(session, artifactId);
+  const found = legacyImage ? await resolveLegacyImage(session, artifactId.imagePath)
+    : await resolveView(session, artifactId, actionName === 'image' || actionName === 'image-full');
   if (!found.ok) return found;
   if (archiveReaders.has(found.item)) {
     if (actionName === 'open') {
@@ -738,10 +785,21 @@ async function action(session, ref, artifactId, rawAction, deps) {
     if (!/^image\/(?:png|jpeg|gif|webp|x-icon)$/.test(mimeType || ''))
       return { ok: false, reason: '这份成果不是支持内嵌预览的图片' };
     if (found.stat.size > 20 * 1024 * 1024) return { ok: false, reason: '图片超过 20 MB，请在原生应用中打开' };
-    let data;
+    let data, galleryKey;
     if (found.historyArtifacts) {
       const fd = openVerified(found);
       try {
+        // Reopening obtains a fresh authorized handle. Even a cache hit must
+        // open the exact archived file and match its current filesystem identity.
+        if (actionName === 'image-full' && found.galleryScope && found.item.versionId) {
+          galleryKey = JSON.stringify([found.galleryScope, found.item.versionId, found.path,
+            versions.stamp(fs.fstatSync(fd, { bigint: true }))]);
+          const cached = galleryImages.get(galleryKey);
+          if (cached !== undefined && found.historyArtifacts.verify(found.path, fs.fstatSync(fd, { bigint: true }))) {
+            galleryImages.delete(galleryKey); galleryImages.set(galleryKey, cached);
+            return { ok: true, path: found.path, mimeType, data: cached };
+          }
+        }
         data = Buffer.alloc(found.stat.size);
         let size = 0;
         while (size < data.length) {
@@ -764,7 +822,9 @@ async function action(session, ref, artifactId, rawAction, deps) {
         return { ok: true, path: found.path, mimeType: 'image/png', data: thumb.toPNG().toString('base64') };
       }
     }
-    return { ok: true, path: found.path, mimeType, data: data.toString('base64') };
+    const encoded = data.toString('base64');
+    retainGalleryImage(galleryKey, encoded);
+    return { ok: true, path: found.path, mimeType, data: encoded };
   }
   return { ok: false, reason: '不支持这个成果动作' };
 }
@@ -806,9 +866,11 @@ module.exports = {
     const source = facadeSources.get(facade);
     facadeSources.delete(facade);
     turnArchives.delete(source);
+    galleryVersions.delete(source);
     continuationArchives.delete(source);
   },
   bindTurnArchives(handle, readers) { turnArchives.set(archiveSource(handle), readers); },
+  prepareHistoryGallery,
   bindContinuationArchive(handle, reader) { continuationArchives.set(archiveSource(handle), reader); },
   snapshotAsync,
   decorate,

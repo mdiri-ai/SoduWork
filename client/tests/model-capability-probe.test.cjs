@@ -243,6 +243,10 @@ test('mandatory reasoning probes explicitly request supported low effort without
 
 test('reasoning probes select the lowest available configured effort and preserve remapping', () => {
   const request = require('../main/model-capability-request.cjs');
+  const flash = { name: 'glm-5.3-flash', config: { thinkingMode: 'controllable', thinkingFormat: 'zai' } };
+  const off = request.payload(flash, request.policy(flash), [], false);
+  assert.deepEqual(off.thinking, { type: 'disabled' });
+  assert.equal(off.reasoning_effort, undefined);
   for (const [thinkingLevelMap, expected] of [
     [{ low: null, high: 'high', max: 'max' }, 'high'],
     [{ low: 'high', high: 'max' }, 'high'],

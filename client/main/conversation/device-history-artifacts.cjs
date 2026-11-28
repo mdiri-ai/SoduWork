@@ -29,10 +29,14 @@ function allocation(row, workRoot, workspace) {
   const name = path.basename(row.cwd);
   if (workspace.taskId !== name || !/^chat-(?:[a-z0-9]+-[a-z0-9]{4,6}|[a-f0-9-]{36})$/.test(name)) return null;
   const root = realpath(workRoot), expected = path.join(root, 'temp', name);
-  if (path.relative(realpath(row.cwd), expected) || path.relative(path.resolve(workRoot, 'temp', name), path.resolve(row.cwd))) return null;
   assertNoLinks(root, expected);
+  // The application's configured work root may itself be an OS alias (for
+  // example /var on macOS). Descendants within its allocation stay link-free.
+  const canonical = realpath(expected);
+  const configured = path.resolve(row.cwd) === path.resolve(workRoot, 'temp', name) && realpath(row.cwd) === canonical;
+  if (!configured && !matchesJournalRoot(canonical, row.cwd)) return null;
   const start = epoch(workspace.started), end = epoch(workspace.ended);
-  return start && end >= start && end <= Date.now() ? { start, end } : null;
+  return start && end >= start && end <= Date.now() ? { start, end, inclusiveMillisecond: workspace.endedPrecisionMs === 1 && Number.isSafeInteger(end) } : null;
 }
 
 function stable(root, relative) {
@@ -47,8 +51,13 @@ function stable(root, relative) {
 }
 
 function during(stat, window) {
-  const changed = Number(stat.ctimeNs) / 1e6, modified = Number(stat.mtimeNs) / 1e6;
-  return changed >= window.start && changed <= window.end && modified >= window.start && modified <= window.end;
+  // The Pi JSONL timestamp covers its entire final millisecond. Keep the
+  // higher-resolution interval used by Runner receipts when available.
+  function within(nanos) {
+    const ms = Number(nanos) / 1e6;
+    return ms >= window.start && (window.inclusiveMillisecond ? Number(nanos / 1000000n) <= window.end : ms <= window.end);
+  }
+  return within(stat.ctimeNs) && within(stat.mtimeNs);
 }
 
 function classify(root, files, window, snapshot, executionCwd) {
@@ -154,7 +163,7 @@ async function journalFiles(root, journal, maxFileBytes) {
   return files;
 }
 
-async function capture({ row, workRoot, workspace, previous, retained, journal, verifiedTransfer = false, verifiedTurn = false, nativePiEvidence = false, snapshot, executionCwd }) {
+async function capture({ row, workRoot, workspace, previous, retained, journal, verifiedTransfer = false, verifiedTurn = false, nativePiEvidence = false, recheckPiEvidence = false, snapshot, executionCwd }) {
   if (!row.cwd || !path.isAbsolute(row.cwd)) return null;
   let root;
   try { root = realpath(row.cwd); } catch (_) { return previous || null; }
@@ -179,16 +188,17 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
   let window;
   try { window = allocation(row, workRoot, workspace); } catch (_) { /* A removed or relinked directory is unavailable. */ }
   const files = [];
-  const packageUntil = prior?.packageRecordedUntil || 0;
-  if (window && window.end > Math.min(prior?.recordedUntil || 0, packageUntil)) {
-    const since = Math.min(prior?.recordedUntil || 0, packageUntil);
+  const recordedUntil = recheckPiEvidence ? 0 : prior?.recordedUntil || 0;
+  const packageUntil = recheckPiEvidence ? 0 : prior?.packageRecordedUntil || 0;
+  if (window && window.end > Math.min(recordedUntil, packageUntil)) {
+    const since = Math.min(recordedUntil, packageUntil);
     const inventory = await require('../pi-session/outputs').inventoryAsync(root, Math.max(window.start, since));
     const evidence = require('./screenshot-evidence').collect(root, { since: window.start, until: window.end });
     for (const candidate of [...inventory, ...evidence]) {
       const relative = path.relative(root, candidate.path).split(path.sep).join('/');
       const stat = stable(root, relative);
       if (!stat) continue;
-      const until = drafts.ARCHIVE.test(relative) || !eligible(relative) ? packageUntil : prior?.recordedUntil;
+      const until = drafts.ARCHIVE.test(relative) || !eligible(relative) ? packageUntil : recordedUntil;
       if (!during(stat, window) || until && Number(stat.mtimeNs) / 1e6 <= until) continue;
       files.push({ ...candidate, relative, verifiedStamp: versions.stamp(stat) });
     }
@@ -196,7 +206,7 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
   const completeJournal = journal?.turnId && !journal.truncated && Array.isArray(journal.files) && matchesJournalRoot(root, journal.cwd);
   // A passive refresh can see the journal before the runtime's terminal callback.
   // Recheck those bytes when binding them to an authenticated turn.
-  const alreadyCaptured = completeJournal && journal.turnId === prior?.turnId && journal.turnId === prior?.packageTurnId;
+  const alreadyCaptured = !recheckPiEvidence && completeJournal && journal.turnId === prior?.turnId && journal.turnId === prior?.packageTurnId;
   let pending = completeJournal && (!alreadyCaptured || verifiedTurn) ? journal : null;
   if (nativePiEvidence && alreadyCaptured && !verifiedTurn) {
     const files = journal.files.filter(change => change.piTurn &&
@@ -205,7 +215,7 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
   }
   const changes = pending ? await journalFiles(root, pending, verifiedTransfer ? BigInt(MAX_TRANSFER_BYTES) : 32n * 1024n * 1024n) : [];
   const turnFiles = new Map(changes.map(file => [file.relative, file.verifiedStamp]));
-  const piTurns = new Map(nativePiEvidence && !verifiedTransfer ? journal?.files?.map(change => [change.path, change.piTurn]) : []);
+  const piChanges = new Map(nativePiEvidence && !verifiedTransfer ? journal?.files?.map(change => [change.path, change]) : []);
   files.push(...changes);
   if (files.length) {
     const expected = new Map(files.map(file => [file.relative, file.verifiedStamp]));
@@ -213,9 +223,12 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
     for (const entry of indexed.items) {
       const relative = entry.metadata.relative;
       if (!versions.same(expected.get(relative), entry.stamp)) continue;
-      const owner = verifiedTurn && !verifiedTransfer ? journal : piTurns.get(relative);
+      const change = piChanges.get(relative);
+      const owner = verifiedTurn && !verifiedTransfer ? journal : change?.piTurn;
       if (owner?.turnId && versions.same(turnFiles.get(relative), entry.stamp)) {
         entry.source = { ...entry.source, turnId: owner.turnId };
+        if (change?.piEditBaseSha256)
+          entry[require('./pi-history-artifacts.cjs').VERIFIED_EDIT_BASE] = change.piEditBaseSha256;
         if (verifiedTurn && row.deliveryWorkspaceKey && path.basename(root) === row.deliveryWorkspaceKey &&
             path.basename(path.dirname(root)) === '.soduwork-drafts')
           entry.source.deliveryWorkspaceKey = row.deliveryWorkspaceKey;
@@ -231,12 +244,17 @@ async function capture({ row, workRoot, workspace, previous, retained, journal, 
           entry.metadata.primary = false;
         }
       }
+      // The allocation ties a shell-produced original to this chat, but only
+      // its own native write receipt can bind it to a particular message.
+      if (!entry.source?.turnId && entry.source?.adapterId === 'pi' && window?.inclusiveMillisecond &&
+          require('./legacy-upgrade-artifacts.cjs').media(entry))
+        entry.source = { ...entry.source, turnId: require('./artifact-versions.cjs').unassignedTurn(entry) };
       records.set(relative, entry);
     }
   }
   if (!records.size && !window) return null;
   const all = [...records.values()];
-  return { version: 1, packageRecordedUntil: Math.max(window?.end || 0, packageUntil),
+  return { version: 1, packageRecordedUntil: Math.max(window?.end || 0, prior?.packageRecordedUntil || 0),
     packageTurnId: (completeJournal && journal.turnId) || prior?.packageTurnId || '', root, items: all.filter(entry => deliverable(entry.metadata.relative)),
     resources: all.filter(entry => !deliverable(entry.metadata.relative)),
     recordedUntil: Math.max(window?.end || 0, prior?.recordedUntil || 0), turnId: journal?.turnId || prior?.turnId || '' };
@@ -371,4 +389,4 @@ function archivedView(profile, id, cwd, history, guard, authorize) {
     verifyPlugin: item => owner(item).verifyPlugin(item) };
 }
 
-module.exports = { capture, view, archivedView };
+module.exports = { capture, view, archivedView, matchesJournalRoot, eligible };

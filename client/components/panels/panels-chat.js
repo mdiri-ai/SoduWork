@@ -120,6 +120,7 @@
     get _openToolGroup() { return _openToolGroup; },
     get _outs() { return _outs; }, set _outs(value) { _outs = value; },
     get _outAt() { return _outAt; },
+    get _historyPackagePickerReady() { return Boolean(_ref) && _historyPickerRef === _ref; },
     get _pendingSentAt() { return _pendingSentAt; }, set _pendingSentAt(value) { _pendingSentAt = value; },
     get _pendingBaseline() { return _pendingBaseline; }, set _pendingBaseline(value) { _pendingBaseline = value; },
     get _pending() { return _pending; }, set _pending(value) { _pending = value; },
@@ -309,6 +310,7 @@
     })) : null;
   let _outs = [];
   let _outAt = '';
+  let _historyPickerRef = '';
   let _outRequest = 0, _outRetryTimer = null;
   if (typeof global.addEventListener === 'function') global.addEventListener('soduwork-work-task-change', event => {
     const detail = event.detail || {}, id = String(detail.taskId || '');
@@ -395,15 +397,21 @@
         ? { ...file, cloudPending: true } : file);
       if (request !== _outRequest || ref !== _ref || epoch !== _viewEpoch) return;
       const key = JSON.stringify(files);
-      if (key !== _outAt) { _outAt = key; _outs = files.slice(); _render(); }
+      // Keep the recovery action hidden until the initial lookup and its retries finish.
+      const pickerReady = _snap?.localReplica && _snap.historicalPackageKind && _historyPickerRef !== ref && (!shouldRetry || retry === 2);
+      if (pickerReady) _historyPickerRef = ref;
+      if (key !== _outAt || pickerReady) { _outAt = key; _outs = files.slice(); _render(); }
     } catch (_) {
       shouldRetry = true;
-      // The first history read may fail transiently. Finish its loading state
-      // after the last retry, without changing an index that already succeeded.
-      if (retry === 2 && _snap?.localReplica && _outAt === '' &&
-          request === _outRequest && ref === _ref && epoch === _viewEpoch) {
-        _outAt = JSON.stringify(_outs);
-        _render();
+      if (retry === 2 && _snap?.localReplica && request === _outRequest && ref === _ref && epoch === _viewEpoch) {
+        // After the final failure the user can still select the original package
+        // through the authorized native chooser. Keep any files that were verified.
+        const offerPicker = _snap.historicalPackageKind && _historyPickerRef !== ref;
+        if (_outAt === '' || offerPicker) {
+          if (offerPicker) _historyPickerRef = ref;
+          if (_outAt === '') _outAt = JSON.stringify(_outs);
+          _render();
+        }
       }
     }
     finally {
@@ -916,7 +924,7 @@
     _wd = { dir: '', name: '准备工作区' }; _mode = 'full'; _sessionCaps = []; _sessionInputs = [];
     _pendingProposal = null; _proposalMuted = false;
     clearTimeout(_outRetryTimer); _outRetryTimer = null; _outRequest++;
-    _outs = []; _outAt = ''; _lastStatus = '';
+    _outs = []; _outAt = ''; _historyPickerRef = ''; _lastStatus = '';
     if (_messageAttachments) _messageAttachments.clear();
     _messageAttachments = null;
     _skillPicker = null; // The composer is removed below; do not persist its old input as a new-chat draft.

@@ -28,7 +28,7 @@ function thinkingParams(state) {
   if (format === 'qwen') return { enable_thinking: enabled, ...effort };
   if (format === 'qwen-chat-template') return { chat_template_kwargs: { enable_thinking: enabled, preserve_thinking: true } };
   if (format === 'deepseek') return { thinking: { type: enabled ? 'enabled' : 'disabled' }, ...effort };
-  if (format === 'zai') return { thinking: { type: enabled ? 'enabled' : 'disabled', clear_thinking: false }, ...effort };
+  if (format === 'zai') return { thinking: enabled ? { type: 'enabled', clear_thinking: false } : { type: 'disabled' }, ...effort };
   if (format === 'openrouter') return { reasoning: { enabled, ...(enabled ? { effort: 'low' } : {}) } };
   if (format === 'together') return { reasoning: { enabled } };
   if (format === 'baseten') return { chat_template_kwargs: { enable_thinking: enabled } };
