@@ -91,3 +91,26 @@ test('identity renewal shares the original request cancellation and never sends 
   resolveRenewal(accountIdentity()); await new Promise(resolve => setImmediate(resolve));
   assert.equal(calls, 1);
 });
+
+test('Fetch header tuples survive authentication and same-account renewal', async t => {
+  const identity = accountIdentity('expired'), renewed = { ...identity, session: sessions().renewed };
+  auth.setIdentityRefresher(async () => renewed);
+  t.after(() => auth.setIdentityRefresher(null));
+  const calls = [], headers = [['Content-Type', 'application/json'], ['X-Trace', 'first'],
+    ['X-Trace', 'second'], ['authorization', 'expired']];
+  await fetchWithDeviceAuthRetry(identity, 'https://fixture.invalid/headers', {
+    method: 'POST', headers, body: '{}',
+  }, async (_url, options) => {
+    calls.push(options.headers);
+    return { status: calls.length === 1 ? 401 : 200 };
+  });
+  assert.equal(calls.length, 2);
+  for (const row of calls) {
+    const normalized = new Headers(row);
+    assert.equal(normalized.get('content-type'), 'application/json');
+    assert.equal(normalized.get('x-trace'), 'first, second');
+    assert.equal(normalized.has('0'), false);
+  }
+  assert.equal(new Headers(calls[1]).get('authorization'), 'Device ' + renewed.session);
+  assert.equal(headers[3][1], 'expired');
+});

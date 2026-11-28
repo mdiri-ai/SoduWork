@@ -56,7 +56,9 @@ function authHeaders(identity, preferSecret = false) {
 function mergeHeaders(options, identity, preferSecret) {
   const current = (options && options.headers) || {};
   const merged = {};
-  if (current && typeof current.forEach === 'function') {
+  if (Array.isArray(current)) {
+    new Headers(current).forEach((value, key) => { merged[key] = value; });
+  } else if (current && typeof current.forEach === 'function') {
     current.forEach((value, key) => { merged[key] = value; });
   } else Object.assign(merged, current);
   // Do not leave an expired Authorization header beside the secret fallback.
