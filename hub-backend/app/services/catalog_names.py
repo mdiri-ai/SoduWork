@@ -2,6 +2,10 @@
 from sqlalchemy import func, select, text, update
 
 
+def _quote_ident(name: str) -> str:
+    """PostgreSQL-safe double-quoted identifier."""
+    return '"' + str(name).replace('"', '""') + '"'
+
 class DuplicateName(ValueError):
     pass
 
@@ -10,7 +14,7 @@ async def lock_catalog(session, model):
     bind = session.get_bind()
     if bind.dialect.name == "postgresql":
         table = bind.dialect.identifier_preparer.format_table(model.__table__)
-        await session.execute(text(f"LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE"))
+        await session.execute(text(f"LOCK TABLE {_quote_ident(table)} IN SHARE ROW EXCLUSIVE MODE"))
     else:
         await session.execute(update(model).where(False).values(id=model.id)
                               .execution_options(synchronize_session=False))
