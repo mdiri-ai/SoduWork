@@ -56,7 +56,7 @@ function detectKinds(raw) {
   add('presentation', /(pptx?|\u6f14\u793a\u6587\u7a3f|\u6c47\u62a5\u6750\u6599|\u5e7b\u706f\u7247|slide deck)/i);
   add('spreadsheet', /(xlsx?|excel|\u8868\u683c|\u6e05\u5355|\u6570\u636e\u5206\u6790|workbook)/i);
   add('document', /(docx?|word|markdown|\.(?:md|txt|rtf)\b|\u6587\u6863|\u62a5\u544a|\u65b9\u6848|\u7eaa\u8981|proposal|report)/i);
-  add('website', /(\u7f51\u7ad9|\u7f51\u9875|\u524d\u7aef|\u9875\u9762|\u754c\u9762|html|website|web\s*app|frontend|ui|ux)/i);
+  add('website', /(\u7f51\u7ad9|\u7f51\u9875|\u524d\u7aef|\u9875\u9762|\u754c\u9762|html|website|web\s*app|frontend|\b(?:gui|ui|ux)\b)/i);
   add('engineering', /(\u4ee3\u7801|\u5de5\u7a0b|\u7cfb\u7edf|\u5e94\u7528|\u8f6f\u4ef6|\u63a5\u53e3|api|\u540e\u7aef|\u4fee\u590d|bug|\u7f3a\u9677|\u5f00\u53d1|\u5b9e\u73b0|\u91cd\u6784|code|repository|backend|service)/i);
   add('research', /(\u7814\u7a76|\u8c03\u7814|\u5206\u6790|research|investigation|benchmark)/i);
   if (rows.includes('interactive') && !rows.includes('engineering')) rows.push('engineering');

@@ -58,3 +58,39 @@ test('negative constraints never become positive web or runtime requirements', (
   assert.equal(row.complete, false);
   assert.equal(row.coverage.includes('frontend-decision'), false);
 });
+
+for (const goal of [
+  'Build a PDF invoice',
+  'Write a short guide',
+  'Write a Linux backup checklist',
+  'Create a quick summary in notes.md',
+]) {
+  test('ordinary English words do not imply a website: ' + goal, () => {
+    const row = spec.compile({ goal });
+    assert.equal(row.workKinds.includes('website'), false);
+    assert.equal(row.deliverables.some(item => item.kind === 'website'), false);
+    assert.equal(row.coverage.includes('visual-design'), false);
+    assert.equal(row.checks.some(item => ['journey', 'visual', 'states'].includes(item.key)), false);
+  });
+}
+
+for (const goal of [
+  'Create a UI prototype',
+  'Create a UX flow',
+  'Create a GUI prototype',
+  'Create a UI/UX prototype',
+  '制作UI设计',
+  '制作UX流程',
+]) {
+  test('explicit interface acronyms still select a website: ' + goal, () => {
+    const row = spec.compile({ goal });
+    assert.equal(row.workKinds.includes('website'), true);
+    assert.equal(row.checks.some(item => item.key === 'visual'), true);
+  });
+}
+
+test('ordinary words in acceptance text do not add website checks to a document', () => {
+  const row = spec.compile({ goal: 'Create notes.md', acceptance: 'Include a short Linux setup guide' });
+  assert.deepEqual(row.workKinds, ['document']);
+  assert.equal(row.coverage.includes('visual-design'), false);
+});
