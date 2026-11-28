@@ -1,6 +1,7 @@
 /* System-authored capability and requirement copy, shared by renderer and main process. */
 (function (global) {
   const rows = {
+    '执行结果未确认，请先查看执行记录，避免重复执行。': ['The run result is unconfirmed. Check run history before running again to avoid duplicate work.', '実行結果を確認できません。重複実行を避けるため、再実行する前に実行履歴を確認してください。', '실행 결과를 확인하지 못했습니다. 중복 실행을 피하려면 다시 실행하기 전에 실행 기록을 확인하세요.'],
     "查看技能失败报告": ["View skill failure report","スキルの失敗レポートを表示","스킬 실패 보고서 보기"],
     "技能失败报告": ["Skill failure report","スキル失敗レポート","스킬 실패 보고서"],
     "技能与版本": ["Skills and versions","スキルとバージョン","스킬 및 버전"],
