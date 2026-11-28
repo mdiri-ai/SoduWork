@@ -363,6 +363,50 @@
         return expanded ? items : items.slice(0, PROJECT_PREVIEW_LIMIT);
       },
       partition(items) {
+        if (!list.dataset.projectDragWired) {
+          list.dataset.projectDragWired = '1';
+          let dragProject = '', dragTargetEl = null, dragAfterEl = false;
+          list.addEventListener('dragstart', event => {
+            if (event.target.closest('.ws-chat-row')) return;
+            const section = event.target.closest('.ws-project');
+            if (!section || section.draggable !== true) return;
+            dragProject = section.dataset.projectId;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('application/x-soduwork-sidebar-project', dragProject);
+            section.classList.add('is-project-dragging');
+          });
+          list.addEventListener('dragover', event => {
+            if (!dragProject) return;
+            const section = event.target.closest('.ws-project');
+            if (!section || section.dataset.projectId === dragProject) return;
+            event.preventDefault(); event.dataTransfer.dropEffect = 'move';
+            const box = section.getBoundingClientRect();
+            dragTargetEl = section; dragAfterEl = event.clientY >= box.top + box.height / 2;
+            section.classList.toggle('is-drop-before', !dragAfterEl);
+            section.classList.toggle('is-drop-after', dragAfterEl);
+            list.querySelectorAll('.ws-project').forEach(s => {
+              if (s !== section) s.classList.remove('is-drop-before', 'is-drop-after');
+            });
+          });
+          list.addEventListener('drop', event => {
+            if (!dragProject || !dragTargetEl) { dragProject = ''; dragTargetEl = null; return; }
+            event.preventDefault(); event.stopPropagation();
+            const section = dragTargetEl, after = dragAfterEl;
+            const dragged = dragProject; dragProject = ''; dragTargetEl = null;
+            if (!section || section.dataset.projectId === dragged) return;
+            const order = [...list.querySelectorAll(':scope > .ws-project')].map(s => s.dataset.projectId).filter(id => id !== dragged);
+            const at = order.indexOf(section.dataset.projectId);
+            const box = section.getBoundingClientRect();
+            order.splice(event.clientY >= box.top + box.height / 2 ? at + 1 : at, 0, dragged);
+            state().reorderProjects(order);
+            list.dataset.projectReorderPending = '1';
+            render();
+          });
+          list.addEventListener('dragend', () => {
+            dragProject = ''; dragTargetEl = null;
+            list.querySelectorAll('.ws-project').forEach(s => s.classList.remove('is-project-dragging', 'is-drop-before', 'is-drop-after'));
+          });
+        }
         const data = state().view(items);
         list.hidden = data.collapsed; toggle.setAttribute('aria-expanded', String(!data.collapsed));
         toggle.title = (data.collapsed ? '展开' : '收起') + '项目';
@@ -373,13 +417,15 @@
         list.querySelector('.ws-project-empty')?.remove();
         for (const p of data.projects) {
           let el = [...list.children].find(el => el.dataset.projectId === p.id);
+          if (el) el.draggable = true;
           if (!el) {
             el = document.createElement('section'); el.className = 'ws-project'; el.dataset.projectId = p.id;
             el.dataset.sidebarSection = p.id;
             el.innerHTML = '<div class="ws-project-heading"><button type="button" class="ws-project-toggle">' + groupIcon(p).markup +
               '<span></span></button></div><div class="ws-project-chats ws-list-body"></div>';
             const edit = button('ws-project-icon-button ws-project-edit', '编辑项目', icon('more'));
-            edit.onclick = () => openDialog(p.id); el.querySelector('.ws-project-heading').appendChild(edit);
+            edit.onclick = () => openDialog(p.id); el.draggable = true;
+            el.querySelector('.ws-project-heading').appendChild(edit);
             const create = button('ws-project-icon-button ws-project-create', '在此目录创建会话', icon('createChat'));
             create.onclick = event => {
               event.stopPropagation();
@@ -408,6 +454,14 @@
           create.title = p.folders.length ? '在此目录创建会话：' + p.folders[0] : '在默认工作区新建会话';
           create.setAttribute('aria-label', create.title);
           p.target = body;
+        }
+        // Re-append project sections in the dragged order once after a drop; ordinary renders keep the DOM in place (avoids hover flicker).
+        if (list.dataset.projectReorderPending) {
+          delete list.dataset.projectReorderPending;
+          data.projects.forEach(p => {
+            const el = [...list.children].find(el => el.dataset.projectId === p.id);
+            if (el) list.appendChild(el);
+          });
         }
         if (!data.projects.length) {
           const empty = button('ws-project-empty', '创建第一个项目'); empty.textContent = '创建项目，整理会话';

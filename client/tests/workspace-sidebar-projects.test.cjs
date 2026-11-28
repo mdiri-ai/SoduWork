@@ -446,3 +446,39 @@ test('new-conversation placeholders stay visible until the real session id arriv
   assert.equal(s.get().recent.includes('undefined'), false);
   assert.equal(s.view([pending, a, b]).recent[0].localId, 'pending-one');
 });
+test('drag-reordered projects persist their order across restarts, rebuilds and new projects', () => {
+  const f = fixture(), s = f.create();
+  const first = s.saveProject({name: 'First'}), second = s.saveProject({name: 'Second'});
+  const third = s.saveProject({name: 'Third'});
+  s.reorderProjects([third, second, first]);
+  assert.deepEqual(ids(s.get().projects), [third, second, first]);
+  assert.deepEqual(ids(f.create().get().projects), [third, second, first]);
+  const fourth = s.saveProject({name: 'Fourth'});
+  assert.deepEqual(ids(s.get().projects), [third, second, first, fourth]);
+  assert.deepEqual(ids(f.create().get().projects), [third, second, first, fourth]);
+  s.saveProject({id: second, name: 'Second renamed'});
+  assert.deepEqual(ids(s.get().projects), [third, second, first, fourth]);
+  assert.deepEqual(ids(f.create().get().projects), [third, second, first, fourth]);
+});
+test('project sync does not revert a drag-reordered mixed project order', async () => {
+  const f = fixture(), store = f.create(), remote = new Map();
+  const local = store.saveProject({name: '本地项目'});
+  store.fileChat('native-chat', local, {id: 'native-chat', title: '会话'});
+  const sync = f.api.projectSync({store, storage: f.storage, key: 'one', api: {
+    conversationProjects: async () => ({items: [...remote.values()]}),
+    saveConversationProject: async (key, body) => {
+      const value = {...body, id: key, revision: body.revision + 1}; remote.set(key, value); return value;
+    },
+  }});
+  await sync.run();
+  remote.set('project-pc', {id: 'project-pc', name: 'PC项目', chatIds: [], revision: 1});
+  await sync.run();
+  assert.deepEqual(ids(store.get().projects), [local, 'project-pc']);
+  store.reorderProjects(['project-pc', local]);
+  assert.deepEqual(ids(store.get().projects), ['project-pc', local]);
+  remote.set(local, {...remote.get(local), name: '手机改名', revision: 2});
+  await sync.run();
+  assert.deepEqual(ids(store.get().projects), ['project-pc', local]);
+  assert.deepEqual(ids(f.create().get().projects), ['project-pc', local]);
+  assert.equal(store.get().projects.find(p => p.id === local).name, '手机改名');
+});
