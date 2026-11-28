@@ -18,6 +18,14 @@
       fields.some(other => other.key === field.key.replace(/_PORT$/, '_HOST')));
     const hostKey = port && port.key.replace(/_PORT$/, '_HOST');
     const redis = bundled && template.key === 'connector-redis';
+    const writeHints = {
+      REDIS_INSERT_PREFIXES: '只允许在指定键前缀下新增文本。已有记录不能覆盖或删除。',
+      MONGO_INSERT_COLLECTIONS: '只允许向指定集合新增文档。修改和删除均不支持。',
+    };
+    const scopeField = bundled && fields.find(field => field.key.includes('_INSERT_'));
+    const writeHint = scopeField
+      ? writeHints[scopeField.key] || '只允许向上方列出的表新增记录。修改和删除均不支持。'
+      : '仅在你需要创建、修改或发送内容时开启';
     const fieldMarkup = field => {
       const raw = value.env?.[field.key];
       const fallback = (field === port || redis) && !field.secret ? field.default : '';
@@ -25,7 +33,7 @@
       const tls = redis && field.key === 'REDIS_TLS';
       if (tls || field.type === 'boolean') {
         const hint = tls ? '关闭后使用明文连接。使用 CA 证书时须开启。'
-          : field.key === 'ALLOW_WRITES' ? '仅在你需要创建、修改或发送内容时开启' : '';
+          : field.key === 'ALLOW_WRITES' ? writeHint : '';
         const checked = saved === 'true' || (tls && Boolean(value.env?.REDIS_CA_PEM));
         return '<label class="cap-confirm"><input data-connector-field="'+h(field.key)+'" type="checkbox"'+(checked?' checked':'')+'><span>'+h(tls?'使用 TLS':field.label)+(hint?'<small>'+h(hint)+'</small>':'')+'</span></label>';
       }

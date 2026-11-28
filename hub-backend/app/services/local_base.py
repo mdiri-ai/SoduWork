@@ -993,8 +993,10 @@ def _env_for(prof: dict, cfg: dict, runtime_ref: str = "", *, require_model: boo
         env["SODUWORK_MCP_SERVERS_JSON"] = json.dumps(cfg["mcpConfig"], ensure_ascii=False)
     # Resolve plugin secrets only on the execution machine; plaintext enters only that subprocess environment.
     for target, source in dict((cfg or {}).get("runtimeSecrets") or {}).items():
-        if source in os.environ:
+        if str(target).upper() != "SODUWORK_HUB_ORIGIN" and source in os.environ:
             env[str(target)] = os.environ[str(source)]
+    if (cfg.get("llm") or {}).get("localOnly") is True:
+        env.pop("SODUWORK_HUB_ORIGIN", None)
     if prof is _PROFILES.get("opencode"):
         from .opencode_runtime_config import prepare_environment
         prepare_environment(env, runtime_root or _data_root())

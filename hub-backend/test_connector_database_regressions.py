@@ -14,6 +14,155 @@ from test_connector_database_extra import spec, result, http_server
 
 
 class DatabaseRegressions(unittest.TestCase):
+    def test_document_writes_are_hidden_and_refused_outside_saved_scope(self):
+        cases = [
+            ("redis", {"REDIS_HOST": "localhost"}, "REDIS_INSERT_PREFIXES", "handoff:",
+             "create_text", {"key": "other:demo", "text": "ok"}, "_redis_connection"),
+            ("mongodb", {"MONGO_HOST": "localhost", "MONGO_DATABASE": "fixture"}, "MONGO_INSERT_COLLECTIONS",
+             "notes", "insert_document", {"collection": "notes_archive", "document": {"value": 1}}, "_mongo_connection"),
+        ]
+        for kind, env, scope_key, scope, tool, args, connect in cases:
+            for enabled, names in (("false", scope), ("true", " , "), ("true", scope)):
+                with self.subTest(kind=kind, enabled=enabled, scope=names):
+                    target = spec(kind, **env, ALLOW_WRITES=enabled, **{scope_key: names})
+                    listed = {t["name"]: t for t in json.loads(db.execute(target, "list"))["tools"]}
+                    self.assertEqual(tool in listed, enabled == "true" and names == scope)
+                    if tool in listed:
+                        self.assertIn(scope, listed[tool]["description"])
+                        self.assertFalse(listed[tool]["annotations"]["readOnlyHint"])
+                    with patch.object(extra, connect) as dial, self.assertRaisesRegex(ValueError, "未授权"):
+                        result(target, tool, args)
+                    dial.assert_not_called()
+                    with self.assertRaisesRegex(ValueError, "只支持查询和新增"):
+                        result(target, "delete_record", {})
+
+    def test_redis_lost_ack_reads_original_key_without_a_second_set(self):
+        from redis.exceptions import TimeoutError
+        target = spec("redis", REDIS_HOST="localhost", REDIS_INSERT_PREFIXES="notes:", ALLOW_WRITES="true")
+        with patch.object(extra, "_redis_connection") as connect:
+            redis = connect.return_value.__enter__.return_value
+            redis.set.side_effect = TimeoutError()
+            redis.getrange.return_value = "备注".encode()
+            with self.assertRaisesRegex(ValueError, "当前键的文本与请求一致"):
+                result(target, "create_text", {"key": "notes:demo", "text": "备注"})
+            redis.set.assert_called_once_with("notes:demo", "备注", nx=True, ex=86400)
+            redis.getrange.assert_called_once()
+
+    def test_mongo_lost_ack_reads_same_typed_id_without_a_second_insert(self):
+        from pymongo.errors import AutoReconnect
+        target = spec("mongodb", MONGO_HOST="localhost", MONGO_DATABASE="fixture",
+                      MONGO_INSERT_COLLECTIONS="notes", ALLOW_WRITES="true")
+        with patch.object(extra, "_mongo_connection") as connect:
+            database = connect.return_value.__enter__.return_value["fixture"]
+            database.list_collections.return_value.__enter__.side_effect = (
+                lambda: iter([{"name": "notes", "type": "collection"}]))
+            collection = database["notes"]
+            collection.insert_one.side_effect = AutoReconnect()
+            receipt = result(target, "insert_document", {"collection": "notes", "document": {"value": "偏热"}})
+            collection.insert_one.assert_called_once()
+            oid = collection.insert_one.call_args.args[0]["_id"]
+            collection.find_one.assert_called_once_with({"_id": oid}, {"_id": 1})
+            self.assertEqual(receipt, {"inserted": 1, "insertId": {"$oid": str(oid)}, "verifiedAfterTimeout": True})
+            collection.insert_one.reset_mock()
+            collection.find_one.side_effect = AutoReconnect()
+            with self.assertRaisesRegex(ValueError, "结果待确认") as caught:
+                result(target, "insert_document", {"collection": "notes", "document": {"value": "偏热"}})
+            collection.insert_one.assert_called_once()
+            self.assertIn(str(collection.insert_one.call_args.args[0]["_id"]), str(caught.exception))
+
+    def test_postgres_insert_grant_is_scoped_to_schema_and_table(self):
+        env = dict(PG_HOST="localhost", PG_DATABASE="fixture", PG_USER="fixture", PG_PASSWORD="fixture")
+        for enabled, tables, schema in (("false", "city", "public"), ("true", "", "public"),
+                                        ("true", "city", "private"), ("true", "private.city", "public")):
+            target = spec("postgres", **env, ALLOW_WRITES=enabled, PG_INSERT_TABLES=tables)
+            names = {t["name"] for t in json.loads(db.execute(target, "list"))["tools"]}
+            self.assertEqual("insert_row" in names, enabled == "true" and bool(tables))
+            with patch.object(db, "connect") as connect, self.assertRaisesRegex(ValueError, "未授权"):
+                result(target, "insert_row", {"schema": schema, "table": "city", "values": {"name": "demo"}})
+            connect.assert_not_called()
+
+    def test_sqlite_inserts_follow_each_table_and_cannot_replace_or_modify_rows(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "fixture.db"
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript("""
+                    CREATE TABLE city(id INTEGER PRIMARY KEY, name VARCHAR(6) NOT NULL, founded_on DATE);
+                    CREATE TABLE product(id INTEGER PRIMARY KEY, title TEXT NOT NULL UNIQUE ON CONFLICT REPLACE,
+                                         price DECIMAL(6,2) NOT NULL CHECK(price>=0), stock INTEGER DEFAULT 0);
+                """)
+            target = spec("sqlite", SQLITE_PATH=str(path), ALLOW_WRITES="true", SQLITE_INSERT_TABLES="city,product")
+
+            def insert(table, **values):
+                return result(target, "insert_row", {"table": table, "values": values})
+
+            self.assertEqual(insert("city", name="青河", founded_on="2001-06-15")["insertId"], 1)
+            self.assertEqual(insert("product", title="水杯", price="19.90")["insertId"], 1)
+            for table, values, error in (
+                    ("city", {"name": "too long"}, "name"), ("city", {"name": "a", "price": 1}, "price"),
+                    ("city", {"name": "a", "founded_on": "2025-02-30"}, "founded_on"),
+                    ("product", {"title": "马克杯", "price": "面议"}, "price"),
+                    ("product", {"title": "水杯", "price": 2}, "约束"),
+                    ("product", {"title": "a", "price": -1}, "约束"),
+                    ("product", {"title": "a", "price": "1.234"}, "精度"),
+                    ("product", {"title": "a"}, "price"),
+                    ("city", {"name": "a", "id": 2}, "自动生成")):
+                with self.subTest(values=values), self.assertRaisesRegex(ValueError, error):
+                    insert(table, **values)
+            for name in ("update_row", "delete_row"):
+                with self.assertRaisesRegex(ValueError, "操作未执行"):
+                    result(target, name, {"table": "city"})
+            with closing(sqlite3.connect(path)) as conn:
+                conn.executescript("""
+                    ALTER TABLE city ADD COLUMN region TEXT NOT NULL DEFAULT 'north';
+                    CREATE TRIGGER side_effect AFTER INSERT ON product BEGIN UPDATE city SET name='changed'; END;
+                """)
+            with self.assertRaises(ValueError):
+                insert("product", title="a", price=1)
+            insert("city", name="海城", region="east")
+            self.assertEqual(result(target, "read_rows", {"table": "product"})["rows"], [[1, "水杯", 19.9, 0]])
+            self.assertEqual(result(target, "read_rows", {"table": "city", "order_by": "id"})["rows"],
+                             [[1, "青河", "2001-06-15", "north"], [2, "海城", None, "east"]])
+            for switch, tables in (("false", "city"), ("true", ""), ("true", "product")):
+                restricted = spec("sqlite", SQLITE_PATH=str(path), ALLOW_WRITES=switch, SQLITE_INSERT_TABLES=tables)
+                with self.assertRaisesRegex(ValueError, "未授权"):
+                    result(restricted, "insert_row", {"table": "city", "values": {"name": "demo"}})
+
+    def test_mysql_insert_requires_both_connection_grants_even_on_direct_calls(self):
+        from app.services.plugin_mcp_gateway import tool_risk
+        env = dict(MYSQL_HOST="localhost", MYSQL_DATABASE="fixture", MYSQL_USER="reader", MYSQL_PASSWORD="fixture")
+        for switch, tables in (("false", "items"), ("true", ""), ("true", "other"), ("true", "items")):
+            target = spec("mysql", **env, ALLOW_WRITES=switch, MYSQL_INSERT_TABLES=tables)
+            tools = {t["name"]: t["annotations"] for t in json.loads(db.execute(target, "list"))["tools"]}
+            self.assertEqual("insert_row" in tools, switch == "true" and bool(tables))
+            if "insert_row" in tools:
+                self.assertFalse(tools["insert_row"]["readOnlyHint"])
+                write = next(t for t in db.definition("mysql")["tools"] if t["name"] == "insert_row")
+                self.assertEqual(tool_risk(write["name"], write["description"]), "medium")
+            if switch != "true" or tables != "items":
+                with patch.object(db, "connect") as connect, self.assertRaisesRegex(ValueError, "未授权"):
+                    db.execute(target, "call", "insert_row", {"table": "items", "values": {"name": "demo"}})
+                connect.assert_not_called()
+
+    def test_insert_shape_follows_metadata_and_preserves_server_defaults(self):
+        from app.services.connector_mysql_insert import insert_parameters
+        columns = [
+            ("id", "int", "NO", "int", None, 10, 0, None, "auto_increment"),
+            ("name", "varchar", "NO", "varchar(4)", 4, None, None, None, ""),
+            ("qty", "tinyint", "NO", "tinyint unsigned", None, 3, 0, "0", ""),
+            ("price", "decimal", "YES", "decimal(3,2)", None, 3, 2, None, ""),
+            ("day", "date", "YES", "date", None, None, None, None, ""),
+            ("total", "int", "YES", "int", None, 10, 0, None, "STORED GENERATED"),
+        ]
+        self.assertEqual(insert_parameters(columns, {"name": "演示", "price": "1.20"}),
+                         {"name": "演示", "price": Decimal("1.20")})
+        for invalid in ({"id": 1}, {"total": None}, {"qty": -1}, {"qty": 256}, {"qty": True},
+                        {"price": "10.00"}, {"price": "1.234"}, {"day": "2026-02-30"},
+                        {"unknown": ""}, {"name": "12345"}, {"name": None}):
+            with self.subTest(invalid=invalid), self.assertRaises(extra.InputError):
+                insert_parameters(columns, {"name": "ok", **invalid})
+        with self.assertRaisesRegex(extra.InputError, "name"):
+            insert_parameters(columns, {"qty": 0})
+
     def test_bound_sql_pages_and_sort_are_validated_without_sql_fragments(self):
         for kind in ("postgres", "mysql"):
             sql, params, limit = db.statement(kind, "read_rows", {"table": "sample", "limit": 2, "offset": 2, "order_by": "id"})

@@ -3,7 +3,7 @@
   "id": "mysql",
   "name": "MySQL",
   "category": "数据库",
-  "description": "MySQL 通用连接器：查看表、字段与最多 100 行数据；在只读事务中执行固定语句。",
+  "description": "查看 MySQL 表、字段和数据，向已授权的表新增单条记录。",
   "runtimeKind": "mysql",
   "officialDocs": [
     "https://dev.mysql.com/doc/refman/8.4/en/information-schema.html",
@@ -42,7 +42,7 @@
     },
     {
       "key": "MYSQL_USER",
-      "label": "数据库用户（建议只读账号）",
+      "label": "数据库用户",
       "secret": false,
       "required": true,
       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$",
@@ -70,6 +70,14 @@
       "secret": false,
       "required": false,
       "example": ""
+    },
+    {
+      "key": "MYSQL_INSERT_TABLES",
+      "label": "允许新增的表（多个表名用英文逗号分隔）",
+      "secret": false,
+      "required": false,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}(?: *, *[A-Za-z_][A-Za-z0-9_]{0,62})*$",
+      "example": "city, product"
     }
   ],
   "auth": {
@@ -112,7 +120,7 @@
     },
     {
       "name": "describe_table",
-      "description": "获取表结构（宿主固定查询 information_schema.COLUMNS，按 TABLE_SCHEMA=DATABASE() + TABLE_NAME 过滤，只读事务执行）。无分页。出处：https://dev.mysql.com/doc/refman/8.4/en/information-schema-columns-table.html",
+      "description": "查看当前库中的列、类型、长度、精度、可空性、默认值及自增等属性，最多 100 列。",
       "method": "GET",
       "path": "/tables/{table}/columns",
       "inputSchema": {
@@ -179,10 +187,26 @@
         "offset": "offset"
       },
       "readOnly": true
+    },
+    {
+      "name": "insert_row",
+      "description": "根据用户明确给出的字段值向一张已授权的表新增一行。先用 describe_table 确认字段，缺少必填值时询问用户。自增列和生成列应省略；精确小数可传字符串。返回写入行数及自增 ID。结果不确定时先查询核实。",
+      "method": "POST",
+      "path": "/tables/{table}/rows",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "table": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"},
+          "values": {"type": "object", "minProperties": 1, "maxProperties": 100, "additionalProperties": true}
+        },
+        "required": ["table", "values"]
+      }
     }
   ],
   "limitations": [
-    "只提供固定只读操作，不执行用户 SQL，也不提供数据库写入。",
+    "查询默认只读。新增需要开启写入、填写允许新增的表，并授予数据库账号对应 InnoDB 表的 SELECT 和 INSERT 权限。每次最多新增一行，支持文本、整数、定点小数和日期。",
     "远程连接默认使用 TLS 并校验证书与主机名。数据库未启用 TLS 时，可在高级设置中选择明文连接。",
     "需升级包含 pg8000 / PyMySQL 的 Runner；最多 100 行、结果不超过 2 MB。",
     "尚未使用真实业务数据库授权验证。",

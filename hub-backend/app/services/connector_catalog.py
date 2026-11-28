@@ -7,6 +7,16 @@ from pathlib import Path
 
 COMMAND = "soduwork-connector"
 
+
+def connection_fields(provider: dict) -> list[dict]:
+    fields = provider.get("fields", [])
+    if any(not tool.get("readOnly") for tool in provider.get("tools", [])) and not any(
+            field["key"] == "ALLOW_WRITES" for field in fields):
+        return [*fields, {"key": "ALLOW_WRITES", "label": "允许写入操作", "type": "boolean",
+                          "secret": False, "required": False, "default": "false", "pattern": "^(true|false)$"}]
+    return fields
+
+
 @lru_cache(maxsize=1)
 def templates() -> tuple[dict, ...]:
     from .skills import bundled_root
@@ -17,10 +27,7 @@ def templates() -> tuple[dict, ...]:
         key = value.get("id", "")
         if value.get("schemaVersion") != 1 or not re.fullmatch(r"[a-z][a-z0-9-]{1,60}", key):
             raise ValueError("内置连接器定义无效")
-        fields, tools = value.get("fields", []), value.get("tools", [])
-        if any(not t.get("readOnly") for t in tools) and not any(f.get("key") == "ALLOW_WRITES" for f in fields):
-            fields = [*fields, {"key": "ALLOW_WRITES", "label": "允许写入操作", "type": "boolean",
-                               "secret": False, "required": False, "default": "false", "pattern": "^(true|false)$"}]
+        fields, tools = connection_fields(value), value.get("tools", [])
         if not fields or not tools or any(not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", f.get("key", "")) for f in fields):
             raise ValueError("内置连接器字段无效")
         rows.append({

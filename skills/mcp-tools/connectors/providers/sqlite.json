@@ -3,7 +3,7 @@
   "id": "sqlite",
   "name": "SQLite",
   "category": "数据库",
-  "description": "SQLite 通用连接器：只读打开既有数据库文件，查看表、字段与最多 100 行数据。不创建文件、不执行任意 SQL、不写入。",
+  "description": "查看 SQLite 表、字段和数据，向已授权的普通表新增单条记录。",
   "runtimeKind": "sqlite",
   "officialDocs": [
     "https://www.sqlite.org/uri.html",
@@ -23,6 +23,14 @@
       "required": true,
       "pattern": "^(?:[A-Za-z]:[\\\\/]|/)[^\\x00-\\x1f<>|:*?\"]{0,999}$",
       "example": ""
+    },
+    {
+      "key": "SQLITE_INSERT_TABLES",
+      "label": "允许新增的表（多个表名用英文逗号分隔）",
+      "secret": false,
+      "required": false,
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}(?: *, *[A-Za-z_][A-Za-z0-9_]{0,62})*$",
+      "example": "city, product"
     }
   ],
   "auth": {
@@ -32,7 +40,7 @@
   "tools": [
     {
       "name": "list_tables",
-      "description": "列出最多 100 张基础表（宿主固定查询 sqlite_master WHERE type='table'，排除 sqlite_ 系统表）。无分页，一次最多 100 条。不执行任意 SQL。出处：https://www.sqlite.org/fileformat2.html 支持 offset（0-10000）按表名分页。",
+      "description": "按表名列出普通表，跳过系统表，每页最多 100 张，可用 offset 翻页。",
       "method": "GET",
       "path": "/tables",
       "inputSchema": {
@@ -61,7 +69,7 @@
     },
     {
       "name": "describe_table",
-      "description": "获取表结构（宿主固定执行 PRAGMA table_info，表名经标识符白名单校验）。无分页。出处：https://www.sqlite.org/pragma.html#pragma_table_info",
+      "description": "查看真实列名、声明类型、可空性、默认值及自动生成信息，最多 100 列。",
       "method": "GET",
       "path": "/tables/{table}/columns",
       "inputSchema": {
@@ -124,11 +132,38 @@
         "maxProperties": 50
       },
       "readOnly": true
+    },
+    {
+      "name": "insert_row",
+      "description": "按真实表结构校验字段并新增一行，先查看表结构。省略自动编号和生成列；缺少必填项时询问用户。提交结果不确定时先查回核实。",
+      "method": "POST",
+      "path": "/tables/{table}/rows",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "table": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"
+          },
+          "values": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "table",
+          "values"
+        ]
+      }
     }
   ],
   "limitations": [
-    "只读打开既有文件（URI mode=ro），目标文件不存在、损坏或非 SQLite 格式时直接报错，绝不创建新文件。",
-    "只提供固定只读操作，不执行用户 SQL，不提供任何写入；WAL 附属文件只读访问可能受限，请在数据库静默或提供只读副本时使用。",
+    "默认只读。单行新增需要开启写入并明确列出目标表；支持文本、整数、定点小数、日期等常用字段。不能修改或删除记录，不接受任意 SQL。",
+    "查询以只读模式打开现有文件；新增需要执行机对文件及目录的写权限，不会创建缺失的数据库。",
     "最多 100 行、结果不超过 2 MB；行数上限不代表已读取整张表。",
     "数据库文件位于执行机本地，路径必须有执行机文件系统访问权限；连接器不做任何账号鉴权（SQLite 无账号体系）。",
     "数据分页需指定稳定唯一的 order_by；最多跳过 10000 行。非快照，不保证并发修改期间跨页一致。"

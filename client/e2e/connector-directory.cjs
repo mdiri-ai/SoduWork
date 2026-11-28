@@ -76,6 +76,7 @@ app.whenReady().then(async()=>{try{
  report.checks.push('页面直接展示我的连接器与常用连接器，原生和企业来源正确且飞书去重');
  await fill('#capSearch','Figma');
  assert.equal(await count(),1);assert.equal(await js('document.querySelectorAll(".connector-library-card:not([hidden])").length'),1);
+ assert.equal(await js('[...document.querySelectorAll(".connector-library-card")].filter(card=>card.getClientRects().length).length'),1);
  assert.equal(await js('document.querySelector("[data-template=connector-figma] .connector-library-action").textContent'),'已添加 · 管理');
  await click('[data-template=connector-figma]');await wait('document.querySelector("#capMcpName")');
  assert.equal(await js('document.querySelector("#capMcpName").value'),'Figma 工作账号');

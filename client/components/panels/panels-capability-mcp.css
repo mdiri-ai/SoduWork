@@ -128,7 +128,7 @@
 .connector-access-note{padding:10px 12px;margin:0 18px 14px;font-size:13px;line-height:1.6;background:var(--bg-1);border-radius:8px;color:var(--ink-3)}
 .cap-connections-view .cap-connector-save{margin:0 18px 12px;display:flex;align-items:center;gap:12px;font-size:12px;color:var(--ink-3)}.cap-connections-view .cap-connector-save[hidden]{display:none}
 .connector-library-tools{display:flex;align-items:center;gap:16px;flex:none}.connector-library-tools .connector-link{white-space:nowrap;color:var(--ink-3)}.connector-library-tools .connector-link:hover{color:var(--accent)}
-.connector-library-card[hidden]{display:none}.connector-library-card{cursor:pointer}
+.cap-template.connector-library-card[hidden]{display:none}.connector-library-card{cursor:pointer}
 .connector-library-empty{margin:0;padding:24px 18px;border-top:1px solid var(--line-2);color:var(--ink-3);font:13px/1.7 var(--font-ui);text-align:center}
 .cap-modal.cap-connector-library{width:min(560px,calc(100vw - 32px));max-height:100%}
 .connector-account-choice{display:block;width:100%;border:0;border-bottom:1px solid var(--line);padding:14px 4px;background:none;font:14px/1.5 var(--font-ui);color:var(--ink);text-align:left}.connector-account-choice:hover{color:var(--accent)}

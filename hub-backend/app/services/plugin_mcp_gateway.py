@@ -120,7 +120,7 @@ _HIGH_RISK = (
     "apply", "commit", "merge", "close", "cancel", "disable", "enable",
 )
 _WRITE_RISK = (
-    "create", "update", "write", "edit", "set", "post", "put", "patch",
+    "create", "insert", "update", "write", "edit", "set", "post", "put", "patch",
     "upload", "execute", "run", "trigger", "submit",
 )
 _READ_RISK = (
