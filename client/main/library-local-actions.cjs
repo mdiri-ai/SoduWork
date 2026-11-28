@@ -111,15 +111,17 @@ function splitFilename(value) {
 }
 function nextItemName(index, row) {
   const desired = visibleFilename(row);
-  const occupied = candidate => {
-    const key = nameKey(candidate);
-    return index.items.some(other => other.id !== row.id && !other.deletedAt && other.folderId === row.folderId && nameKey(visibleFilename(other)) === key) ||
-      index.folders.some(other => other.parentId === row.folderId && nameKey(other.name) === key);
-  };
-  if (!occupied(desired)) return desired;
+  const occupied = new Set();
+  for (const other of index.items) {
+    if (other.id !== row.id && !other.deletedAt && other.folderId === row.folderId) occupied.add(nameKey(visibleFilename(other)));
+  }
+  for (const other of index.folders) {
+    if (other.parentId === row.folderId) occupied.add(nameKey(other.name));
+  }
+  if (!occupied.has(nameKey(desired))) return desired;
   for (let number = 1; number < 100000; number += 1) {
     const candidate = name(desired, row.filename, '（' + number + '）');
-    if (!occupied(candidate)) return candidate;
+    if (!occupied.has(nameKey(candidate))) return candidate;
   }
   throw error('LIBRARY_NAME_CONFLICT', '当前文件夹下可用文件名已耗尽，请整理后重试');
 }

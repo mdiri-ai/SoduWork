@@ -377,6 +377,30 @@ test('parallel duplicate saves commit only one original and moves/restores canno
   assert.equal((await f.call('readContent', { id: sibling.id })).content, '原始内容');
 });
 
+test('duplicate imports scan occupied names once while retaining the first available suffix', async t => {
+  const f = fixture(t), count = 600;
+  await f.call('upload', { name: 'report.txt', dataBase64: data('original') });
+  const indexPath = path.join(f.account(), 'index.json');
+  const index = JSON.parse(fs.readFileSync(indexPath, 'utf8')), original = index.items[0];
+  for (let number = 1; number < count; number++) {
+    const uuid = require('node:crypto').randomUUID(), filename = `report（${number}）.txt`;
+    const key = `objects/${uuid}/${filename}`, target = path.join(f.account(), key);
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, 'original');
+    index.items.push({ ...original, id: 'local-' + uuid, filename, title: filename, _object: key });
+  }
+  fs.writeFileSync(indexPath, JSON.stringify(index));
+  const normalize = String.prototype.normalize; let comparisons = 0;
+  t.mock.method(String.prototype, 'normalize', function (...args) {
+    comparisons++; return Reflect.apply(normalize, this, args);
+  });
+  const result = await f.call('upload', { name: 'report.txt', dataBase64: data('new import') });
+  t.mock.restoreAll();
+  assert.equal(result.item.filename, `report（${count}）.txt`);
+  assert.equal((await f.call('readContent', { id: result.item.id })).content, 'new import');
+  assert.equal((await f.call('list', { scope: 'all' })).items.length, count + 1);
+  assert.ok(comparisons <= count * 5, `${comparisons} name normalizations for ${count} occupied names`);
+});
+
 test('legacy renamed metadata exports the visible name and blocks its duplicates without moving the original object', async t => {
   const f = fixture(t), row = (await create(f, { filename: 'before.txt' })).item;
   await f.call('reveal', { id: row.id }); const originalPath = f.revealed[0];
