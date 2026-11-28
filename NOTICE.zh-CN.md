@@ -1,6 +1,6 @@
 # SoduWork 第三方声明
 
-**简体中文** · [English](NOTICE.md) · [文档导航](docs/README.zh-CN.md)
+**简体中文** · [English](NOTICE.md) · [Tiếng Việt](NOTICE.vi.md) · [文档导航](docs/README.zh-CN.md)
 
 自有源码使用根目录 MIT 许可证；第三方源码、技能、字体和素材适用各自原始许可证。具体来源、版本与原文见 third-party/manifest.json、client/THIRD_PARTY_NOTICES.md 以及技能目录内的 LICENSE、UPSTREAM.md、ADAPTATIONS.md。
 

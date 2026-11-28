@@ -1,4 +1,4 @@
-[English](README.md) · **简体中文**
+[English](README.md) · **简体中文** · [Tiếng Việt](README.vi.md)
 
 > **中文文档入口：[文档目录](docs/README.zh-CN.md) · [安装与启动](docs/getting-started.md) · [开发指南](docs/development.md)**
 

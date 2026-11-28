@@ -1,6 +1,6 @@
 # Third-party notices
 
-[简体中文](NOTICE.zh-CN.md) · **English** · [Documentation](docs/README.md)
+[简体中文](NOTICE.zh-CN.md) · **English** · [Tiếng Việt](NOTICE.vi.md) · [Documentation](docs/README.md)
 
 Project-owned source uses the root MIT license. Third-party code, fonts, assets, and any separately imported skills retain their original terms. See `third-party/manifest.json`, `client/THIRD_PARTY_NOTICES.md`, and any component-specific LICENSE, UPSTREAM.md, or ADAPTATIONS.md.
 
