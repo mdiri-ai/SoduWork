@@ -7,7 +7,8 @@
 | 安装桌面客户端并开始首次对话 | [桌面客户端安装与首次使用](desktop-quickstart.md) |
 | 第一次运行桌面和管理端 | [从源码启动](getting-started.md) |
 | 配置模型接口、排查计费与协议错误 | [模型服务](model-services.md) |
-| 使用本人账号接入 CodeBuddy Code | [本机 ACP 接入](codebuddy-acp.md) |
+| 使用本人账号接入 CodeBuddy Code | [CodeBuddy Code 本机 ACP 接入](codebuddy-acp.md) |
+| 使用本人账号接入 Antigravity CLI | [Antigravity CLI 本机 ACP 接入](antigravity-acp.md) |
 | 理解目录、开始修改代码 | [开发指南](development.md) |
 | 提交代码或补充翻译 | [贡献指南](contributing.zh-CN.md) |
 | 部署给团队使用 | [Docker 自托管](../ops/self-host/README.zh-CN.md) |
