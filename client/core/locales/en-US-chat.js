@@ -90,6 +90,8 @@
     "正在确认权限，请稍候": "Waiting for access confirmation. Please wait.",
     "当前执行底座暂不支持在会话中切换权限，请更新客户端或执行机": "This runtime does not support access changes within a chat yet. Update the client or Runner.",
     "当前执行底座不支持此权限模式": "This runtime does not support this access mode.",
+    "目标 Agent 不支持统一权限，请在新会话中选择该 Agent": "The selected agent does not support unified permissions. Select it in a new chat.",
+    "目标 Agent 不支持当前权限模式，请先选择兼容的权限": "The selected agent does not support the current access mode. Choose a compatible mode first.",
     "会话窗口已变化，请重新选择": "The chat window has changed. Please choose again.",
     "执行机尚未支持会话权限切换，请更新执行机": "This Runner does not support access changes within a chat yet. Update the Runner.",
     "正在保存权限，请稍候": "Saving permissions. Please wait.",

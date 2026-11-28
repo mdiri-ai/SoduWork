@@ -4,7 +4,9 @@ Only model configuration and the final Runner transport are isolated fixtures.
 No live database, model, Runner process, or user workspace is accessed.
 """
 import asyncio
+import hashlib
 import importlib
+import io
 import os
 import sqlite3
 import tempfile
@@ -21,16 +23,17 @@ os.environ.update(DATABASE_URL="sqlite+aiosqlite:///:memory:",
                   ADMIN_PASS="requirement-routing-fixture-password")
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app import models, automation_models as am
 from app.api import tasks
+from app.conversation_handoff_models import ConversationHandoff
 from app.db import get_session
 from app.deps import current_client
-from app.services import (ai_exec, ai_remote, conversation_handoffs, dispatch_attempts,
+from app.services import (ai_exec, ai_remote, cloud_conversations, conversation_handoffs, dispatch_attempts,
                           dispatch_identity, dispatch_reconcile, execution_sessions, runner_hub, task_dispatch,
-                          task_execution_options)
+                          task_execution_model, task_execution_options)
 from test_unified_requirements import _schema_template
 
 for model_file in (Path(__file__).parent / "app").glob("*models.py"):
@@ -77,17 +80,22 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.runner.dispatch_mode = "accepting"
         self.runner.alive = lambda: True
         self.calls = []
+        self.dispatched_files = []
 
         def dispatch(cfg, task, files, picked, extra):
             self.calls.append((cfg, picked, extra))
+            self.dispatched_files.append(files)
             return {"ok": True, "issueId": dispatch_identity.execution_ref(extra["dispatchId"]),
                     "runnerId": picked["runnerId"], "runnerClientId": picked["clientId"],
                     "host": picked["host"], "assigneeId": picked["id"],
                     "assigneeCli": "pi", "state": "running"}
 
         async def model(session, client, ctx, *args, **kwargs):
-            return ai_exec.with_llm(ctx, {"base": "http://fixture.invalid", "key": "fixture",
-                                          "model": "fixture"}), {}
+            llm = {"base": "http://fixture.invalid", "key": "fixture", "model": "fixture"}
+            out = ai_exec.with_llm(ctx, llm)
+            out["_managedModelSelection"] = {"provider": "fixture", "model": llm["model"],
+                                              "configRevision": "fixture-config", "runtimeRevision": "fixture-runtime"}
+            return out, {}
 
         self.patches = [
             patch.dict(runner_hub._RUNNERS, {"cloud": self.runner}, clear=True),
@@ -159,6 +167,54 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
         response = await self.post({"assigneeId": "local:pi", "assigneeType": "agent"})
         self.assertEqual(response.status_code, 409, response.text)
         self.assertFalse(self.calls)
+
+    async def test_cloud_model_change_at_dispatch_requires_confirmation_before_runner_call(self):
+        await self.check_cloud_model_change_at_dispatch("C")
+
+    async def test_cloud_model_unavailable_at_dispatch_can_be_retried_when_restored(self):
+        await self.check_cloud_model_change_at_dispatch(None)
+
+    async def check_cloud_model_change_at_dispatch(self, replacement):
+        body = {"sessionId": "cloud-frozen-model", "agentId": "pi", "text": "Summarize this report",
+                "targetRunnerId": "cloud"}
+        revision = "B"
+        dispatch = task_dispatch.dispatch
+
+        async def prepare(session, client, ctx, *args, **kwargs):
+            if revision is None:
+                raise task_execution_model.ManagedModelUnavailable("fixture model unavailable")
+            llm = {"base": "http://fixture.invalid", "key": "fixture", "model": "fixture-model"}
+            out = ai_exec.with_llm(ctx, llm)
+            out["_managedModelSelection"] = {"provider": "fixture", "model": llm["model"],
+                                              "configRevision": revision, "runtimeRevision": "test-runtime"}
+            return out, {}
+
+        async def launch(*args, **kwargs):
+            nonlocal revision
+            revision = replacement
+            return await dispatch(*args, **kwargs)
+
+        request_id = "frozen-model"
+        row_id = conversation_handoffs.identity(self.client.id, request_id)
+        with patch.object(task_execution_model, "prepare", new=prepare):
+            async with self.sessions() as session:
+                client = await session.get(models.Client, self.client.id)
+                with patch.object(task_dispatch, "dispatch", new=launch), self.assertRaises(HTTPException) as conflict:
+                    await cloud_conversations.create(session, client, request_id, body, [])
+                assert conflict.exception.status_code == 409
+                assert self.calls == []
+                row = await session.get(ConversationHandoff, row_id)
+                state = conversation_handoffs.public(row)
+                assert (state["phase"], state["accepted"], state["canAbort"]) == ("prepared", False, True)
+                assert row.options["managedModelSelection"]["configRevision"] == (replacement or "B")
+            if revision is None:
+                revision = "B"
+            async with self.sessions() as session:
+                client = await session.get(models.Client, self.client.id)
+                accepted = await cloud_conversations.create(
+                    session, client, request_id, body, [], confirmation_generation=state["confirmationGeneration"])
+                assert (accepted["phase"], accepted["accepted"]) == ("committed", True)
+                assert len(self.calls) == 1
 
     async def test_personal_direct_grant_survives_artifacts_and_expires_on_new_dispatch(self):
         response = await self.post()
@@ -448,6 +504,159 @@ class RequirementRemoteDispatchTests(unittest.IsolatedAsyncioTestCase):
                 response = await self.post(body)
                 self.assertEqual(response.status_code, 409, response.text)
         self.assertFalse(self.calls)
+
+    async def test_confirmed_attachment_identity_survives_same_name_and_bytes(self):
+        digest = hashlib.sha256(b"good").hexdigest()
+        async with self.sessions() as session:
+            session.add(models.Attachment(id="original", task_id="r3", filename="brief.txt",
+                size=4, storage_key="original", evidence_meta={"sha256": digest}))
+            await session.commit()
+
+        preview_path = "/api/v1/tasks/r3/ai-preview"
+        dispatch_path = "/api/v1/tasks/r3/ai-dispatch-confirmed"
+        preview = await self.http.post(preview_path, json={})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        original = {"id": "original", "name": "brief.txt", "size": 4, "sha256": digest}
+        self.assertEqual(preview.json()["carried"]["inputManifest"], [original])
+
+        body = {**self.body(), "inputManifest": [original]}
+        async with self.sessions() as session:
+            await session.delete(await session.get(models.Attachment, "original"))
+            await session.commit()
+        removed = await self.http.post(dispatch_path, json=body)
+        self.assertEqual(removed.status_code, 409, removed.text)
+        self.assertFalse(self.calls)
+        async with self.sessions() as session:
+            task = await session.get(models.Task, "r3")
+            self.assertEqual(task.work_routing, {"requiredAgentCapabilities": ["files", "terminal"]})
+            self.assertIsNone(await dispatch_reconcile._latest_state(session, task.id))
+
+        async with self.sessions() as session:
+            session.add(models.Attachment(id="replacement", task_id="r3", filename="brief.txt",
+                size=4, storage_key="replacement"))
+            await session.commit()
+        with patch("app.services.storage.open_stream", side_effect=lambda *_: io.BytesIO(b"good")):
+            replaced = await self.http.post(dispatch_path, json=body)
+            self.assertEqual(replaced.status_code, 409, replaced.text)
+            self.assertFalse(self.calls)
+            preview = await self.http.post(preview_path, json={})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        body["inputManifest"] = preview.json()["carried"]["inputManifest"]
+        self.assertEqual(body["inputManifest"], [{**original, "id": "replacement"}])
+
+        with patch("app.services.storage.open_stream", side_effect=lambda *_: io.BytesIO(b"edit")):
+            changed = await self.http.post(dispatch_path, json=body)
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertFalse(self.calls)
+
+        with patch("app.services.storage.open_stream", side_effect=lambda *_: io.BytesIO(b"good")):
+            dispatched = await self.http.post(dispatch_path, json=body)
+        self.assertEqual(dispatched.status_code, 200, dispatched.text)
+        self.assertEqual(self.dispatched_files, [[("brief.txt", b"good", "application/octet-stream")]])
+
+    async def test_selected_attachment_storage_failure_prevents_legacy_dispatch(self):
+        async with self.sessions() as session:
+            session.add(models.Attachment(id="file", task_id="r3", filename="brief.txt",
+                size=4, storage_key="file", evidence_meta={"sha256": hashlib.sha256(b"good").hexdigest()}))
+            await session.commit()
+
+        for stored in (OSError("fixture read failure"), b"abc", b"abcde", b"edit"):
+            with self.subTest(stored=stored):
+                read = {"side_effect": stored} if isinstance(stored, OSError) else {
+                    "side_effect": lambda *_, data=stored: io.BytesIO(data)}
+                with patch("app.services.storage.open_stream", **read):
+                    response = await self.post()
+                self.assertEqual(response.status_code, 409, response.text)
+                self.assertFalse(self.calls)
+
+    async def test_confirmed_storage_read_does_not_hold_the_admission_lock(self):
+        digest = hashlib.sha256(b"good").hexdigest()
+        async with self.sessions() as session:
+            session.add(models.Attachment(id="a", task_id="r3", filename="brief.txt",
+                size=4, storage_key="original", evidence_meta={"sha256": digest}))
+            await session.commit()
+        input_manifest = [{"id": "a", "name": "brief.txt", "size": 4, "sha256": digest}]
+        body = {**self.body(), "inputManifest": input_manifest}
+        entered, release = asyncio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+
+        def read(*_):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(10):
+                raise TimeoutError("test fixture did not release storage read")
+            return io.BytesIO(b"good")
+
+        async def change_selection():
+            async with self.sessions() as other:
+                task = await other.get(models.Task, "r3", with_for_update=True)
+                task.title = "Updated during attachment read"
+                attachment = await other.get(models.Attachment, "a")
+                attachment.storage_key = "different-object"
+                await other.commit()
+
+        with patch("app.services.storage.open_stream", side_effect=read):
+            request = asyncio.create_task(self.http.post("/api/v1/tasks/r3/ai-dispatch-confirmed", json=body))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                await asyncio.wait_for(change_selection(), timeout=5)
+            finally:
+                release.set()
+                response = await request
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse(self.calls)
+
+    async def test_confirmed_endpoint_requires_manifest_before_dispatch(self):
+        response = await self.http.post("/api/v1/tasks/r3/ai-dispatch-confirmed", json=self.body())
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertFalse(self.calls)
+
+    async def test_confirmed_endpoint_refuses_workflow_routing_before_any_executor_starts(self):
+        async with self.sessions() as session:
+            task = await session.get(models.Task, "r3")
+            task.work_routing = {**task.work_routing, "outputContract": {"kind": "repository-change"}}
+            await session.commit()
+        bodies = [{"inputManifest": []}, {"inputManifest": [], "executionContext": {"strategy": "workflow"}},
+                  {"inputManifest": [], "executionContext": {"strategy": "direct", "workflowId": "fixture"}}]
+        with patch("app.services.managed_work_route.start", new_callable=AsyncMock) as workflow, \
+                patch("app.services.zero_work_route.try_route", new_callable=AsyncMock) as automatic:
+            for body in bodies:
+                with self.subTest(body=body):
+                    response = await self.http.post("/api/v1/tasks/r3/ai-dispatch-confirmed", json=body)
+                    self.assertEqual(response.status_code, 409, response.text)
+            workflow.assert_not_called()
+            automatic.assert_not_called()
+        self.assertFalse(self.calls)
+
+    async def test_preview_and_runner_use_the_same_order_and_attachment_limits(self):
+        same_time = datetime.now(timezone.utc)
+        digest = hashlib.sha256(b"x").hexdigest()
+        async with self.sessions() as session:
+            for key in ("f", "e", "d", "c", "b", "a"):
+                session.add(models.Attachment(id=key, task_id="r3", filename=key + ".txt",
+                    size=1, storage_key=key, created_at=same_time, evidence_meta={"sha256": digest}))
+            session.add_all([
+                models.Attachment(id="0-large", task_id="r3", filename="large.txt",
+                    size=10 * 1024 * 1024 + 1, storage_key="large", created_at=same_time),
+                models.Attachment(id="0-output", task_id="r3", filename="output.txt", size=1,
+                    storage_key="output", uploaded_by="agent:pi", created_at=same_time),
+            ])
+            await session.commit()
+
+        expected_ids = list("abcde")
+        expected = [{"id": key, "name": key + ".txt", "size": 1, "sha256": digest} for key in expected_ids]
+        preview = await self.http.post("/api/v1/tasks/r3/ai-preview", json={})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        carried = preview.json()["carried"]
+        self.assertTrue(carried["confirmedDispatch"])
+        self.assertEqual(carried["inputManifest"], expected)
+        self.assertEqual(carried["omittedFiles"], ["large.txt", "f.txt"])
+
+        with patch("app.services.storage.open_stream", side_effect=lambda *_: io.BytesIO(b"x")) as read:
+            result = await self.http.post("/api/v1/tasks/r3/ai-dispatch-confirmed",
+                json={**self.body(), "inputManifest": expected})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual([call.args[0] for call in read.call_args_list], expected_ids)
+        self.assertEqual([entry[0] for entry in self.dispatched_files[0]], carried["files"])
 
     async def test_missing_task_capability_is_rejected(self):
         async with self.sessions() as session:

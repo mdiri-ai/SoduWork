@@ -401,10 +401,14 @@
       const settled = sameReceipt && /^(failed|cancelled|stopped)$/.test(receipt.state);
       if (uncertain && !settled && !saved.submissionId)
         throw new Error('发送回执尚未确认，请重新打开原会话查看执行状态');
+      const taskExecution = { ...(saved.taskExecution || {}) };
+      const pluginId = taskExecution.assignmentPluginId;
+      const assignmentPlugin = pluginId && draft.plugins?.find(item => item.pluginId === pluginId);
+      if (pluginId && !assignmentPlugin?.inputValues)
+        throw new Error('所选插件已变化，请重新安排执行');
       if (ctx._snap === before) ctx._snap = latest.snapshot;
       const entry = ctx._collabTasks?.get(saved.taskId);
       if (entry) { entry.task = task; entry.queueState = 'failed'; }
-      const taskExecution = { ...(saved.taskExecution || {}) };
       if (checkInterrupted) {
         taskExecution.reuseConversation = true;
         if (!taskExecution.reworkSession) taskExecution.followUp = true;
@@ -414,6 +418,7 @@
       }
       const acceptedRetry = await ctx._startTask(task, {
         instruction: draft.text, taskExecution,
+        ...(assignmentPlugin ? { assignmentPlugin } : {}),
         retry: !uncertain || settled,
         submissionId: uncertain && !settled ? saved.submissionId : '',
       });

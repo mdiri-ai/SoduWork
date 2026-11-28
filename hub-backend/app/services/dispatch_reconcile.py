@@ -65,6 +65,7 @@ class Candidate:
     host: str
     at: datetime
     detail: dict
+    recorded_nonstart: bool = False
 
 
 def _utc(value: datetime | None) -> datetime:
@@ -95,6 +96,8 @@ def _first_uncertain(detail: dict, fallback: datetime) -> datetime:
 async def candidates(session: AsyncSession, *, now: datetime | None = None,
                      limit: int = BATCH_SIZE) -> list[Candidate]:
     """Return only the latest dispatch-state event for each active task."""
+    from .batch_dispatch import member_admissions
+
     now = _utc(now)
     event = aliased(models.TaskEvent)
     newer = aliased(models.TaskEvent)
@@ -104,9 +107,20 @@ async def candidates(session: AsyncSession, *, now: datetime | None = None,
         or_(newer.at > event.at,
             and_(newer.at == event.at, newer.id > event.id)),
     ))
+    # Reconcile a confirmed legacy batch failure once without asking the Runner
+    # again. Later edits to the shell supersede its old release decision.
+    legacy_batch = and_(
+        event.kind == ai_exec.EV_DISPATCH_FAILED, models.Task.status == "todo", models.Task.archived_at.is_(None),
+        event.detail["attemptId"].as_string() == event.task_id,
+        event.detail["confirmedNotStarted"].as_boolean().is_(True),
+        event.detail["batchReleased"].as_boolean().is_not(True),
+        member_admissions(event.task_id, event.task_id).exists(),
+        ~exists(select(newer.id).where(newer.task_id == event.task_id,
+            newer.kind == "task.execution_started", newer.at >= event.at)),
+    )
     rows = list((await session.execute(
         select(event).join(models.Task, models.Task.id == event.task_id).where(
-            or_(event.kind == ai_exec.EV_DISPATCH_UNCERTAIN,
+            or_(legacy_batch, event.kind == ai_exec.EV_DISPATCH_UNCERTAIN,
                 and_(event.kind == ai_exec.EV_DISPATCH_STARTED,
                      event.detail["awaitingDispatchReply"].as_boolean().is_(True))),
             event.at <= now - timedelta(seconds=PROBE_AFTER_SECONDS),
@@ -127,6 +141,7 @@ async def candidates(session: AsyncSession, *, now: datetime | None = None,
             host=str(detail.get("host") or ""),
             at=_utc(row.at),
             detail=detail,
+            recorded_nonstart=row.kind == ai_exec.EV_DISPATCH_FAILED,
         ))
     return out
 
@@ -179,6 +194,8 @@ async def probe_result_current(session, candidate, result):
 
 async def probe(candidate: Candidate) -> dict:
     """Ask the exact Runner for read-only evidence about one deterministic ref."""
+    if candidate.recorded_nonstart:
+        return {"state": "not-started", "observedBootId": candidate.detail.get("observedBootId")}
     if not candidate.runner_id or not candidate.expected_ref:
         return {"state": "ambiguous", "reason": "missing-route", "runnerOnline": False}
     runner = runner_hub.get(candidate.runner_id)
@@ -333,14 +350,26 @@ async def apply_probe(session: AsyncSession, candidate: Candidate, result: dict,
     if task is None or task.status not in {"todo", "doing"}:
         return "stale", task
     latest = await _latest_state(session, candidate.task_id)
-    if not _same_attempt(latest, candidate):
-        return "stale", task
-    detail = dict(latest.detail or {})
     observed_boot = str(result.get("observedBootId") or "")
     state = str(result.get("state") or "ambiguous")
-    if (state in {"confirmed", "not-started"} or result.get("keyedInflight")) and not await probe_result_current(
-            session, candidate, result):
-        return "stale", task
+    if candidate.recorded_nonstart:
+        if (state != "not-started" or latest is None or latest.kind != ai_exec.EV_DISPATCH_FAILED
+                or latest.detail != candidate.detail or not latest.detail.get("confirmedNotStarted")
+                or latest.detail.get("batchReleased") or task.id != candidate.attempt_id
+                or task.status != "todo" or task.archived_at):
+            return "stale", task
+        changed = await session.scalar(select(models.TaskEvent.id).where(
+            models.TaskEvent.task_id == task.id, models.TaskEvent.kind == "task.execution_started",
+            models.TaskEvent.at >= latest.at).limit(1))
+        if changed:
+            return "stale", task
+    else:
+        if not _same_attempt(latest, candidate):
+            return "stale", task
+        if (state in {"confirmed", "not-started"} or result.get("keyedInflight")) and not await probe_result_current(
+                session, candidate, result):
+            return "stale", task
+    detail = dict(latest.detail or {})
 
     if state == "confirmed":
         cli = _runner_cli(detail)
@@ -374,13 +403,20 @@ async def apply_probe(session: AsyncSession, candidate: Candidate, result: dict,
     if state == "not-started":
         if detail.get("lastRunnerReplyAt") != candidate.detail.get("lastRunnerReplyAt"):
             return "stale", task
+        from . import batch_dispatch
+        is_batch = await batch_dispatch.release_unstarted(session, task, candidate.attempt_id)
+        if candidate.recorded_nonstart and not is_batch:
+            return "stale", task
         released = await task_status.mark(
-            session, task, "todo", why="Runner 明确确认未启动")
+            session, task, "cancel" if is_batch else "todo", why="Runner 明确确认未启动")
         summary = ("执行机已确认本次需求没有启动，需求已安全退回待办，可以重新安排执行"
                    if released else
                    "执行机已确认本次需求没有启动，但需求状态仍由工作流接管")
+        if is_batch and released:
+            summary = "执行机已确认本批次未启动，仍归属本批次的源任务已释放，可以重新派发"
         failed = {
             **detail,
+            **({"batchReleased": True} if is_batch else {}),
             "phase": "confirmation",
             "phaseName": "确认执行机回执",
             "error": "执行机已明确确认本次需求没有启动",
@@ -430,18 +466,28 @@ async def apply_probe(session: AsyncSession, candidate: Candidate, result: dict,
 
 
 async def _publish(session: AsyncSession, task: models.Task, action: str) -> None:
-    from ..realtime import hub
     from .tasks import task_to_api_live
 
-    if task.owner_client_id:
+    async def publish_update(row):
         try:
-            await publish_task(session, task, "task.updated", await task_to_api_live(session, task))
+            await publish_task(session, row, "task.updated", await task_to_api_live(session, row))
         except Exception as error:  # noqa: BLE001
-            log.warning("派活对账状态推送失败 task=%s error=%s", task.id[:8], type(error).__name__)
+            log.warning("派活对账状态推送失败 task=%s error=%s", row.id[:8], type(error).__name__)
+
+    if task.owner_client_id:
+        await publish_update(task)
     if action == "released":
+        if task.status == "cancel":
+            sources = await session.scalars(select(models.Task).where(models.Task.id.in_(
+                select(models.Milestone.src_task_id).where(models.Milestone.task_id == task.id)),
+                models.Task.owner_client_id == task.owner_client_id,
+                models.Task.owner_user_id == task.owner_user_id).order_by(models.Task.id))
+            for source in sources:
+                await publish_update(source)
         await notify.notify_task(
             session, task,
-            "执行机已确认需求没有启动，已安全退回待办，可以重新安排执行。",
+            ("执行机已确认本批次未启动，可以重新安排源任务。" if task.status == "cancel"
+             else "执行机已确认需求没有启动，已安全退回待办，可以重新安排执行。"),
             extra={"kind": "dispatch-released"})
     elif action == "attention":
         await notify.notify_task(

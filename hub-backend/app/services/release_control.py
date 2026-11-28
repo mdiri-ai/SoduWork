@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import automation_models as am
 from .. import models
-from . import approval_policies, approval_routing, task_events
+from . import approval_policies, approval_routing, approval_summaries, task_events
 
 ENV_TEST = "env-system-test"
 ENV_PRODUCTION = "env-system-production"
@@ -263,8 +263,7 @@ async def _new_artifact(session: AsyncSession, task: models.Task, *, kind: str,
         # context-free duplicate while materialising code or office output.
         if not managed_workflow:
             await ensure_request(session, task, row, action, context={
-                "summary": "需求基线待确认" if stream == "spec" else
-                           ("代码待审阅" if kind == "code" else "产出待审阅"),
+                "summary": approval_summaries.for_artifact(task, row),
                 "version": seq, "checksum": digest,
             })
     except ValueError as exc:
@@ -466,7 +465,8 @@ async def _check_assignment_count(session, task, request):
 
 
 async def ensure_request(session: AsyncSession, task: models.Task, artifact: am.ArtifactVersion,
-                         action: str, environment_id: str = "", context: dict | None = None
+                         action: str, environment_id: str = "", context: dict | None = None,
+                         *, submission_note: str = ""
                          ) -> am.ApprovalRequest:
     existing = (await session.execute(select(am.ApprovalRequest).where(
         am.ApprovalRequest.artifact_version_id == artifact.id,
@@ -487,6 +487,11 @@ async def ensure_request(session: AsyncSession, task: models.Task, artifact: am.
                     raise ValueError("验收策略已停用，请联系管理员启用策略。")
                 existing.policy_snapshot = dict(policy.rules or {})
                 existing.required_count = max(1, int(existing.policy_snapshot.get("required") or 1))
+        if (submission_note and existing.status == "pending"
+                and approval_summaries.auto_context(existing.context or {}, artifact)):
+            summary = approval_summaries.summary_text(submission_note)
+            if summary:
+                existing.context = {**existing.context, "summary": summary}
         await _check_assignment_count(session, task, existing)
         return existing
     pid = {"baseline": POLICY_BASELINE, "review": POLICY_REVIEW,
@@ -509,6 +514,9 @@ async def ensure_request(session: AsyncSession, task: models.Task, artifact: am.
     rules = dict((policy.rules if policy else {}) or {})
     # Freeze version, criteria and evidence refs when a gate is created.
     from . import gate_contract
+    if context is None and action in ("review", "baseline"):
+        context = {"summary": approval_summaries.summary_text(submission_note)
+                   or approval_summaries.for_artifact(task, artifact)}
     gate_context = await gate_contract.prepare_context(
         session, task, artifact, action, environment_id or "", context)
     row = am.ApprovalRequest(
@@ -718,6 +726,12 @@ async def revoke_approval(session: AsyncSession, task: models.Task, actor,
     req = await session.get(am.ApprovalRequest, str(request_id or ""))
     if req is None or req.task_id != task.id:
         return {"ok": False, "reason": "not_found", "error": "审批不存在"}
+    if req.action == "review":
+        # Serialize against a new delivery or review decision, including on SQLite.
+        from . import artifact_version_guard
+        await artifact_version_guard.lock_task(session, task.id)
+        await session.refresh(req)
+        await session.refresh(task)
     if req.status != "approved":
         return {"ok": False, "reason": "status",
                 "error": "只有已批准的审批可以撤回（当前：%s）" % req.status}
@@ -780,13 +794,25 @@ async def revoke_approval(session: AsyncSession, task: models.Task, actor,
                 return {"ok": False, "reason": "irreversible",
                         "error": "发布链已经启动，撤回救不回来；需要下线请走环境回滚"}
 
+    if req.action == "review" and artifact is not None:
+        from . import task_rework, workflow_runs
+        latest = await latest_artifact(session, task.id)
+        if (latest is not None and latest.id == artifact.id and not task.archived_at
+                and task.status != "cancel" and (task.reviewed_at or task.status == "done")
+                and not any(run.state in workflow_runs._ACTIVE_RUN_STATES for run in runs)):
+            if not await task_rework.return_to_rework(session, task, why="验收批准已撤回，待重新验收"):
+                return {"ok": False, "reason": "status", "error": "需求状态已变化，请刷新后再撤回验收"}
+            task.reviewed_at = None
+            task.reviewed_by = None
+            task.reviewed_by_name = ""
+
     # Mark the request revoked while preserving decisions and updating the derived artifact state.
     req.status = "revoked"
     req.resolved_at = _now()
     if artifact is not None:
         rollback_state = {"baseline": "candidate", "review": "candidate",
                           "merge": "reviewed"}.get(req.action)
-        if rollback_state:
+        if rollback_state and not (req.action == "review" and artifact.state == "superseded"):
             artifact.state = rollback_state
     # Revoking review also cancels any automatically created merge request still pending.
     if req.action == "review" and artifact is not None:

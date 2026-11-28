@@ -6,6 +6,10 @@ import logging
 import os
 import re
 import subprocess
+import uuid
+from urllib.parse import urlsplit
+
+from .repo_urls import git_probe_url, validate_git_url
 
 log = logging.getLogger("uvicorn.error")
 
@@ -140,6 +144,16 @@ def resolve(client) -> dict:
     return {k: g.get(k, "") for k in CORE_FIELDS}
 
 
+def for_repo(client, repo_url: str) -> dict:
+    """Bind the execution payload to the Hub-selected repository before dispatch."""
+    git = resolve(client)
+    if git.get("token"):
+        git["httpsHost"] = https_host(repo_url)
+        if not git["httpsHost"]:
+            git["token"] = ""
+    return git
+
+
 def probe_fingerprint(client) -> str:
     """Return a non-reversible identity for the exact credentials used by a probe."""
     g = dict(getattr(client, "git_creds", None) or {})
@@ -153,12 +167,38 @@ def probe_fingerprint(client) -> str:
 
 # Git subprocess environment.
 def _helper_script() -> str:
-    """Use this task owner's HTTPS account; credentials remain in the environment."""
-    return ('!f(){ echo "username=$SODUWORK_GIT_USER"; '
-            'echo "password=$SODUWORK_GIT_TOKEN"; }; f')
+    """Git asks the helper again for each authentication target."""
+    return (
+        '!f(){ [ "$1" = get ] || return 0; protocol=; host=; '
+        'while IFS= read -r field && [ -n "$field" ]; do case "$field" in '
+        'protocol=*) protocol=${field#protocol=};; host=*) host=${field#host=};; esac; done; '
+        '[ "$protocol" = https ] && [ -n "$host" ] && [ -n "$SODUWORK_GIT_ALLOWED_HOSTS" ] || return 0; '
+        'host=$(printf "%s" "$host" | tr "A-Z" "a-z"); '
+        '[ "${host%:443}" = "$SODUWORK_GIT_ALLOWED_HOSTS" ] || return 0; '
+        'printf "username=%s\\npassword=%s\\n" "$SODUWORK_GIT_USER" "$SODUWORK_GIT_TOKEN"; }; f'
+    )
 
 
-def env_for(env: dict, git: dict, *, ref: str = "") -> dict:
+def https_host(url: str) -> str:
+    """Return the single HTTPS authority, including any non-default port."""
+    if not url or any(c.isspace() or ord(c) < 32 or c == "\\" for c in url):
+        return ""
+    try:
+        parsed = urlsplit(url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.password is not None:
+            return ""
+        host = parsed.hostname
+        if not re.fullmatch(r"[a-z0-9._:-]+", host, re.ASCII):
+            return ""
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        return host if port in (None, 443) else f"{host}:{port}"
+    except ValueError:
+        return ""
+
+
+def env_for(env: dict, git: dict, *, ref: str = "", url: str = "") -> dict:
     """Inject resolved Git identity and credentials into env in place. Empty credentials preserve
     executor defaults.
     """
@@ -178,9 +218,14 @@ def env_for(env: dict, git: dict, *, ref: str = "") -> dict:
         # Set author and committer environment variables to override repository-local identity settings.
         env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = name
         env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = email
-    if token:
+    if token or "httpsHost" in git:
+        requested = https_host(url)
+        allowed = git.get("httpsHost", "")
+        if url and requested != allowed:
+            allowed = ""
         env["SODUWORK_GIT_USER"] = str(git.get("user") or name or "git")
-        env["SODUWORK_GIT_TOKEN"] = token
+        env["SODUWORK_GIT_TOKEN"] = token if allowed else ""
+        env["SODUWORK_GIT_ALLOWED_HOSTS"] = allowed
         # The empty credential.helper entry must precede the custom helper.
         # It clears inherited helpers such as Git Credential Manager.
         # Otherwise interactive credential handling can stall an unattended command.
@@ -258,6 +303,10 @@ def probe_sync(git: dict, url: str) -> dict:
     if not url:
         return {"ok": False, "detail": "先给一个仓库地址（挑一个工程，或者自己贴一个）"}
     kind = "ssh" if (url.startswith("ssh://") or re.match(r"^[^/]+@[^/]+:", url)) else "https"
+    try:
+        validate_git_url(url)
+    except ValueError as error:
+        return {"ok": False, "detail": str(error)}
     # First check that the credential type matches the repository URL.
     if kind == "https" and not str(git.get("token") or "").strip():
         return {"ok": False, "kind": kind,
@@ -265,14 +314,28 @@ def probe_sync(git: dict, url: str) -> dict:
     if kind == "ssh" and not str(git.get("key") or "").strip():
         return {"ok": False, "kind": kind,
                 "detail": "这是个 SSH 地址，但你还没配私钥。要么贴私钥，要么换用 HTTPS 地址。"}
+    if kind == "https":
+        host = https_host(url)
+        if not host or host != git.get("httpsHost"):
+            return {"ok": False, "kind": kind,
+                    "detail": "请选择当前账号可见的已登记 HTTPS 仓库，或输入同一主机和端口的仓库地址。"}
+    url = git_probe_url(url)
+    if not url:
+        return {"ok": False, "detail": "仓库地址无效"}
     # Then perform the actual authentication check.
     env = dict(os.environ)
+    for k in ("SODUWORK_GIT_USER", "SODUWORK_GIT_TOKEN", "SODUWORK_GIT_ALLOWED_HOSTS"):
+        env.pop(k, None)
     for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
         env.pop(k, None)                 # Validate credentials by connecting directly to the repository service.
-    env = env_for(env, git, ref="probe")
+    probe_ref = "probe-" + uuid.uuid4().hex
+    credentials = dict(git)
+    credentials.pop("key" if kind == "https" else "token", None)
+    env = env_for(env, credentials, ref=probe_ref, url=url)
+    env["GIT_ALLOW_PROTOCOL"] = kind
     try:
-        p = subprocess.run(["git", "-c", "http.proxy=", "-c", "https.proxy=",
-                            "ls-remote", "--heads", url],
+        p = subprocess.run(["git", "-c", "http.proxy=", "-c", "https.proxy=", "-c", "http.followRedirects=false",
+                            "ls-remote", "--heads", "--", url],
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=_TIMEOUT, env=env)
         out = ((p.stdout or "") + (p.stderr or "")).strip()
@@ -289,7 +352,8 @@ def probe_sync(git: dict, url: str) -> dict:
     except FileNotFoundError:
         return {"ok": False, "kind": kind, "detail": "这台执行机上没有 git"}
     finally:
-        forget_key("probe")
+        if kind == "ssh":
+            forget_key(probe_ref)
 
 
 # Translate recognized failures into actionable messages rather than returning only an exit code.

@@ -22,6 +22,7 @@ async function fetchSafe(path, options = {}, timeout = REQUEST_TIMEOUT, consume 
     return { res, data }
   } catch (error) {
     if (options.signal?.aborted) throw error
+    if (error?.code === 'INVALID_JSON_RESPONSE') throw error
     if (error && error.name === 'AbortError') throw new Error(tx("请求超时，请稍后重试"))
     throw new Error(tx("无法连接 SoduWork 服务，请检查后台地址或网络"))
   } finally {
@@ -58,6 +59,12 @@ async function responseData(res) {
   const text = await res.text()
   if (!text) return null
   try { return JSON.parse(text) } catch (_error) {
+    if (res.ok) {
+      const error = new Error(tx("服务响应格式无法识别"))
+      error.code = 'INVALID_JSON_RESPONSE'
+      error.status = res.status
+      throw error
+    }
     return { detail: text.trim().slice(0, 300) || `HTTP ${res.status}` }
   }
 }
@@ -301,10 +308,10 @@ export const api = {
   },
   setClientReleaseEnabled: (id, enabled) => call(
     'PATCH', '/admin/client-releases/' + encodeURIComponent(id), { enabled }),
-  uploadClientRelease: (bundleFile, installerFile, { onProgress, signal } = {}) => {
+  uploadClientRelease: (installerFile, { channel = '', onProgress, signal } = {}) => {
     const form = new FormData()
-    form.append('bundle', bundleFile)
     form.append('installer', installerFile)
+    if (channel) form.append('channel', channel)
     return authenticatedData('/admin/client-releases/upload', { method: 'POST', body: form, signal }, 900000, responseData,
       onProgress ? uploadTransport(onProgress) : fetchSafe)
   },
@@ -420,7 +427,8 @@ export const api = {
   testModelProviderConnection: (body) => call('POST', '/admin/model-providers/test-connection', body),
   checkModelCapabilities: (body) => call('POST', '/admin/model-capabilities/check', body, 140000),
   saveModelProvider: (pid, b) => call('PUT', '/admin/model-providers/' + encodeURIComponent(pid), b),
-  discoverModels: (pid) => call('POST', '/admin/model-providers/' + encodeURIComponent(pid) + '/discover', {}, 30000),
+  discoverModels: (pid, model) => call('POST', '/admin/model-providers/' + encodeURIComponent(pid) + '/discover' +
+    (model ? '?model=' + encodeURIComponent(model) : ''), {}, 30000),
   modelProviderDeletionImpact: pid => call('GET', '/admin/model-providers/' + encodeURIComponent(pid) + '/deletion-impact'),
   deleteModelProvider: (pid, expectedRevision, expectedImpact, confirmId) => call('DELETE',
     '/admin/model-providers/' + encodeURIComponent(pid) + '?' + new URLSearchParams({ expectedRevision, expectedImpact, confirmId })),

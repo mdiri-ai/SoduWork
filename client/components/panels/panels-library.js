@@ -273,7 +273,6 @@
     if (d.libraryFavoriteFolder !== undefined) { const storage = storedBackend(state.folders.find(row => row.id === d.libraryFavoriteFolder)); await runAction(button, () => global.SoduWorkAPI.updateLibraryFolder(d.libraryFavoriteFolder, { favorite: d.value !== 'true', storage }), '文件夹收藏状态更新失败'); return; }
     if (d.libraryRenameFolder !== undefined) { await renameFolder(button, d.libraryRenameFolder); return; }
     if (d.libraryRename !== undefined) { await renameItem(button, d.libraryRename); return; }
-    if (d.libraryRepairFilename !== undefined) { await repairFilename(button, d.libraryRepairFilename); return; }
     if (d.libraryMigrate !== undefined) { await migrateItem(button, d.libraryMigrate); return; }
     if (d.libraryMove !== undefined) { await moveItem(button, d.libraryMove); return; }
     if (d.libraryDelete !== undefined) {
@@ -489,14 +488,16 @@
 
   async function renameItem(button, id) {
     const item = state.items.find(row => row.id === id);
-    if (!item) return;
+    if (!item || button.disabled || state.scope === 'trash') return;
+    const epoch = lifecycleEpoch;
     closeMenus();
     const current = displayName(item);
     const name = await openNameDialog({
       title: '重命名文件', description: '修改资料名称，文件内容不会改变。', label: '文件名称',
       value: current, placeholder: '输入文件名称', confirm: '保存', maxLength: 240,
     });
-    if (!name || name === current) return;
+    if (!name || name === current || epoch !== lifecycleEpoch || state.scope === 'trash' ||
+        !state.items.some(row => row.id === id)) return;
     await runAction(button, () => global.SoduWorkAPI.updateLibraryItem(id, { title: name }), '重命名失败', '已重命名');
   }
   async function renameFolder(button, id) {
@@ -511,23 +512,6 @@
     });
     if (!name || name === current || epoch !== lifecycleEpoch) return;
     await runAction(button, () => global.SoduWorkAPI.updateLibraryFolder(id, { name, storage }), '文件夹重命名失败', '文件夹已重命名');
-  }
-  async function repairFilename(button, id) {
-    const item = state.items.find(row => row.id === id);
-    if (!item || button.disabled || !isClientLocal(item) || state.scope === 'trash') return;
-    const epoch = lifecycleEpoch, current = String(item.filename || '');
-    closeMenus();
-    const filename = await openNameDialog({
-      title: '修复文件名',
-      description: '请核对完整文件名和扩展名。仅修改名称，不转换文件格式，文件内容和历史记录保持不变。',
-      label: '完整文件名（含扩展名）', value: current,
-      placeholder: '输入完整文件名，例如 report.pdf', confirm: '保存文件名', maxLength: 240,
-    });
-    // An account or panel change invalidates the selection captured by this dialog.
-    if (!filename || epoch !== lifecycleEpoch || state.scope === 'trash' ||
-        !state.items.some(row => row.id === id && isClientLocal(row))) return;
-    await runAction(button, () => global.SoduWorkAPI.repairLocalLibraryFilename(id, filename),
-      '文件名修复失败', '文件名已修复');
   }
   async function migrateItem(button, id) {
     const item = state.items.find(row => String(row.id) === String(id));
@@ -718,7 +702,6 @@
       migrateAction +
       sessionAction +
       '<button data-library-rename="' + id + '">' + icon('edit') + '重命名</button>' +
-      (isClientLocal(item) ? '<button data-library-repair-filename="' + id + '">' + icon('edit') + tx('修复文件名') + '</button>' : '') +
       (item.storageOrigin === 'server-history' ? '' : '<button data-library-move="' + id + '">' + icon('folder') + '添加到文件夹</button>') +
       '<button class="library-danger library-menu-separator" data-library-delete="' + id + '">' + icon('trash') + '删除</button></div></div>';
   }
@@ -889,13 +872,11 @@
       ? '<button type="button" class="library-source-chip" data-library-open-session="' + esc(sessionId) + '" title="' + esc(conversationTitle || sessionId) + '">' + esc(sourceText) + '</button>'
       : '<span class="library-source-chip is-static">' + esc(sourceText) + '</span>';
     const deliveryLabel = '';
-    const filenameHint = !trashed && isClientLocal(item) && ['duplicate', 'invalid', 'check'].includes(item.filenameIssue)
-      ? '<small class="library-filename-hint">' + esc(tx('请核对文件名')) + '</small>' : '';
     const action = trashed ? ' disabled' : ' data-library-file-preview="' + esc(item.id) + '"';
     const iconKind = image ? 'image' : ['document', 'note'].includes(String(item.kind || '').toLowerCase()) ? 'document' : item.kind;
     const preview = (image && !trashed ? '<img class="library-card-image" data-library-image="' + esc(item.id) + '" alt="" hidden>' : '') + '<span class="library-file-glyph" data-library-image-fallback>' + global.SoduWorkLibraryFileIcons.markup(item) + '</span>';
     return '<article class="library-card library-file-card kind-' + esc(iconKind || 'document') + '"><label class="library-row-select"><input type="checkbox" data-library-select="' + esc(item.id) + '" data-user-attributes="aria-label" aria-label="' + esc(tx('选择资料：{name}', { name })) + '"' + (state.selected.has(item.id) ? ' checked' : '') + '></label><button class="library-card-main"' + action + '>' +
-      '<span class="library-card-name"><span class="library-card-preview kind-' + esc(iconKind) + '">' + preview + '</span><span class="library-card-copy"><b data-user-content>' + esc(name) + '</b><small data-user-content>' + esc(formatSize(item.size) + deliveryLabel) + (item.favorite ? ' · ' + tx('已收藏') : '') + '</small>' + filenameHint + '</span></span>' +
+      '<span class="library-card-name"><span class="library-card-preview kind-' + esc(iconKind) + '">' + preview + '</span><span class="library-card-copy"><b data-user-content>' + esc(name) + '</b><small data-user-content>' + esc(formatSize(item.size) + deliveryLabel) + (item.favorite ? ' · ' + tx('已收藏') : '') + '</small></span></span>' +
       '<span class="library-card-date">' + esc(formatDate(trashed ? item.deletedAt : item.updatedAt)) + '</span><span class="library-card-size">' + esc(formatSize(item.size)) + '</span><span class="library-card-grid-date">' + tx('已修改') + ' · ' + esc(formatGridDate(trashed ? item.deletedAt : item.updatedAt)) + '</span></button>' + '<div class="library-source-cell">' + sourceChip + '</div>' + itemActions(item) + '</article>';
   }
   function folderRow(folder) {

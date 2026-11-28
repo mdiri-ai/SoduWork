@@ -91,7 +91,22 @@ function references(text, extension, includeExternal = false) {
   const result = [];
   const collect = pattern => { for (const m of text.matchAll(pattern)) result.push(m[1]); };
   if (/^\.(?:html?|svg)$/.test(extension)) {
-    collect(/<(?:script|link|img|source|video|audio|iframe|image|use)\b[^>]*?\b(?:src|href|poster)\s*=\s*["']([^"']+)["']/gi);
+    // A video can need both src and poster. Consume complete attribute values
+    // so data-src and examples inside a title cannot become dependencies.
+    const tags = /<(script|link|img|source|video|audio|iframe|image|use)(?=[\s/>])((?:"[^"]*"|'[^']*'|[^"'<>])*)>/gi;
+    for (const tag of text.matchAll(tags)) {
+      const urls = new Map();
+      const inlineSvg = extension !== '.svg' && /^(?:image|use)$/i.test(tag[1]);
+      const attributes = /([^\s"'<>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+      for (const attribute of tag[2].matchAll(attributes)) {
+        const name = attribute[1].toLowerCase();
+        if (urls.has(name) || !/^(?:src|href|poster|xlink:href)$/.test(name)) continue;
+        urls.set(name, attribute[2] ?? attribute[3] ?? (inlineSvg ? attribute[4] : ''));
+      }
+      // SVG uses xlink:href only when href is absent, even if href is empty.
+      if (urls.has('href')) urls.delete('xlink:href');
+      result.push(...urls.values());
+    }
     collect(/<a\b[^>]*?\bhref\s*=\s*["']([^"']+\.(?:html?|pdf|md|markdown)(?:[?#][^"']*)?)["']/gi);
     for (const m of text.matchAll(/\bsrcset\s*=\s*["']([^"']+)["']/gi)) {
       if (!m[1].trim().startsWith('data:')) for (const part of m[1].split(',')) result.push(part.trim().split(/\s+/)[0]);

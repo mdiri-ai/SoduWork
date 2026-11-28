@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from app.services.runner_admission import AdmissionQueue, INTERACTIVE, MANUAL
+from app.services.runner_admission import AdmissionQueue, INTERACTIVE, MANUAL, ResourceSnapshot
 from app.services.runner_admission_journal import Journal
 from app.services import durable_file
 
@@ -336,9 +336,80 @@ class AdmissionStatusTests(unittest.IsolatedAsyncioTestCase):
         self.queue = self.runner._admission
         self.addCleanup(self.queue._journal.close)
 
+    async def test_ten_independent_local_text_turns_reach_native_launch_before_any_reply(self):
+        from app.services import ai_local, runner_local_rpc
+        self.runner._resource_budget.sampler = lambda: {
+            "cpuCount": 8, "cpuPercent": 20, "memoryTotalBytes": 16 << 30, "memoryAvailableBytes": 8 << 30}
+        self.enterContext(patch.dict(ai_local._RUNS, {}, clear=True))
+        self.enterContext(patch.object(ai_local, "reclaim"))
+        self.enterContext(patch("runner_main._capability_gate", return_value=None))
+        self.enterContext(patch("runner_main._busy_count", return_value=0))
+        all_started, release = asyncio.Event(), asyncio.Event()
+        prompts = ["你好", "Create a playable arcade game", "Build an interactive offline website"]
+        started = {}
+        to_thread = runner_local_rpc.to_thread
+
+        async def native_boundary(function, *args, **kwargs):
+            if function is ai_local.dispatch_sync:
+                started[args[1].id] = args[4]["conversationUserText"]
+                if len(started) == 10:
+                    all_started.set()
+                await release.wait()
+                return {"ok": True, "issueId": args[1].id}
+            return await to_thread(function, *args, **kwargs)
+
+        self.enterContext(patch.object(runner_local_rpc, "to_thread", native_boundary))
+        try:
+            receipts = await asyncio.gather(*(self.runner._local_rpc_dispatch({
+                "op": "job.dispatch", "dispatchId": f"chat:{i}", "task": {"id": f"chat-{i}"},
+                "ctx": {"conversationMode": "adaptive", "conversationUserText": prompts[i % len(prompts)]}
+            }) for i in range(10)))
+            self.assertTrue(all(receipt["ok"] for receipt in receipts), receipts)
+            await asyncio.wait_for(all_started.wait(), timeout=5)
+            self.assertEqual(set(started.values()), set(prompts))
+            self.assertEqual(self.queue.metrics()["queueDepth"], 0)
+        finally:
+            release.set()
+            if self.runner._admission_task:
+                self.runner._admission_task.cancel()
+                await asyncio.gather(self.runner._admission_task, return_exceptions=True)
+            await asyncio.gather(*self.runner._admission_workers)
+
+    def test_plain_chat_can_pass_a_busy_preparation_but_never_its_own_earlier_turn(self):
+        from app.services.runner_event_scope import ingress
+        def submit(key, ref, local=True, **extra):
+            payload = ingress({"op": "job.comment", "text": "hello", **extra}, local=local)
+            return self.queue.submit(key, ref, INTERACTIVE, "comment", payload)[2]
+
+        def claim(active):
+            return self.queue.claim_next(active, limit=1, can_start=True, local_chat_limit=3)
+
+        first = submit("file-1", "one", localFiles=[{"filename": "one.txt"}])
+        self.assertIs(claim(0), first)
+        remote = submit("hub", "hub", local=False)
+        second = submit("file-2", "two", localFiles=[{"filename": "two.txt"}])
+        submit("followup", "two")
+        plain = submit("plain", "three")
+        self.assertIs(claim(1), plain)
+        self.assertIsNone(claim(2))
+        self.assertEqual(self.queue.wait_reason(second, 2, 1, True, local_chat_limit=3), "execution_slot")
+        self.assertEqual(self.queue.wait_reason(remote, 2, 1, True, local_chat_limit=3), "execution_slot")
+        self.queue.mark_running(first.key)
+        self.assertIs(claim(2), second)
+        submit("extra", "four")
+        self.assertIsNone(claim(3))
+
+    def test_start_budget_keeps_pressure_guards_and_configured_ceiling(self):
+        healthy = ResourceSnapshot(limit=4, memory_available=8 << 30)
+        self.assertEqual(healthy.local_chat_limit(3, 10), 3)
+        self.assertGreaterEqual(healthy.local_chat_limit(20, 0), 10)
+        self.assertEqual(ResourceSnapshot(limit=4).local_chat_limit(20, 3), 7)
+        for pressure, can_start in (("busy", True), ("critical", True), ("critical", False)):
+            sample = ResourceSnapshot(limit=1, pressure=pressure, can_start=can_start)
+            self.assertEqual(sample.local_chat_limit(20, 10), 1)
+
     async def test_pressure_logs_once_while_the_same_backlog_remains_blocked(self):
         from app.services import ai_local
-        from app.services.runner_admission import ResourceSnapshot
         self.queue.submit("dispatch:waiting", "waiting", MANUAL, "dispatch", {})
         memory_pressure = ResourceSnapshot(cpu_percent=98, memory_available=700 * 1024 ** 2,
                                            pressure="critical", can_start=False)
@@ -383,7 +454,7 @@ class AdmissionStatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_and_info_report_only_the_current_admission_gate(self):
         from app.services import ai_local
         item = self.queue.submit("dispatch:first", "first", MANUAL, "dispatch", {})[2]
-        resource = SimpleNamespace(limit=2, can_start=False)
+        resource = ResourceSnapshot(limit=2, can_start=False)
         self.enterContext(patch.object(self.runner._resource_budget, "snapshot", return_value=resource))
         busy = self.enterContext(patch("runner_main._busy_count", return_value=0))
         self.enterContext(patch.dict(ai_local._RUNS, {}, clear=True))
@@ -488,7 +559,8 @@ class RunnerStopReceiptTests(unittest.IsolatedAsyncioTestCase):
     async def test_restart_failed_stop_keeps_same_session_fence(self):
         from app.services import ai_local
         stop = Mock(return_value={"ok": False, "error": "kill denied"})
-        self.runner._resource_budget = SimpleNamespace(snapshot=lambda: SimpleNamespace(limit=1, can_start=False))
+        self.runner.concurrency_ceiling = 1
+        self.runner._resource_budget = SimpleNamespace(snapshot=lambda: ResourceSnapshot(limit=1, can_start=False))
         with patch.object(ai_local, "reclaim"), patch.dict(ai_local._RUNS, {
             "session": {"state": "running", "admissionKey": "first"}}, clear=True), \
                 patch("app.services.local_stream.stop_sync", stop):

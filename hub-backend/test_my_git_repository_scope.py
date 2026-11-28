@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import os
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.agents import get_my_git
+from app.api.agents import get_my_git, test_my_git as probe_my_git
 from app.models import Client, OrgUnit, Project, Repo, User
 from app.services.repo_urls import git_probe_url
 
@@ -52,6 +53,26 @@ class MyGitRepoTests(unittest.IsolatedAsyncioTestCase):
                 result = await get_my_git(device, self.session)
                 self.assertEqual({r["id"] for r in result["repos"]}, allowed)
                 self.assertIn("git", result)
+
+    async def test_https_probe_requires_a_visible_registered_origin(self):
+        for key, url in (("own", "https://git.example.test:8443/team/repo.git"),
+                         ("other", "https://private.example.test/team/repo.git")):
+            (await self.session.get(Repo, key)).git_url = url
+        await self.session.commit()
+        device = Client(user_ref="member", git_creds={"user": "tester", "token": "fixture-only"})
+        with patch("app.services.code_creds.subprocess.run") as run:
+            run.return_value.returncode = 0
+            run.return_value.stdout = ""
+            run.return_value.stderr = ""
+            for url in ("https://unknown.example.test/demo", "https://git.example.test/demo",
+                        "https://private.example.test/demo", "http://git.example.test:8443/demo"):
+                with self.subTest(url=url):
+                    self.assertFalse((await probe_my_git({"url": url}, device, self.session))["ok"])
+            run.assert_not_called()
+            target = "https://git.example.test:8443/another/repo.git"
+            self.assertTrue((await probe_my_git({"url": target}, device, self.session))["ok"])
+            self.assertEqual(run.call_args.args[0][-1], target)
+            self.assertEqual(run.call_args.kwargs["env"]["SODUWORK_GIT_ALLOWED_HOSTS"], "git.example.test:8443")
 
     async def test_returns_safe_probe_target_without_changing_stored_remote(self):
         original = "https://account:old-value@example.test/team/repo.git?access=old#section"

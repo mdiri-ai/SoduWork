@@ -62,7 +62,8 @@ function _skillDirs(app) {
  */
 function _contextSnapshot(handle, snapshot) {
   const { usageReceipts, ...display } = snapshot || {};
-  return { ...display, ...(handle.requirementContext ? { requirementContext: handle.requirementContext } : {}),
+  const skillFailure = require('./skill-failure-context.cjs').summary(handle, display);
+  return { ...display, ...(skillFailure ? { skillFailure } : {}), ...(handle.requirementContext ? { requirementContext: handle.requirementContext } : {}),
     ...(handle.deliverySync ? { deliverySync: handle.deliverySync } : {}) };
 }
 function _send(win, handle, touched, snapshot, includeSnapshot, presenceSnapshot) {
@@ -171,6 +172,7 @@ function _discardRenderer(handle) {
 
 function _bindUsage(handle, identity, adapterId) {
   if (!handle || !identity) return;
+  require('./skill-failure-context.cjs').bind(_app, handle, identity);
   _deliverySync?.bind(handle, identity);
   _accountSync?.bind(handle, identity);
   handle.usageIdentity = {
@@ -215,6 +217,7 @@ function _attach(handle, win) {
 function _openReply(handle, extra) {
   const reply = require('./open-reply').openReply(_app, handle, extra);
   if (handle.localReplica === true) return reply;
+  reply.snapshot = _contextSnapshot(handle, reply.snapshot);
   const context = require('../conversation/requirement-context').publicContext(_app, handle.sessionId);
   if (context) {
     reply.requirementContext = context;
@@ -802,7 +805,8 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
         accessPolicy: spec.accessPolicy,
         skillDirs: spec.skillDirs, optionalSkillDirs: spec.optionalSkillDirs,
         resolveSkills: skillTurn.resolver({ app, identity, identityOf: sendIdentityOf || identityOf,
-          skillDirs: () => _skillDirs(app) }),
+          skillDirs: () => _skillDirs(app),
+          onResolved: (submissionId, items) => require('./skill-failure-context.cjs').prepared(session.get(ref), submissionId, items) }),
         resolveConnectors: require('../conversation-connectors.cjs').resolver({ app, identity, identityOf: sendIdentityOf || identityOf,
           ref, allowed: (resolved.skills || []).some(row => row.name === 'mcp-tools'), explicitlySelected: spec.selectedSkills.includes('mcp-tools') }),
         taskRef: spec.taskRef, taskTitle: spec.taskTitle,
@@ -1004,6 +1008,11 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     if (!s) return { ok: false, code: 'SESSION_NOT_FOUND', notSent: true, reason: '这条对话已经不在了（可能已关闭）' };
     if (s.localReplica === true) return { ok: false, accepted: false, notSent: true,
       reason: '本地历史为只读，请使用当前账号新建会话继续' };
+    const confirmedTaskInput = Object.hasOwn(rawOptions?.taskExecution ?? {}, 'inputManifest');
+    const assignmentPluginId = rawOptions?.taskExecution?.assignmentPluginId;
+    if (assignmentPluginId && (!Array.isArray(rawOptions?.plugins) ||
+        rawOptions.plugins.length !== 1 || rawOptions.plugins[0]?.pluginId !== assignmentPluginId))
+      return { ok: false, reason: '所选插件已变化，请重新安排执行' };
     let selectedSkills;
     try { selectedSkills = skillTurn.names(rawOptions?.skills); }
     catch (error) { return skillTurn.failure(error); }
@@ -1052,7 +1061,15 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }
     try {
       if (session.get(ref) !== s) throw Error('账号已切换，请重新打开会话');
-      if (_cloudHandoff.guard(s)) return await _cloudHandoff.send(s, text, rawAttachments, rawOptions || {});
+      if (_cloudHandoff.guard(s)) {
+        // An existing cloud conversation accepts follow-up text, not task
+        // dispatch manifests. Do not drop a confirmed input selection.
+        if (confirmedTaskInput) return { ok: false, accepted: false, notSent: true,
+          reason: '当前云端会话不能使用已确认的派发材料，请从需求派发入口重新确认' };
+        if (assignmentPluginId) return { ok: false, accepted: false, notSent: true,
+          reason: '所选插件需要本机会话才能执行' };
+        return await _cloudHandoff.send(s, text, rawAttachments, rawOptions || {});
+      }
     } catch (error) { return { ok: false, reason: String(error.message || error) }; }
     // Scheduled automation is an ordinary one-turn conversation even when the
     // selected personal plugin happens to be a workflow package.  The debug
@@ -1124,7 +1141,8 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       return String(item || '').trim();
     }).filter(Boolean))].slice(0, 3);
     const clearPluginSelection = Boolean(rawOptions &&
-      (rawOptions.clearPluginSelection === true || rawOptions.pluginSelection === 'clear'));
+      (rawOptions.clearPluginSelection === true || rawOptions.pluginSelection === 'clear' ||
+        (taskLifecycle && assignmentPluginId === '' && !pluginIds.length)));
     const sendOptions = {
       ...(automationTurn ? { source: 'automation' } : {}),
       ...(taskTurn?.acceptanceOnly ? { beforeTurn: taskTurn.beforeTurn, afterTurn: taskTurn.afterTurn,
@@ -1142,7 +1160,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       projectId: String(taskTurn ? taskTurn.task.projectId || '' : rawOptions && rawOptions.projectId || '').slice(0, 36),
       repoId: String(taskTurn ? taskTurn.task.repoId || '' : rawOptions && rawOptions.repoId || '').slice(0, 36),
       submissionId: String(taskTurn?.acceptanceOnly ? taskTurn.submissionId : rawOptions && rawOptions.submissionId || '')
-        .replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64),
+        .replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || (selectedSkills.length || (rawOptions?.skills == null && s.ui?.selectedSkills?.length) ? require('crypto').randomUUID() : ''),
     };
     if (typeof authorizeAI === 'function') {
       // Resolve ownership for each captured turn, not the session's current
@@ -1178,6 +1196,10 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     if (!workflowTurn && typeof rawOptions?.nativeRelayGuard === 'function') {
       try { await rawOptions.nativeRelayGuard(); }
       catch (error) { return { ok: false, accepted: false, reason: String(error.message || error) }; }
+    }
+    if (!workflowTurn && rawOptions?.skills == null && s.ui?.selectedSkills?.length) {
+      const active = (s.ui.skills || []).filter(row => s.ui.selectedSkills.includes(row.name));
+      require('./skill-failure-context.cjs').prepared(s, sendOptions.submissionId, active);
     }
     const titleRequest = !workflowTurn && !taskId && !automationTurn && !appRequest && !rawOptions?.nativeRelayGuard
       ? firstTurnTitle.prepare(s, text) : null;

@@ -34,6 +34,7 @@ function executionSpec(task, requested = {}) {
     agentId, assigneeType,
     model: requested.model !== undefined ? requested.model : context.model || task.model || '', context,
     reasoningEffort: requested.reasoningEffort || context.reasoningEffort || '',
+    ...(Object.hasOwn(requested, 'inputManifest') ? { inputManifest: requested.inputManifest } : {}),
     inputs: requested.inputs || {} };
 }
 
@@ -122,12 +123,15 @@ function create({ request, task, spec, scope, interval = 1500, wait = ms => new 
     if (stopping) return { ok: true, cancelled: true };
     let started;
     try {
+      const confirmed = Object.hasOwn(spec, 'inputManifest');
       started = continuation ? await continuation.start(text, files) :
-        await request(spec.mode === 'workflow' ? route + '/plugin-runs' : route + '/ai-dispatch',
+        await request(route + (spec.mode === 'workflow' ? '/plugin-runs'
+          : confirmed ? '/ai-dispatch-confirmed' : '/ai-dispatch'),
         spec.mode === 'workflow' ? { bindingId: spec.bindingId, inputs: spec.inputs, instruction: text,
           repoId: spec.repoId, execution: spec.context.execution || {}, conversationTurn: scope }
           : { assigneeId: spec.agentId, assigneeType: spec.assigneeType || 'agent', brief: text, repo: spec.repo, model: spec.model,
             reasoningEffort: spec.reasoningEffort,
+            ...(confirmed ? { inputManifest: spec.inputManifest } : {}),
             executionContext: { ...spec.context, strategy: 'direct' }, conversationTurn: scope });
     } catch (error) {
       if (error.authRequired || error.permissionRequired) {

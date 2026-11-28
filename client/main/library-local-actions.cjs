@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('node:crypto');
 const { safeFilename, canOpenWithSystem } = require('./attachment-files.js');
+const { mimeTypeForFilename } = require('./library-output.cjs');
 const { error, clone, ITEM, FOLDER, MAX_BYTES } = require('./library-local-store.cjs');
 const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const now = () => new Date().toISOString();
@@ -41,6 +42,42 @@ function validCompleteFilename(value) {
   return typeof value === 'string' && !!value && value === value.trim() && value.length <= 160 &&
     Buffer.byteLength(value, 'utf8') <= 180 && value.isWellFormed() && safeFilename(value, '') === value;
 }
+function knownExtension(filename) {
+  return canOpenWithSystem(filename) ||
+    /\.(pdf|txt|md|markdown|csv|png|jpe?g|gif|webp|svg|bmp|avif|mp3|mp4|wav|webm|json|xml|ya?ml|log|css|js|ts|py|ini|toml|bin)$/i.test(filename);
+}
+function hasLegacySuffix(row) {
+  const filename = row.filename, suffix = splitFilename(filename).extension.toLowerCase();
+  const titleSuffix = splitFilename(row.title || '').extension.toLowerCase();
+  // Older renames could append the already truncated suffix to a full name.
+  if (suffix && titleSuffix !== suffix && titleSuffix.startsWith(suffix) &&
+      nameKey(filename) === nameKey(row.title + suffix)) return true;
+  return filename.length === 160 && !knownExtension(filename);
+}
+
+function completesLegacyFilename(row, wanted) {
+  const newSuffix = splitFilename(wanted).extension.toLowerCase();
+  if (!newSuffix) return false;
+  if (!validCompleteFilename(row.filename)) return true;
+  const oldSuffix = splitFilename(row.filename).extension.toLowerCase();
+  if (newSuffix === oldSuffix || !newSuffix.startsWith(oldSuffix)) return false;
+  const legacySuffix = hasLegacySuffix(row);
+  const mime = String(row.contentType || '').split(';')[0].trim().toLowerCase();
+  if (mime && mime !== 'application/octet-stream') {
+    const newMime = mimeTypeForFilename(wanted);
+    if (mimeTypeForFilename(row.filename) === mime || (newMime && newMime !== mime)) return false;
+    // A .docx truncated to .doc can also survive an old rename as report.docx.doc.
+    if (newMime === mime && (row.filename.length === 160 || legacySuffix)) return true;
+  }
+  return legacySuffix && (!oldSuffix || (!knownExtension(row.filename) && knownExtension(wanted)));
+}
+
+function setCompleteFilename(row, filename) {
+  if (!validCompleteFilename(filename)) throw error('LOCAL_LIBRARY_INVALID', '文件名无效或过长，请缩短名称，不要包含路径。');
+  row.filename = row.title = filename;
+  if (row.kind === 'file') row.kind = classify(filename, row.contentType);
+}
+
 function filenameIssues(index) {
   // Report legacy damage without changing the index or guessing a lost extension.
   // Count destinations once, including folders, even when the list is filtered.
@@ -56,8 +93,7 @@ function filenameIssues(index) {
     // Conversation revisions may intentionally share a visible name.
     if (!row.deletedAt && row.sourceType !== 'conversation' && counts.get(keys.get(row.id)) > 1) issues.set(row.id, 'duplicate');
     else if (!validCompleteFilename(filename)) issues.set(row.id, 'invalid');
-    else if (filename.length === 160 && !canOpenWithSystem(filename) &&
-      !/\.(pdf|txt|md|markdown|csv|png|jpe?g|gif|webp|svg|bmp|avif|mp3|mp4|wav|webm|json|xml|ya?ml|log|css|js|ts|py|ini|toml|bin)$/i.test(filename)) issues.set(row.id, 'check');
+    else if (hasLegacySuffix(row)) issues.set(row.id, 'check');
   }
   return issues;
 }
@@ -287,11 +323,9 @@ async function execute(store, index, action, payload) {
     if (row.sourceType !== 'conversation') checkItemName(index, row);
   } else if (action === 'associateSource') Object.assign(row, source(body));
   else if (action === 'repairFilename') {
-    if (!validCompleteFilename(body.filename)) throw error('LOCAL_LIBRARY_INVALID', '文件名无效或过长，请缩短名称，不要包含路径。');
     const old = row._object, previousFilename = row.filename;
-    row.filename = body.filename; row.title = body.filename;
+    setCompleteFilename(row, body.filename);
     checkItemName(index, row);
-    if (row.kind === 'file') row.kind = classify(row.filename, row.contentType);
     if (row.filename !== previousFilename) {
       // Use the same staged-copy commit as a normal rename; never edit source bytes.
       row._object = await store.write(await store.read(row), row.filename, index);
@@ -303,8 +337,13 @@ async function execute(store, index, action, payload) {
     if (has(body, 'folderId')) row.folderId = folder(index, body.folderId)?.id || null;
     if (has(body, 'title')) {
       const previousFilename = row.filename;
-      row.title = name(body.title, row.title);
-      row.filename = visibleFilename(row);
+      const wanted = typeof body.title === 'string' ? body.title : '';
+      if (completesLegacyFilename(row, wanted)) {
+        setCompleteFilename(row, wanted);
+      } else {
+        row.title = name(body.title, row.title);
+        row.filename = visibleFilename(row);
+      }
       filenameChanged = row.filename !== previousFilename;
     }
     if (has(body, 'title') || has(body, 'folderId')) checkItemName(index, row);

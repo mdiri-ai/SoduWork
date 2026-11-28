@@ -18,14 +18,18 @@ const { createRunnerRuntimeAdapter, _uuidV5 } = require('../main/agent-runtime/r
 const { scope } = require('../main/platform-connections/runtime.cjs');
 const { createSafeStorage } = require('./helpers/device-safe-storage-fixture.cjs');
 
-function loadIpc(bridge) {
+function loadIpc(bridge, cloudBoundary) {
   const file = require.resolve('../main/pi-session/ipc');
   const nativeRequire = createRequire(file);
   const module = { exports: {} };
   const requireFixture = name => {
     if (name === '../agent-runtime/pi-session-bridge') return bridge;
     if (name === 'electron') return { shell: {}, dialog: {} };
-    return nativeRequire(name);
+    const dependency = nativeRequire(name);
+    if (name === '../conversation/cloud-handoff-ipc' && cloudBoundary) {
+      return { install: options => Object.assign(dependency.install(options), cloudBoundary) };
+    }
+    return dependency;
   };
   vm.runInThisContext('(function(require,module,exports,__filename,__dirname){\n' +
     fs.readFileSync(file, 'utf8') + '\n})', { filename: file })(
@@ -39,7 +43,7 @@ function newAuth() {
   return require(file);
 }
 
-async function fixture(t, spec, legacySendIdentity = false) {
+async function fixture(t, spec, legacySendIdentity = false, cloudBoundary) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-send-auth-'));
   const app = new EventEmitter();
   app.getPath = () => root;
@@ -194,7 +198,7 @@ async function fixture(t, spec, legacySendIdentity = false) {
   let archiveLookup;
   const ipcBridge = { ...bridge, archivedConversation: (...args) => archiveLookup
     ? archiveLookup(...args) : bridge.archivedConversation(...args) };
-  installed = loadIpc(ipcBridge).install({ app, ipcMain, BrowserWindow, identityOf,
+  installed = loadIpc(ipcBridge, cloudBoundary).install({ app, ipcMain, BrowserWindow, identityOf,
     // The explicit legacy shape is a negative control: the original production
     // callback returned a device key without the already-cached session.
     sendIdentityOf: legacySendIdentity ? (...args) => auth.identity(...args) : identityOf,
@@ -258,6 +262,26 @@ async function openCachedCopy(f) {
   assert.equal(handle.localReplica, true);
   return handle;
 }
+
+test('confirmed task materials are rejected before issuing an existing cloud continuation', async t => {
+  const cloudSends = [];
+  let cloudSessionId;
+  const f = await fixture(t, catalog.runtime('pi'), false, {
+    guard: handle => handle.sessionId === cloudSessionId,
+    send: async (_handle, text) => { cloudSends.push(text); return { ok: true, accepted: true }; },
+  });
+  const handle = await f.open();
+  cloudSessionId = handle.sessionId;
+  const send = options => f.handlers.get('pi-session-send')(f.event, handle.ref, 'Continue', [], options);
+  const refused = await send({ taskId: 'fixture-task', taskExecution: { inputManifest: [] } });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.notSent, true);
+  assert.match(refused.reason, /派发材料/);
+  assert.deepEqual(cloudSends, []);
+  assert.deepEqual(f.turns, []);
+  assert.equal((await send({})).ok, true);
+  assert.deepEqual(cloudSends, ['Continue']);
+});
 
 test('production installed cached readonly snapshots load the original transcript without invoking a model', async t => {
   const f = await fixture(t, catalog.runtime('pi')), handle = await openCachedCopy(f);

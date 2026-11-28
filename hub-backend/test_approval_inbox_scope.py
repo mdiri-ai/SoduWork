@@ -311,6 +311,49 @@ class ApprovalInboxScopeTests(unittest.IsolatedAsyncioTestCase):
         response = await self.http.post("/api/v1/approvals/missing/revoke", json={"note": "Fixture"})
         self.assertEqual(response.status_code, 404, response.text)
 
+    async def test_withdrawal_reopens_only_the_current_editable_delivery(self):
+        accepted_at = datetime(2026, 10, 2, 12)
+        for case in ("current", "older", "cancelled", "archived", "workflow"):
+            with self.subTest(case=case):
+                request_id, task_id = await self.seed(case)
+                async with self.sessions() as session:
+                    task = await session.get(models.Task, task_id)
+                    task.status = "cancel" if case == "cancelled" else "done"
+                    task.archived_at = accepted_at if case == "archived" else None
+                    task.reviewed_at, task.reviewed_by, task.reviewed_by_name = accepted_at, "alice", "Alice"
+                    request = await session.get(am.ApprovalRequest, request_id)
+                    request.action, request.status = "review", "approved"
+                    artifact = await session.get(am.ArtifactVersion, request.artifact_version_id)
+                    artifact.kind, artifact.state = "files", "reviewed"
+                    if case == "older":
+                        artifact.state = "superseded"
+                        session.add(am.ArtifactVersion(id="v2", task_id=task_id, seq=2, kind="files",
+                                                       checksum="v2", state="reviewed"))
+                        session.add(am.ApprovalRequest(id="review-v2", task_id=task_id, artifact_version_id="v2",
+                                                       action="review", status="approved"))
+                    if case == "workflow":
+                        session.add(am.WorkflowRun(task_id=task_id, plugin_id="fixture", plugin_version_id="v",
+                                                   binding_id="fixture", state="waiting_human"))
+                    await session.commit()
+
+                response = await self.http.post(f"/api/v1/approvals/{request_id}/revoke", json={"note": "Withdraw"})
+                self.assertEqual(response.status_code, 200, response.text)
+                async with self.sessions() as session:
+                    task = await session.get(models.Task, task_id)
+                    self.assertEqual((await session.get(am.ApprovalRequest, request_id)).status, "revoked")
+                    marker = (task.reviewed_at, task.reviewed_by, task.reviewed_by_name)
+                    if case == "current":
+                        self.assertEqual(task.status, "doing")
+                        self.assertEqual(marker, (None, None, ""))
+                    else:
+                        self.assertEqual(task.status, "cancel" if case == "cancelled" else "done")
+                        self.assertEqual(marker, (accepted_at, "alice", "Alice"))
+                    if case == "archived":
+                        self.assertEqual(task.archived_at, accepted_at)
+                    if case == "older":
+                        self.assertEqual((await session.get(am.ArtifactVersion, artifact.id)).state, "superseded")
+                        self.assertEqual((await session.get(am.ApprovalRequest, "review-v2")).status, "approved")
+
     async def test_revoke_authorized_request_still_preserves_history(self):
         request_id, task_id = await self.seed("revoke-allowed")
         async with self.sessions() as session:

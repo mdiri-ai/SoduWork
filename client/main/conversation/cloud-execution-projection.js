@@ -102,6 +102,7 @@ function create({ app, root, read, save, materialize, directory }) {
       owner: record?.owner || connectionScope(identity), syncOwner: owner, syncId: row.id,
       taskId: receipt.taskId, title: row.title, adapterId: receipt.source.adapterId || 'pi',
       phase: receipt.phase, ref, target: receipt.target,
+      confirmationGeneration: receipt.confirmationGeneration || undefined,
       accepted: receipt.accepted === true, acceptedAt: receipt.acceptedAt || '', canAbort: receipt.canAbort === true,
       remoteState: row.execution?.status || receipt.status,
       at: Date.parse(row.execution?.updatedAt || row.createdAt) || record?.at || Date.now(),
@@ -191,6 +192,7 @@ function create({ app, root, read, save, materialize, directory }) {
         await check();
         const current = read(sessionId), meta = details.conversation;
         await save({ ...current, phase: meta.receipt.phase,
+          confirmationGeneration: meta.receipt.confirmationGeneration || undefined,
           accepted: meta.receipt.accepted === true, acceptedAt: meta.receipt.acceptedAt || '', canAbort: meta.receipt.canAbort === true,
           remoteState: page?.status || meta.receipt.status, error: meta.receipt.error || '',
           syncSnapshot: page ? { ...page, items: [] } : null,
@@ -204,7 +206,7 @@ function create({ app, root, read, save, materialize, directory }) {
         await check();
         // Attachment failure is retryable independently of the transcript cursor.
         try {
-          if (Array.isArray(details.attachments)) {
+          if (meta.receipt.phase === 'committed' && Array.isArray(details.attachments)) {
             await materialize(read(sessionId), identity, details.attachments);
             await check();
           }

@@ -1,4 +1,6 @@
 'use strict';
+const { createHash } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { taskPrompt } = require('./task-turn');
 const { MAX_BYTES, MAX_FILES } = require('./attachments');
 const { fetchWithDeviceAuthRetry } = require('../device-auth-request');
@@ -16,6 +18,7 @@ async function request(identity, route, body) {
   if (!response.ok || data.ok === false) {
     const status = Number(response.status) || 0;
     const error = new Error(typeof data.detail === 'string' ? data.detail
+      : typeof data.detail?.message === 'string' ? data.detail.message
       : status === 401 ? '登录已过期，请重新连接 SoduWork 服务后继续'
       : status === 403 ? '当前连接没有执行此操作的权限'
       : '需求服务暂不可用，请稍后重试');
@@ -95,32 +98,59 @@ function latestDeliveryAttachments(rows) {
 
 async function loadTaskAttachments(identity, route, selection) {
   const options = Array.isArray(selection) ? {selectedIds: selection} : (selection || {});
+  const confirmed = Object.hasOwn(options, 'inputManifest');
+  const manifest = options.inputManifest;
+  const changed = name => new Error('需求附件' + (name ? '「' + String(name).slice(0, 200) + '」' : '') +
+    '自预览后已变化，请重新预览后再派发');
+  if (confirmed) {
+    if (!Array.isArray(manifest) || manifest.length > MAX_FILES) throw changed();
+    const preview = await request(identity, route + '/ai-preview', { inputManifest: manifest });
+    if (preview.carried?.confirmedDispatch !== true || !isDeepStrictEqual(manifest, preview.carried.inputManifest))
+      throw changed();
+  }
   const selectedIds = Array.isArray(options.selectedIds) ? options.selectedIds : null;
   const listed = await request(identity, route + '/attachments');
   const available = Array.isArray(listed) ? listed : listed.attachments || [];
   const scoped = options.latestDelivery ? latestDeliveryAttachments(available) : available;
-  const files = selectedIds ? scoped.filter(file => selectedIds.includes(file.id)) : scoped;
+  const files = confirmed ? manifest.map(entry => scoped.find(file => file.id === entry.id))
+    : selectedIds ? scoped.filter(file => selectedIds.includes(file.id)) : scoped;
+  if (confirmed) {
+    const missing = files.findIndex(file => !file);
+    if (missing >= 0) throw changed(manifest[missing].name);
+  }
   if (Array.isArray(selectedIds) && selectedIds.some(id => !files.some(file => file.id === id)))
     throw Error('本次验收材料已变化或不可读，请刷新需求后重新分析');
   if (files.length > MAX_FILES) throw new Error('需求附件超过本轮可接收的数量，请先调整附件');
   const attachments = [];
   let bytes = 0;
   for (const file of files) {
+    const name = file.filename || file.name;
+    const expected = confirmed ? manifest[attachments.length] : null;
+    if (expected && name !== expected.name) throw changed(expected.name);
     const response = await fetch(attachmentUrl(identity, file), {
       redirect: 'error', signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) throw new Error('需求附件未能读取，请重试；本次没有开始执行');
+    if (!response.ok) {
+      if (expected) throw changed(expected.name);
+      throw new Error('需求附件未能读取，请重试；本次没有开始执行');
+    }
     const reader = response.body.getReader(), chunks = [];
+    let fileBytes = 0;
     try {
       for (;;) {
         const part = await reader.read();
         if (part.done) break;
         bytes += part.value.byteLength;
+        fileBytes += part.value.byteLength;
+        if (expected && fileBytes > expected.size) throw changed(expected.name);
         if (bytes > MAX_BYTES) throw new Error('需求附件总大小超过 256 MB');
         chunks.push(Buffer.from(part.value));
       }
     } finally { await reader.cancel().catch(() => {}); }
-    attachments.push({ name: file.filename || file.name, data: Buffer.concat(chunks),
+    const data = Buffer.concat(chunks, fileBytes);
+    if (expected && (fileBytes !== expected.size || createHash('sha256').update(data).digest('hex') !== expected.sha256))
+      throw changed(expected.name);
+    attachments.push({ name, data,
       mimeType: file.contentType || file.content_type || file.mimeType || '',
       attachmentId: String(file.id || file.attachmentId || ''), role: String(file.role || ''),
       evidenceMeta: file.evidenceMeta || {}, sourceRef: String(file.sourceRef || '') });
@@ -157,6 +187,8 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
     const error = new Error('需求已经结束'); error.code = 'TASK_FINISHED'; throw error;
   }
   let spec = controlled.executionSpec(task, requested);
+  if (requested.assignmentPluginId && spec.mode !== 'native')
+    throw new Error('所选插件需要本机会话才能执行');
   const reuse = requested.reuseConversation === true;
   const reworkSession = requested.reworkSession === true;
   const explicitNative = requested.executionChoice === 'native';
@@ -193,6 +225,15 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
   const runnerContinuation = reuse && !explicitNative && (followUp || reworkSession) &&
     spec.mode === 'dispatch' && (/^runner:/.test(spec.agentId) ||
       task.workRouting?.conversationTurn?.executor === 'dispatch');
+  const previous = task.workRouting?.conversationTurn;
+  // A resumed rework may retain its first-send flag if the client lost the acknowledgement.
+  const recoverable = (followUp || reuse && reworkSession && !explicitNative) && previous?.executor === 'native' &&
+    previous.conversationId === conversationId && previous.turnId &&
+    ['queued', 'running', 'waiting'].includes(previous.state);
+  const confirmed = Object.hasOwn(requested, 'inputManifest');
+  const confirmedRecovery = confirmed && spec.mode === 'native' && recoverable && previous.turnId === turnId;
+  if (confirmed && (runnerContinuation || spec.mode === 'workflow' || (reuse && !confirmedRecovery)))
+    throw new Error('请按当前执行方式重新预览需求附件');
   const assertNativeChoice = current => {
     const routing = current?.workRouting || {}, context = routing.executionContext || {};
     if (routing.selectedStrategy !== 'direct' || routing.workflowBindingId || routing.selectedWorkflowBindingId ||
@@ -243,8 +284,8 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
      '\n（验收人已退回上一版交付，本轮请按此意见返修现有交付并重新完整提交，不要从零重做。）') : '')) :
     taskPrompt(task, instruction);
   if (!followUp && text.length > 50000) throw new Error('需求文字超过 50000 字符，请把长材料作为附件后重试；内容没有被截断或执行');
-  let attachments = followUp || runnerContinuation ? [] : await loadTaskAttachments(identity, route,
-    reworkSession ? {latestDelivery: true} : undefined);
+  const attachments = !confirmedRecovery && (followUp || runnerContinuation) ? [] : await loadTaskAttachments(identity, route,
+    confirmed ? {inputManifest: requested.inputManifest} : reworkSession ? {latestDelivery: true} : undefined);
   const scope = { conversationId, turnId };
   const nativeReceiptScope = () => capturedModel.source === 'device'
     ? { ...scope, modelSource: 'device', modelAgentId: capturedModel.agentId } : scope;
@@ -342,14 +383,11 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
       throw error;
     }
   };
-  const previous = task.workRouting?.conversationTurn;
-  // A resumed rework may retain its first-send flag if the client lost the acknowledgement.
-  const recoverable = (followUp || reuse && reworkSession && !explicitNative) && previous?.executor === 'native' &&
-    previous.conversationId === conversationId && previous.turnId &&
-    ['queued', 'running', 'waiting'].includes(previous.state);
   const recoveryToken = recoverable ? await runtime?.handle?.claimInterruptedTask?.(taskId) : null;
   const releaseRecovery = typeof recoveryToken === 'string' && recoveryToken
     ? () => runtime.handle.releaseInterruptedTask(taskId, recoveryToken) : null;
+  // A confirmed recovery may use only the original claimed receipt.
+  if (confirmedRecovery && !releaseRecovery) throw new Error('原派发轮次暂不可恢复，请重新打开原会话查看状态');
   if (releaseRecovery) scope.turnId = previous.turnId;
   const receipt = releaseRecovery ? { turn: previous, task } : await transition('prepare');
   if (!releaseRecovery && receipt.turn.state !== 'queued') throw new Error('这项需求已经执行，请刷新后查看结果');
@@ -399,6 +437,7 @@ async function prepare(identity, taskId, conversationId, turnId, instruction, re
       }
     },
     beforeRetry: async turn => {
+      if (confirmedRecovery) throw new Error('请重新预览需求附件后安排新的执行轮次');
       // Mint a fresh receipt attempt, but retain this conversation's context.
       // Queue admission freezes a model independently of later picker changes.
       const nextModel = captureModelSource(true, turn?.modelName);

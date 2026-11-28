@@ -757,8 +757,7 @@ for (const fileRead of [false, true]) test('streaming ' + (fileRead ? 'file read
   toolScope.window = toolScope;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../components/panels/panels-chat-tools.js'), 'utf8'), toolScope);
   const tools = toolScope.ChatTools;
-  Object.assign(sandbox.ChatTools, { kind: tools.kind, isCommandTool: tools.isCommandTool,
-    render: tools.render, recordOwner: tools.recordOwner });
+  Object.assign(sandbox.ChatTools, { kind: tools.kind, isCommandTool: tools.isCommandTool, render: tools.render });
   let renders = 0;
   sandbox.ChatTools.appendTimeline = (parts, input, _previous, _anchor, _narrated, itemHtml) => {
     renders++; parts.push(...input.map(itemHtml));

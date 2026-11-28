@@ -5,7 +5,7 @@ collection isolation, and idempotent generation.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
@@ -27,7 +27,7 @@ sys.path.insert(0, str(BACKEND))
 from sqlalchemy import func, select  # noqa: E402
 
 from app import models  # noqa: E402
-from app.db import SessionLocal, engine, init_db  # noqa: E402
+from app.db import SessionLocal, _backfill_data, engine, init_db  # noqa: E402
 from app.realtime import Hub  # noqa: E402
 from app.services import llm, work_report  # noqa: E402
 
@@ -191,6 +191,92 @@ async def main() -> None:
                   and any(row["text"] == "实现工作简报" and saved.id in row["sourceIds"]
                           for row in org.get("summary", {}).get("nextFocus", []))
                   and not org.get("summary", {}).get("inProgress"), org)
+
+    async with SessionLocal() as session:
+        session.add_all([
+            models.User(id="u-dates", username="completion-dates", is_active=True),
+            models.Client(id="c-dates", name="Completion dates", user_ref="u-dates"),
+            models.Task(id="t-old-completion", title="Completed last week", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        actual_end_at=datetime(2026, 8, 10, 10, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc)),
+            models.Task(id="t-completion-progress", title="Completed with earlier progress", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        actual_end_at=datetime(2026, 8, 18, 11, tzinfo=timezone.utc),
+                        updated_at=datetime(2026, 8, 25, 10, tzinfo=timezone.utc),
+                        progress=[{"at": at("2026-08-18"), "by": "u-dates",
+                                   "status": "doing", "text": "Implementation ready"}]),
+            models.Task(id="t-legacy-completion", title="Legacy completion", status="done",
+                        owner_client_id="c-dates", owner_user_id="u-dates",
+                        updated_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc)),
+        ])
+        await session.commit()
+        # Reload through SQLite so its naive UTC DateTime representation is exercised.
+        session.expire_all()
+        old_day = await work_report.collect_period(session, "u-dates", "daily", "2026-08-10")
+        new_day = await work_report.collect_period(session, "u-dates", "daily", "2026-08-18")
+        new_week = await work_report.collect_period(session, "u-dates", "weekly", "2026-08-18")
+        check("后续更新不改变历史日报的实际完成日期",
+              old_day["done"] == ["Completed last week"], old_day)
+        check("修改旧任务不会在新的日报或周报中重复计算完成",
+              "Completed last week" not in new_day["done"]
+              and "Completed last week" not in new_week["done"], (new_day, new_week))
+        check("实际完成时间保留当日完成事实，无需进展再写一次 done",
+              "Completed with earlier progress" in new_day["done"], new_day)
+        check("缺少实际完成时间的旧任务保留更新时间回退",
+              "Legacy completion" in new_day["done"], new_day)
+
+    async with SessionLocal() as session:
+        session.add_all([
+            models.User(id="u-backfill", username="backfill", display_name="历史用户"),
+            models.Client(id="c-backfill", name="历史设备", user_ref="u-backfill"),
+        ])
+        for task_id, progress, actual_end in (
+            ("t-backfilled", [{"at": at("2026-08-10"), "status": "done"}], None),
+            ("t-corrected", [{"at": at("2026-08-10"), "status": "done"}],
+             datetime(2026, 8, 12, 10, tzinfo=timezone.utc)),
+            ("t-latest-done", [{"at": at(day), "status": "done"}
+                               for day in ("2026-08-12", "2026-08-10", "2026-08-11")]
+             + [{"at": 1e300, "status": "done"}], None),
+            ("t-backfill-fallback", [{"at": True, "status": "done"},
+                                     {"at": "invalid", "status": "done"},
+                                     {"at": at("2026-08-10"), "status": "doing"}], None),
+        ):
+            session.add(models.Task(
+                id=task_id, title=task_id, status="done", progress=progress,
+                owner_client_id="c-backfill", owner_user_id="u-backfill",
+                actual_end_at=actual_end, updated_at=datetime(2026, 8, 18, 10, tzinfo=timezone.utc)))
+        await session.commit()
+        async with engine.begin() as connection:
+            await connection.run_sync(_backfill_data)
+        session.expire_all()
+        task = await session.get(models.Task, "t-backfilled")
+        check("历史回填优先使用显式完成记录，而非之后的元数据更新时间",
+              task.actual_end_at == datetime.fromtimestamp(at("2026-08-10") / 1000, timezone.utc).replace(tzinfo=None),
+              task.actual_end_at)
+        check("历史回填保留用户已记录或修正的实际完成时间",
+              (await session.get(models.Task, "t-corrected")).actual_end_at == datetime(2026, 8, 12, 10))
+        check("历史回填使用最新有效完成记录并忽略超范围时间",
+              (await session.get(models.Task, "t-latest-done")).actual_end_at
+              == datetime.fromtimestamp(at("2026-08-12") / 1000, timezone.utc).replace(tzinfo=None))
+        check("没有有效完成记录时保留历史更新时间回退",
+              (await session.get(models.Task, "t-backfill-fallback")).actual_end_at == datetime(2026, 8, 18, 10))
+        for period in ("daily", "weekly"):
+            historical = await work_report.collect_period(session, "u-backfill", period, "2026-08-10")
+            edited = await work_report.collect_period(session, "u-backfill", period, "2026-08-18")
+            check(f"回填后的{period}只在原完成周期统计，不在元数据编辑周期重复",
+                  "t-backfilled" in historical["done"] and "t-backfilled" not in edited["done"],
+                  (historical, edited))
+        task.updated_at = datetime(2026, 8, 25, 10, tzinfo=timezone.utc)
+        await session.commit()
+        async with engine.begin() as connection:
+            await connection.run_sync(_backfill_data)
+        session.expire_all()
+        later = await work_report.collect_period(session, "u-backfill", "weekly", "2026-08-25")
+        check("再次编辑和重复回填不改写已保存的完成时间",
+              (await session.get(models.Task, "t-backfilled")).actual_end_at
+              == datetime.fromtimestamp(at("2026-08-10") / 1000, timezone.utc).replace(tzinfo=None)
+              and "t-backfilled" not in later["done"], later)
 
     api_source = (BACKEND / "app" / "api" / "reports.py").read_text(encoding="utf-8")
     check("客户端 API 同时保护个人与团队边界",

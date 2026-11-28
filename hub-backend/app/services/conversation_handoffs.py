@@ -31,6 +31,15 @@ ARCHIVE_NAME = "soduwork-workspace-handoff.zip"
 RUNNER_KINDS = {"work-computer", "cloud"}
 _ID = re.compile(r"[A-Za-z0-9-]{1,80}")
 _NS = uuid.UUID("a48e2601-e8bc-4836-9098-ec16a67ae5fa")
+_MODEL_CONFIRMATION = "modelConfirmationGeneration"
+_CLAIM_ID = "claimId"
+
+
+class ModelConfirmationRequired(HTTPException):
+    def __init__(self, selection, *, unavailable=False):
+        self.selection = selection
+        super().__init__(409, "当前执行模型已不可用，本次未启动。请检查模型配置或撤销交接。"
+                         if unavailable else "执行模型配置版本已变化，本次未启动。请重新确认或撤销交接。")
 
 
 def identity(client_id, transfer_id):
@@ -316,12 +325,20 @@ async def destination(session, client, options, source=None):
     try:
         ctx, _ = await task_execution_model.prepare(session, client, ctx, picked, options["model"])
     except ValueError as exc:
+        if isinstance(exc, task_execution_model.ManagedModelUnavailable) and options.get("managedModelSelection"):
+            raise ModelConfirmationRequired(options["managedModelSelection"], unavailable=True) from exc
         raise HTTPException(409, str(exc)) from exc
     if picked["modelMode"] == "managed":
         llm = (ctx.get("localCfg") or ctx.get("cfg") or {}).get("llm") or {}
         if not all(llm.get(key) for key in ("base", "key", "model")):
             raise HTTPException(409, "请先为所选底座配置可用模型")
+        picked = {**picked, "managedModelSelection": ctx["_managedModelSelection"]}
     return picked
+
+
+def check_prepared_model(options, selection):
+    if options.get("managedModelSelection") != selection:
+        raise ModelConfirmationRequired(selection)
 
 
 async def committed_destination(session, client, options, source=None):
@@ -434,6 +451,9 @@ async def get(session, client, transfer_id):
 def public(row):
     receipt = row.receipt or {}
     snapshot = (row.options or {}).get("targetSnapshot") or {}
+    confirmation = ((row.options or {}).get(_MODEL_CONFIRMATION)
+                    if row.phase == "prepared" and row.submitted_at is None
+                    and (row.source or {}).get("entryKind") == "cloud" else None)
     target = {key: str(snapshot.get(key) or "") for key in
               ("name", "runnerName", "agentId", "modelMode", "runnerId", "host", "runnerKind")}
     target.update(id=(row.options or {}).get("assigneeId", ""),
@@ -449,6 +469,7 @@ def public(row):
 
     task_id = "" if row.phase == "aborted" and row.task_id == row.id else row.task_id
     return {"ok": True, "transferId": row.transfer_id, "taskId": task_id,
+            **({"confirmationGeneration": confirmation} if confirmation else {}),
             "accepted": bool(row.submitted_at),
             "acceptedAt": iso_utc(row.submitted_at) if row.submitted_at else "",
             "phase": row.phase, "status": receipt.get("state") or row.phase,
@@ -459,6 +480,26 @@ def public(row):
             "source": {k: (row.source or {}).get(k, "") for k in ("sessionId", "adapterId", "title", "entryKind")},
             **({"agentFallback": row.options["agentFallback"]} if (row.options or {}).get("agentFallback") else {}),
             "error": row.error or "", "canAbort": row.phase == "prepared" and not row.submitted_at}
+
+
+def _claim_failure(row, event):
+    return (event is not None and event.kind == ai_exec.EV_DISPATCH_FAILED
+            and (event.detail or {}).get("attemptId") == dispatch_id(row))
+
+
+def failure_precedes_claim(row, event):
+    if row.phase != "committing" or not _claim_failure(row, event):
+        return False
+    receipt = row.receipt or {}
+    if "priorDispatchFailureId" in receipt:
+        return receipt["priorDispatchFailureId"] == event.id
+    # Legacy claims have only a timestamp. The event ID is authoritative on
+    # new claims so Hub workers need not share an exact system clock.
+    claim_time = row.commit_started_at
+    if claim_time is None:
+        return False
+    return (event.at.replace(tzinfo=event.at.tzinfo or timezone.utc)
+            < claim_time.replace(tzinfo=claim_time.tzinfo or timezone.utc))
 
 
 async def refresh(session, row):
@@ -472,13 +513,16 @@ async def refresh(session, row):
         latest = await session.scalar(select(TaskEvent).where(
             TaskEvent.task_id == row.task_id, TaskEvent.kind.in_(ai_exec.KINDS_DISPATCH_STATE))
             .order_by(TaskEvent.at.desc(), TaskEvent.id.desc()).limit(1))
-        if latest and (latest.detail or {}).get("attemptId") == dispatch_id(row):
+        if (latest and (latest.detail or {}).get("attemptId") == dispatch_id(row)
+                and not failure_precedes_claim(row, latest)):
             detail = dict(latest.detail or {})
             if latest.kind == ai_exec.EV_DISPATCH_FAILED:
-                row.phase, row.error = "prepared", str(detail.get("error") or "交接未启动")
-                row.receipt = {}
+                await session.execute(update(Handoff).where(
+                    Handoff.id == row.id, Handoff.phase == "committing",
+                    Handoff.commit_started_at == row.commit_started_at,
+                ).values(phase="prepared", error=str(detail.get("error") or "交接未启动"), receipt={}))
                 await session.commit()
-                return row
+                return await session.get(Handoff, row.id, populate_existing=True)
             if latest.kind in {ai_exec.EV_DISPATCH_UNCERTAIN, ai_exec.EV_DISPATCH_STARTED}:
                 candidate = dispatch_reconcile.Candidate(
                     row.task_id, dispatch_id(row), dispatch_identity.execution_ref(dispatch_id(row)),
@@ -549,6 +593,8 @@ async def prepare(session, client, transfer_id, data, raw_options):
         # destination separately in options so every retry/commit uses one host.
         options["assigneeId"] = available[0]["id"]
     picked = await destination(session, client, options, source)
+    if "managedModelSelection" in picked:
+        options["managedModelSelection"] = picked["managedModelSelection"]
     options["targetSnapshot"] = {key: str(picked.get(key) or "") for key in
                                  ("name", "runnerName", "agentId", "modelMode", "runnerId", "host")}
     tid = str(uuid.uuid5(_NS, row_id + ":task"))
@@ -633,19 +679,24 @@ async def abort(session, client, transfer_id):
     return public(current)
 
 
-async def dispatch_record(session, task_id):
-    return await session.scalar(select(Handoff).where(Handoff.task_id == task_id))
+async def dispatch_record(session, task_id, *, lock=False):
+    query = select(Handoff).where(Handoff.task_id == task_id)
+    if lock:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    return await session.scalar(query)
 
 
-async def dispatch_body(session, client, task, body):
-    row = await dispatch_record(session, task.id)
+async def dispatch_body(session, client, task, body, *, handoff_claim=None):
+    # task_dispatch already holds the Task lock through its STARTED event.
+    row = await dispatch_record(session, task.id, lock=True)
     if row is None:
         # A copied marker cannot authorize any remote paths or snapshot bytes.
-        if ((task.work_routing or {}).get("conversationHandoff")
+        if (handoff_claim or (task.work_routing or {}).get("conversationHandoff")
                 or (task.work_routing or {}).get("cloudConversation")):
             raise HTTPException(409, "交接记录无效")
         return None, body
-    if row.owner_client_id != client.id or row.owner_user_id != client.user_ref or row.phase != "committing":
+    if (row.owner_client_id != client.id or row.owner_user_id != client.user_ref or row.phase != "committing"
+            or not handoff_claim or (row.receipt or {}).get(_CLAIM_ID) != handoff_claim):
         raise HTTPException(409, "请通过会话交接确认开始，不能从任务页重新派发此会话")
     from . import conversation_content
     options = await conversation_content.load_options(row.owner_user_id, "handoff:" + row.id, row.options, session=session)
@@ -701,35 +752,86 @@ async def dispatch_inputs(session, row, extra):
     return [(ARCHIVE_NAME, data, "application/zip")], extra
 
 
-async def commit(session, client, transfer_id, sha256):
+async def _await_model_confirmation(session, row, guard, error):
+    options = {**row.options, _MODEL_CONFIRMATION: uuid.uuid4().hex}
+    if (row.source or {}).get("entryKind") == "cloud":
+        if error.selection is None:
+            options.pop("managedModelSelection", None)
+        else:
+            options["managedModelSelection"] = error.selection
+    changed = await session.execute(update(Handoff).where(*guard).execution_options(synchronize_session="fetch")
+        .values(options=options, phase="prepared", submitted_at=None, commit_started_at=None,
+                receipt={}, error=error.detail, retry_after=None, recovery_attempts=0))
+    if changed.rowcount:
+        from .cloud_sync_notifications import mark
+        mark(session, row.task_id, owner=row.owner_user_id)
+    await session.commit()
+    return bool(changed.rowcount)
+
+
+async def lock_claim_task(session, row):
+    # Take locks in the same order as task_dispatch before reclaiming an
+    # expired handoff and rechecking whether that caller recorded STARTED.
+    from . import task_access
+    await task_access.reserve_task_write(session, row.task_id, row.owner_client_id)
+    await session.execute(select(Task.id).where(Task.id == row.task_id).with_for_update())
+
+
+async def commit(session, client, transfer_id, sha256, *, accepted_only=False, confirmation_generation=None):
     row = await get(session, client, transfer_id)
     if row.sha256 != sha256:
         raise HTTPException(409, "交接文件摘要不一致")
     row = await refresh(session, row)
     if row.phase in {"committed", "aborted"}:
         return public(row)
+    if accepted_only and row.submitted_at is None:
+        return public(row)
+    generation = row.options.get(_MODEL_CONFIRMATION)
+    cloud = (row.source or {}).get("entryKind") == "cloud"
+    # A replay can first reach the Hub after a conflicting request replaces the
+    # snapshot. Require the generation acknowledged by the caller, in addition
+    # to the admission CAS below which protects already-in-flight requests.
+    if cloud and generation and not accepted_only and confirmation_generation != generation:
+        return public(row)
+    from . import dispatch_reconcile
+    latest = await dispatch_reconcile._latest_state(session, row.task_id)
     if row.phase == "committing":
-        from ..models import TaskEvent
-        latest = await session.scalar(select(TaskEvent).where(
-            TaskEvent.task_id == row.task_id,
-            TaskEvent.kind.in_(ai_exec.KINDS_DISPATCH_STATE),
-        ).order_by(TaskEvent.at.desc(), TaskEvent.id.desc()).limit(1))
         # A stale request timeout is not evidence that Runner did not accept it.
         # Recovery may release this fence only after an exact admission probe.
         if latest and latest.kind in {ai_exec.EV_DISPATCH_STARTED, ai_exec.EV_DISPATCH_UNCERTAIN}:
             return public(row)
     # Configuration/readiness failure is unambiguously before any dispatch.
-    picked = await destination(session, client, row.options, row.source)
+    # Compare the same confirmation generation even if a concurrent request
+    # replaces the snapshot without changing its phase or submission timestamp.
+    guard = (Handoff.id == row.id, Handoff.submitted_at == row.submitted_at,
+             Handoff.options[_MODEL_CONFIRMATION].as_string() == generation)
+    try:
+        picked = await destination(session, client, row.options, row.source)
+        check_prepared_model(row.options, picked.get("managedModelSelection"))
+    except ModelConfirmationRequired as error:
+        if row.phase == "prepared" and (row.submitted_at is not None or cloud):
+            if not await _await_model_confirmation(session, row, (*guard, Handoff.phase == "prepared"), error):
+                return public(await get(session, client, transfer_id))
+        raise
     now = datetime.now(timezone.utc)
     conditions = [Handoff.phase == "prepared"]
     if row.phase == "committing":
-        conditions = [(Handoff.phase == "committing") &
-                      (Handoff.commit_started_at < now - timedelta(minutes=2))]
-    from sqlalchemy import or_
+        await lock_claim_task(session, row)
+        latest = await dispatch_reconcile._latest_state(session, row.task_id)
+        if latest and latest.kind in {ai_exec.EV_DISPATCH_STARTED, ai_exec.EV_DISPATCH_UNCERTAIN}:
+            return public(await get(session, client, transfer_id))
+        conditions = [(Handoff.phase == "committing")
+                      & (Handoff.commit_started_at == row.commit_started_at)
+                      & (Handoff.commit_started_at < now - timedelta(minutes=2))]
+    claim_id = uuid.uuid4().hex
+    # SQLite reloads timestamps without tzinfo; evaluate the retry fence in SQL,
+    # then synchronize affected rows without a mixed Python datetime comparison.
     changed = await session.execute(update(Handoff).where(
-        Handoff.id == row.id, or_(*conditions)).values(phase="committing", commit_started_at=now, error="",
+        *guard, or_(*conditions)).execution_options(synchronize_session="fetch").values(
+        phase="committing", commit_started_at=now, error="",
         submitted_at=row.submitted_at or now,
-        receipt={"runnerBootId": picked.get("runnerBootId", ""), "runnerId": picked["runnerId"]}))
+        receipt={_CLAIM_ID: claim_id, "runnerBootId": picked.get("runnerBootId", ""), "runnerId": picked["runnerId"],
+                 "priorDispatchFailureId": latest.id if _claim_failure(row, latest) else ""}))
     if changed.rowcount:
         from .cloud_sync_notifications import mark
         mark(session, row.task_id, owner=row.owner_user_id)
@@ -737,9 +839,20 @@ async def commit(session, client, transfer_id, sha256):
     if not changed.rowcount:
         return public(await get(session, client, transfer_id))
     row = await get(session, client, transfer_id)
+    claim = (Handoff.id == row.id, Handoff.receipt[_CLAIM_ID].as_string() == claim_id,
+             Handoff.phase.in_(("prepared", "committing")))
     from . import task_dispatch
     try:
-        receipt = await task_dispatch.dispatch(row.task_id, {}, client, session)
+        receipt = await task_dispatch.dispatch(row.task_id, {}, client, session, handoff_claim=claim_id)
+    except ModelConfirmationRequired as error:
+        await session.rollback()
+        await session.refresh(client)
+        row = await get(session, client, transfer_id)
+        # The final model check runs before Runner is contacted. Release only
+        # this claim so a new confirmation is not changed by a delayed failure.
+        if not await _await_model_confirmation(session, row, claim, error):
+            return public(await get(session, client, transfer_id))
+        raise
     except HTTPException as exc:
         await session.rollback()
         await session.refresh(client)
@@ -748,17 +861,18 @@ async def commit(session, client, transfer_id, sha256):
         # accepted them; transport uncertainty is a pending receipt, not a failure.
         from . import dispatch_attempts
         active = await dispatch_attempts.existing(session, row.task_id)
+        failed = {"error": dispatch_attempts.public_error(exc.detail)}
         if active is None:
-            row.phase = "prepared"
-            row.receipt = {}
-        row.error = dispatch_attempts.public_error(exc.detail)
+            failed.update(phase="prepared", receipt={})
+        await session.execute(update(Handoff).where(*claim).values(**failed))
         await session.commit()
-        return public(row)
+        return public(await get(session, client, transfer_id))
     # Unexpected cancellation/error deliberately leaves the committing fence.
     row = await get(session, client, transfer_id)
-    row.receipt = {**(row.receipt or {}),
-                   "ref": receipt.get("ref") or receipt.get("issueId") or receipt.get("expectedRef") or "",
-                   "state": receipt.get("state") or "running"}
-    row.phase = "committing" if receipt.get("pending") or receipt.get("uncertain") else "committed"
+    await session.execute(update(Handoff).where(*claim).values(
+        receipt={**(row.receipt or {}),
+                 "ref": receipt.get("ref") or receipt.get("issueId") or receipt.get("expectedRef") or "",
+                 "state": receipt.get("state") or "running"},
+        phase="committing" if receipt.get("pending") or receipt.get("uncertain") else "committed"))
     await session.commit()
-    return public(row)
+    return public(await get(session, client, transfer_id))

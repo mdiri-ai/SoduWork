@@ -207,8 +207,9 @@ def assert_available(host: str, port: int) -> None:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
-        except OSError as exc:
-            if exc.errno == errno.EADDRINUSE or getattr(exc, 'winerror', None) == 10048:
+        except (OSError, TypeError, UnicodeError) as exc:
+            # bind() can fail during hostname encoding before Winsock or POSIX returns an errno.
+            if getattr(exc, "errno", None) == errno.EADDRINUSE or getattr(exc, "winerror", None) == 10048:
                 raise StartupError(f"Port {port} is already in use. Existing services were left running. "
                                    "Choose another port with --port.") from exc
             raise StartupError(f"Cannot bind to {host}:{port}: {exc}. "
@@ -500,7 +501,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--desktop", action="store_true", help="Also install and open the desktop client with an isolated profile")
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--check", action="store_true", help="Check prerequisites without installing or changing files")
+    mode.add_argument("--check", action="store_true", help="Check prerequisites and HTTP port availability without installing or changing files")
     mode.add_argument("--prepare-only", action="store_true", help="Install dependencies and build the UI, without starting a service or asking for a password")
     parser.add_argument("--password-stdin", action="store_true", help="Read the first administrator password from stdin, never arguments or a file")
     args = parser.parse_args(argv)
@@ -521,6 +522,9 @@ def main(argv=None) -> int:
             check_windows_source_paths(args.data_dir.expanduser(), source_copy_targets(), probe=False)
             if profile is not None:
                 print(f'Desktop profile: {profile}')
+            assert_available(args.host, args.port)
+            print(f"Port {args.port} is free.")
+            print("Prerequisites are ready. First-time setup needs internet access; no files were changed.")
             return 0
         check_dependencies()
         state = args.data_dir.expanduser().resolve()

@@ -180,6 +180,7 @@ function _fwdRepoLoadState(failed) {
 
 // Default to no plugin; remembered choices are local to this dispatch overlay and do not change the dispatch protocol.
 let _fwdDefaultPending = true, _fwdNoPlugin = true, _fwdPlainChoice = null;
+let _fwdConversationPluginId = '';
 const _fwdWorkflowChoices = new Map(), _fwdLocalAliases = new Map();
 let _fwdManualAgent = '';
 function _fwdDirectAgents() {
@@ -222,6 +223,7 @@ function _fwdDirectAgents() {
 }
 function _fwdResetMethodChoice() {
   _fwdDefaultPending = true; _fwdNoPlugin = true; _fwdPlainChoice = null;
+  _fwdConversationPluginId = '';
   _fwdManualAgent = ''; _fwdLocalAliases.clear();
   _fwdWorkflowChoices.clear();
 }
@@ -256,15 +258,17 @@ function _fwdRememberMethodChoice(choice) {
     _fwdPlainChoice = {choice:{...previous}, model:_fwdModel};
   }
   _fwdDefaultPending = false;
-  _fwdNoPlugin = !choice || choice.type !== 'workflow';
+  if (choice?.type === 'workflow') _fwdConversationPluginId = '';
+  _fwdNoPlugin = !_fwdConversationPluginId && choice?.type !== 'workflow';
 }
 function _fwdChooseNoPlugin(tid) {
+  _fwdConversationPluginId = '';
   const choice = _fwdDefaultPlainChoice();
   const current = _fwdSelection.ai;
   const model = choice?.type === 'direct' && current?.type === 'direct' && _fwdSameId(current.id, choice.id)
     ? _fwdModel : choice && _fwdPlainChoice?.choice.type === choice.type &&
       _fwdSameId(_fwdPlainChoice.choice.id, choice.id) ? _fwdPlainChoice.model : '';
-  _fwdChoose(tid, choice);
+  _fwdChoose(tid, choice, true);
   if (choice?.type === 'direct') {
     _fwdModel = model; _fwdSyncConfirm(tid);
   }
@@ -288,6 +292,37 @@ function _fwdPaintSelection(box) {
 function _fwdInstalledMethod(item) {
   return Boolean(item?.bindingId && (item.selectionSource === 'builtin' ||
     item.selectionSource === 'installed' || item.sourceKind === 'builtin'));
+}
+
+function _fwdCatalogMethods(catalog, execution) {
+  const model = window.ChatPluginMentionModel;
+  if (!model || !Array.isArray(catalog?.items)) return [];
+  const seen = new Set([...(execution?.workflows || []), ...(execution?.blockedWorkflows || [])]
+    .filter(_fwdInstalledMethod).map(item => item.pluginId));
+  return catalog.items.flatMap(item => {
+    if (!item?.pluginId || seen.has(item.pluginId) || model.isWorkspaceApp(item) ||
+        (!item.personal && (!item.installed || item.permissions?.canUse === false))) return [];
+    seen.add(item.pluginId);
+    const [plugin] = model.normalizeCatalog({ items: [item] });
+    const state = plugin.conversationUse;
+    let blocker = '';
+    if (item.enabled === false || plugin.entrypoints.conversation === false || !state.available) {
+      blocker = state.available ? '暂不可用' : state.label || '暂不可用';
+    } else if (plugin.personal && plugin.kind === 'workflow') {
+      blocker = '需求协作需使用已发布的企业工作流';
+    }
+    return [{ ...plugin, name: item.conversationName || plugin.name, blocker }];
+  });
+}
+
+function _fwdConversationPluginOf(id) {
+  return (_fwdOptions?.conversationPlugins || []).find(plugin => plugin.pluginId === id);
+}
+
+function _fwdConversationAgent(agent) {
+  return Boolean(agent?.key?.startsWith('local:') && _fwdAvailable(agent) && !agent.remote &&
+    (!agent.locationMode || agent.locationMode === 'local') &&
+    (agent.executionSource === 'conversation' || agent.localConversationAvailable === true));
 }
 
 function _fwdPickedSummary(title, description, icon, badge = '') {
@@ -330,7 +365,7 @@ function _fwdAgentPickerState(flow) {
   }
   return {rows:_fwdDirectAgents().filter(row => row?.key).map(row => ({
     value:row.key, label:row.name || row.cli || 'Agent', note:row.note || '',
-    available:_fwdAvailable(row), modelPick:row.modelPick !== false,
+    available:_fwdAvailable(row) && (!_fwdConversationPluginId || _fwdConversationAgent(row)), modelPick:row.modelPick !== false,
     locationLabel:row.locationLabel || (row.remote ? '远程设备' : '本机'),
   })), value:_fwdSelection.ai?.type === 'direct' ? _fwdSelection.ai.id : null};
 }
@@ -353,9 +388,12 @@ function _fwdAgentSummary(state, flow) {
 function _fwdRenderAIPickers(tid, box) {
   if (!box || !_fwdOptions || _fwdTab !== 'ai') return;
   const plugins = [...(_fwdOptions.workflows || []), ...(_fwdOptions.blockedWorkflows || [])];
-  const selectedId = _fwdSelection.ai?.type === 'workflow' ? _fwdSelection.ai.id : '';
-  const flow = plugins.find(row => _fwdSameId(row.bindingId, selectedId));
-  const missingMethod = !_fwdNoPlugin && !flow;
+  const selectedWorkflow = _fwdSelection.ai?.type === 'workflow' ? _fwdSelection.ai.id : '';
+  const flow = plugins.find(row => _fwdSameId(row.bindingId, selectedWorkflow));
+  const conversationPlugin = _fwdConversationPluginOf(_fwdConversationPluginId);
+  const selectedId = _fwdConversationPluginId ? 'conversation:' + _fwdConversationPluginId : selectedWorkflow;
+  const missingMethod = !_fwdNoPlugin && !flow && !conversationPlugin;
+  const hasLocalAgent = _fwdDirectAgents().some(_fwdConversationAgent);
   const agentState = _fwdAgentPickerState(flow);
   const translate = value => window.SoduWorkI18n?.translateText?.(value) || value;
   const pluginOptions = (missingMethod ? _fwdPickerOption('__unselected__', translate('请重新选择工作方式'), '__unselected__', true,
@@ -365,6 +403,11 @@ function _fwdRenderAIPickers(tid, box) {
       const ready = _fwpReady(plugin, _fwdOptions);
       const parts = [{text:plugin.name}, ...ready ? [] : [{text:'暂不可用',ui:true}]];
       return _fwdPickerOption(plugin.bindingId, _fwdLocalizedLabel(parts), selectedId, !ready, parts);
+    }).join('') + (_fwdOptions.conversationPlugins || []).map(plugin => {
+      const blocker = plugin.blocker || (hasLocalAgent ? '' : '需要可用的本机 Agent');
+      const parts = [{text:plugin.name}, {text:plugin.personal ? '个人插件' : '企业插件', ui:true},
+        ...(blocker ? [{text:blocker,ui:true}] : [])];
+      return _fwdPickerOption('conversation:' + plugin.pluginId, _fwdLocalizedLabel(parts), selectedId, Boolean(blocker), parts);
     }).join('');
   const placeholder = agentState.fixed ? '插件已指定 Agent' : agentState.stale ? '请重新选择 Agent' : '请选择可用 Agent';
   const agentOptions = (agentState.fixed || agentState.stale || agentState.value == null
@@ -377,7 +420,8 @@ function _fwdRenderAIPickers(tid, box) {
   box.innerHTML = '<section class="fwd-method-picker"><label class="fwd-picker-field"><span>选择插件</span>' +
     '<select id="fwdPluginSelect" aria-label="选择插件" aria-describedby="fwdPluginHint">' +
     pluginOptions + '</select></label><small class="fwd-picker-hint" id="fwdPluginHint">' +
-    (_fwdOptions.pluginInstallationUnknown ? '暂未取得安装信息，仅显示内置插件' : '默认不用插件，可选择内置或已安装的插件') + '</small></section>' +
+    (_fwdOptions.pluginInstallationUnknown && !_fwdOptions.conversationPlugins?.length
+      ? '暂未取得安装信息，仅显示内置插件' : '默认不用插件，可选择内置、个人或已安装的企业插件') + '</small></section>' +
     '<section class="fwd-agent-picker"><div class="fwd-property-heading"><label for="fwdAgentSelect">选择 Agent</label>' +
     '<button type="button" class="btn-mini" data-fwd-recheck' + (_fwdLocalLoading ? ' disabled' : '') + '>' +
       (_fwdLocalLoading ? '检查中…' : '重新检查') + '</button></div>' +
@@ -398,9 +442,16 @@ function _fwdRenderAIPickers(tid, box) {
   pluginSelect.addEventListener('change', () => {
     if (document.getElementById('fwdConfirm')?.dataset.idleLabel != null) return;
     const plugin = plugins.find(row => row.bindingId === pluginSelect.value);
+    const method = (_fwdOptions.conversationPlugins || []).find(row => 'conversation:' + row.pluginId === pluginSelect.value);
     if (!pluginSelect.value) _fwdChooseNoPlugin(tid);
     else if (plugin && _fwpReady(plugin, _fwdOptions)) _fwdChoose(tid,
       {type:'workflow', id:plugin.bindingId, name:plugin.name, available:true});
+    else if (method && !method.blocker && hasLocalAgent) {
+      _fwdConversationPluginId = method.pluginId;
+      const choice = _fwdSelection.ai?.type === 'direct' ? _fwdSelection.ai : _fwdPlainChoice?.choice;
+      // Selecting a plugin must not move work from a remote machine to this computer.
+      _fwdChoose(tid, _fwdChoiceIsCurrent(choice) ? choice : null, true);
+    }
     (document.querySelector('[data-fwd-select="fwdPluginSelect"]') || document.getElementById('fwdPluginSelect'))?.focus();
   });
   if (flow) {

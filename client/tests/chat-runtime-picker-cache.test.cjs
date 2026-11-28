@@ -143,6 +143,22 @@ test('unknown runtime marks use the generic shared vector in available and missi
   assert.doesNotMatch(missing.textContent, /•/);
 });
 
+test('a refused Agent switch displays the supplied guidance in the current locale', async t => {
+  const f = fixture(t);
+  f.locale('[localized] ');
+  const open = f.click();
+  await settle();
+  f.calls[0].resolve(inventory('custom-fixture'));
+  await open;
+  await f.choose('custom-fixture');
+  const guidance = '目标 Agent 不支持统一权限，请在新会话中选择该 Agent';
+  f.selection.resolve({ ok: false, reason: guidance });
+  await f.picker.wait();
+  assert.equal(f.pop.querySelector('[role=status]').textContent, '[localized] ' + guidance);
+  assert.equal(f.state.adapterId, 'pi');
+  assert.deepEqual(f.selected, []);
+});
+
 test('prefetched inventory opens immediately and 1000 repeated opens reuse one non-forced read', async t => {
   const f = fixture(t); f.picker.render(); await settle();
   assert.equal(f.calls.length, 1); assert.equal(f.calls[0].options, undefined);

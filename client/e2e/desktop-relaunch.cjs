@@ -46,7 +46,7 @@ if (typeof electron !== 'string') {
       desktopStarted: true,
       _fileOpen: { enqueue: files => { state.files = files; return files.length > 0; } },
       _desktopOverlay: overlay,
-      _flags: { get: () => flags, merge: () => { throw Error('Relaunch must preserve entry preferences'); } },
+      _flags: { all: () => flags, merge: () => { throw Error('Relaunch must preserve entry preferences'); } },
       openDeskWindow: (options, anchor) => state.workspaces.push({ options, anchor }),
     }, { filename: 'main.js:second-instance' });
     app.on('second-instance', () => process.send({ kind: 'relaunch', ...state, flags }));

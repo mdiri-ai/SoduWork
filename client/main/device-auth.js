@@ -4,6 +4,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const fetchHubAuth = require('./hub-auth-fetch.cjs');
 
 let _credentials = null;
 let _activeHub = '';
@@ -529,7 +530,7 @@ async function _requestEnrollment(id, raw, app, generation = _generation(id), { 
       const value = String(raw && raw[field] || '').trim();
       if (value) body[field] = value.slice(0, field === 'workRoot' ? 400 : 64);
     }
-    const res = await fetch(id.hub + '/api/v1/clients/enroll' + (copyPairingToken ? '?pairing=true' : ''), {
+    const res = await fetchHubAuth(id.hub + '/api/v1/clients/enroll' + (copyPairingToken ? '?pairing=true' : ''), {
       method: 'POST', signal: ctl.signal, redirect: 'error',
       headers: { 'Content-Type': 'application/json', 'X-Device-Key': id.secret },
       body: JSON.stringify(body),
@@ -667,7 +668,7 @@ async function login(app, raw = {}, action = 'legacy') {
     }
     const request = action === 'legacy' ? { path: '/api/v1/client-auth/login', body }
       : require('./account-auth-contract.cjs').request(action, raw, id.clientId);
-    const res = await fetch(id.hub + request.path, {
+    const res = await fetchHubAuth(id.hub + request.path, {
       method: 'POST', signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', 'X-Device-Key': id.secret },
       body: JSON.stringify(request.body),
@@ -729,7 +730,7 @@ async function accountAction(app, raw = {}) {
     if (!_current(generation)) return _changed(id);
     timer = setTimeout(() => ctl.abort(), 15000);
     const request = require('./account-auth-contract.cjs').request(action, raw, id.clientId);
-    const response = await fetch(id.hub + request.path, {
+    const response = await fetchHubAuth(id.hub + request.path, {
       method: request.method || 'POST', signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', 'X-Device-Key': id.secret },
       ...(request.body ? { body: JSON.stringify(request.body) } : {}),
@@ -784,7 +785,7 @@ async function logout(app, raw = {}) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 8000);
   try {
-    const res = await fetch(id.hub + '/api/v1/client-auth/logout', {
+    const res = await fetchHubAuth(id.hub + '/api/v1/client-auth/logout', {
       method: 'POST', signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', 'X-Device-Key': id.secret },
       body: JSON.stringify({ device: id.clientId }),
@@ -839,7 +840,7 @@ async function refreshProfile(app) {
   const generation = _generation(id);
   const response = await require('./device-auth-request').fetchWithDeviceAuthRetry(id, id.hub + '/api/v1/client-auth/me', {
     headers: { Authorization: 'Device ' + id.session }, signal: AbortSignal.timeout(10000),
-  });
+  }, fetchHubAuth);
   let data = {}; try { data = await response.json(); } catch (_) {}
   if (!_current(generation) || _authChanges.has(generation.slot) || session(app) !== id.session) return _changed(id);
   if (!response.ok) return { ok: false, ..._failure(data, response.status) };

@@ -125,6 +125,29 @@ const ownPendingTask = () => ({id:'own-pending', title:'Choose execution indepen
   createdBy:'u', assigneeUserId:'u', workRouting:{},
   executionContext:{strategy:'direct', runner:{mode:'local'}}});
 
+test('requirement dispatch carries a plugin and its inputs into the queued turn', async () => {
+  const task = ownPendingTask();
+  const f = fixture(task);
+  const plugin = {pluginId: 'local:method', name: 'Method', inputValues: {goal: 'Synthetic requirement'}};
+  const result = await f.api.enqueueTask(task.id, {source:'task-dispatch', agentId:'local:pi',
+    model:'default-model', assignmentPlugin: plugin});
+  assert.equal(result.ok, true);
+  assert.equal(f.sent[0].options.taskExecution.assignmentPluginId, plugin.pluginId);
+  assert.equal(f.sent[0].options.plugins[0], plugin);
+  assert.equal(f.sent[0].options.taskExecution.assignmentPlugin, undefined);
+});
+
+test('requirement dispatch refuses a conversation plugin on a controlled route before opening or sending', async () => {
+  const task = ownPendingTask();
+  const f = fixture(task);
+  const result = await f.api.enqueueTask(task.id, {source:'task-dispatch', agentId:'runner:remote:pi',
+    assignmentPlugin: {pluginId:'local:method'}});
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /需要本机会话/);
+  assert.equal(f.opened.length, 0);
+  assert.equal(f.sent.length, 0);
+});
+
 for (const [created, selected] of [['pi','qwen'], ['qwen','opencode'], ['opencode','dsh'],
   ['kimi','qwen'], ['kimi','codex-harness'], ['pi','codex'], ['codex','pi'], ['codex','qwen']]) {
   test(`implicit creation archive ${created} continues in the same conversation with runtime ${selected}`, async () => {
@@ -202,6 +225,16 @@ for (const selection of [{agentId:'local:qwen',model:'shared-model'}, {agentId:'
     assert.deepEqual(f.ctx._snap.messages,f.messages);
   });
 }
+
+test('desktop dispatch preserves an explicitly confirmed empty manifest across conversation binding', async () => {
+  const task = ownPendingTask();
+  const f = sameOwnerCreationFixture(task);
+  const inputManifest = [];
+  const result = await f.api.enqueueTask(task.id, {source: 'task-dispatch', agentId: 'local:pi', inputManifest});
+  assert.equal(result.ok, true);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].options.taskExecution.inputManifest, inputManifest);
+});
 
 for (const kind of ['agent','model']) for (const failure of ['rejected','thrown','wrong-ack','owner','view','request']) {
   test(`${kind} selection ${failure} never creates another conversation or admits the task`, async () => {

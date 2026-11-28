@@ -4,6 +4,10 @@ from __future__ import annotations
 from . import agent_execution_options, ai_exec, ai_exec_route, model_catalog
 
 
+class ManagedModelUnavailable(ValueError):
+    """The selected managed model no longer resolves."""
+
+
 async def prepare(session, client, ctx: dict, assignee: dict,
                   model: str = "", reasoning_effort: str = "",
                   credential_client=None) -> tuple[dict, dict]:
@@ -26,13 +30,17 @@ async def prepare(session, client, ctx: dict, assignee: dict,
         llm = await model_catalog.resolve(session, credential_owner, wanted, provider_id=provider)
         if not llm:
             if wanted:
-                raise ValueError("模型「%s」当前不可用，请重新选择可用模型" % wanted)
+                raise ManagedModelUnavailable("模型「%s」当前不可用，请重新选择可用模型" % wanted)
             # An empty resolution must not preserve disabled legacy credentials.
-            raise ValueError("当前没有可用的执行模型，请检查模型服务、密钥和启用状态")
-        return ai_exec.with_llm(ctx, llm), native
+            raise ManagedModelUnavailable("当前没有可用的执行模型，请检查模型服务、密钥和启用状态")
+        out = ai_exec.with_llm(ctx, llm)
+        out["_managedModelSelection"] = {key: str(llm.get(key) or "") for key in
+                                         ("provider", "model", "configRevision", "runtimeRevision")}
+        return out, native
 
     # Native-account Agents must not inherit or report the shared model service model.
     out = dict(ctx or {})
+    out.pop("_managedModelSelection", None)
     for key in ("cfg", "localCfg"):
         if isinstance(out.get(key), dict):
             config = dict(out[key])

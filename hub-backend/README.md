@@ -8,6 +8,48 @@ Hub provides identity, authorization, execution governance, plugins, shared mate
 
 The first-chat checklist combines the available model catalog with the signed-in administrator’s latest desktop report. The device sends two readiness flags for its runtime and model selection. After five minutes without a fresh report, the Hub shows those steps as awaiting the desktop.
 
+## Task completion receipts
+
+A completion with a requester produces one stored receipt. Retrying that completion reuses the receipt. Reopening the task and completing it again produces a separate receipt. Live notifications use at-least-once delivery. The admin receipts list defaults to 50 records per page and allows up to 200.
+
+Creating or editing a task through the tasks API accepts up to 200 characters for the title, 64 for the requester name, 200 for contact details and 36 for the requester ID. An over-limit field returns HTTP 422 with its name. When an existing task exceeds these limits, the receipt and notice show shortened titles and names with an ellipsis. They omit over-limit contacts and IDs to avoid directing a reply to the wrong recipient. The optional `fieldWarnings` object identifies each affected field with `truncated` or `omitted`. The completion response exposes the same warnings under `receiptFieldWarnings` and retains the original task values.
+
+## Personal Git credentials
+
+The personal Git connection test sends an HTTPS token only to a host and port from an HTTPS repository visible to the current account in the Hub. A manually entered repository on that origin is supported. Use the final HTTPS URL for the test. Tasks use their assigned repository and SSH uses its separate key. Update both Hub and Runner to apply the credential-helper change on remote runs.
+
+## Register client installers
+
+With `client.update`, send one `installer` multipart file to
+`POST /api/v1/admin/client-releases/upload`. Optional `channel` is `stable` or
+`beta`; omitted uses `SODUWORK_PUBLIC_DOWNLOAD_CHANNEL` if configured, otherwise
+beta for a `-beta.N` version and stable for a plain version. Hub reads the packaged
+version and native architecture, checks the filename, hashes the original bytes,
+signs the update manifest and registers a disabled release. Success means registration
+finished. Identical retries return the original record without changing its enabled
+state; different bytes for the same channel/version/artifact identity return 409.
+Each package is independent; no GitHub integration or six-package batch is required.
+
+Configure `CLIENT_UPDATE_SIGNING_KEY_FILE` and `CLIENT_UPDATE_SIGNING_KEY_ID` once
+per publishing environment. The file contains one canonical Base64-encoded 32-byte
+Ed25519 seed, readable by the Hub account, with POSIX mode 0400 or 0600 (equivalent
+restricted ACLs on Windows). Mount it read-only in containers, whose service runs
+as UID/GID 10001. Its public key must match Hub's trust store and already be trusted
+by installed clients. Never generate a key at startup or include private keys in
+images, source, API responses or installers. Missing, unreadable or untrusted
+signing configuration rejects publication with 503; existing downloads still work.
+
+Desktop inspection needs a maintained `7zz` or `7z` on PATH, or an executable path
+in `CLIENT_UPDATE_ARCHIVE_TOOL`; APK inspection needs `aapt` on PATH. The self-host
+image includes both in its `deps` stage. When reusing `HUB_BASE_IMAGE`, rebuild that
+dependency image to include these tools, or use `HUB_BASE_IMAGE=deps`; the runtime
+build rejects bases missing either tool. EXE, DMG, ZIP, DEB, RPM, tar.gz and AppImage inspection never
+executes uploaded code. Temporary extraction is bounded by time, size and nesting.
+APKs use Android manifest metadata. Preserve original package names. The optional
+`bundle` field still accepts offline-signed installers without server signing
+configuration; deployment-run uploads are unchanged. Selecting beta does not rewrite
+the version: plain versions in beta are for manual installation, not automatic updates.
+
 ## Start locally
 
 For a first session, use `sh start.sh` from the repository root; it creates an isolated database, environment, and administrator.
@@ -47,6 +89,12 @@ Older Hubs could keep a handoff receipt after deleting its task and archive. An 
 
 For a missing active object, use the reported key to locate its database record and a trusted backup from the same deployment. Early Windows installations may have stored bytes in an NTFS named stream. Check ownership and verify the recovered ordinary file against the recorded length and SHA-256 where available. With Hub stopped, place that verified copy at the v2 path for the exact key in the restore copy, preserving the original backup. If ownership or content cannot be established, keep the originals for review. A successful startup and a download matching the original bytes verify recovery. To roll back, stop Hub and restore the old database and uploads volume together before restarting the old version.
 
+### Task attachment quotas and crash recovery
+
+Set `ATTACH_OWNER_QUOTA_BYTES` or `ATTACH_ORG_QUOTA_BYTES` to cap the total size of ordinary task attachments uploaded by a device or administrator. An unset limit is unlimited. Zero disables uploads in that scope. Account uploads count toward the original uploader and their current organization. Unaffiliated and device-only uploads share the unassigned organization pool.
+
+The Hub records pending object writes before uploading them. After a restart it checks the attachment database and removes unfinished objects. The records default to `uploads/.ingest` and use the same durable storage requirement with MinIO. For a read-only Hub filesystem, set `ARTIFACT_STAGING_DIR` to an absolute path on a writable persistent volume. Hub workers that share a database and object store should share this volume.
+
 ### Read-only automation
 
 Use the configured Hub address. The local development example below uses port 9080. The health check is public. To list the projects visible to an account, obtain its bearer token through `POST /api/v1/admin/login` and provide it in `HUB_TOKEN` through your environment or CI secret store. The account needs the `task.view` permission.
@@ -65,6 +113,9 @@ When the Runner first accepts a dispatch, its log records the execution referenc
 While it is queued, `GET /api/v1/tasks/{tid}/ai-status` can return `runner.waitReason`.
 `resource_pressure` means the Runner's resource budget is blocking new starts.
 `execution_slot` means all slots available to this work are occupied.
+Under normal load, independent desktop chats can start while earlier chats are still generating replies.
+The Runner reserves 768 MiB of available memory and budgets 512 MiB per concurrent chat startup, up to its configured ceiling.
+Starts that stage attachments, plugins or workspaces also share the adaptive preparation budget. They release it once the native Agent starts.
 The Runner pauses new starts when memory use reaches 92% or reported available memory falls below 768 MiB.
 With enough reported memory, CPU readings at or above 95% spanning at least one second allow one task at a time.
 A reading below 95% resets that interval. Memory pressure takes precedence even while CPU use stays high.
@@ -112,6 +163,8 @@ DeepSeek native packages follow the selected Node's platform, architecture and L
 
 Model capability report v3 tests streaming continuation after a synthetic tool result, with tools retained and no extra user message. Existing v2 tool successes require rechecking; independent evidence remains available. Deploy the matching desktop update. Model refusals include an opaque `soduwork-trace` marker shared by JSON and SSE errors and the transport log; validated upstream request IDs remain correlation metadata, never error-classification input. Generic 403 guidance does not infer credential permissions from the status alone.
 
+Hub capability reports include optional `checks.<check>.durationMs` values, shown beside each item in the admin console's **Test results**. Measured with a monotonic clock, each value covers that check's preparation, runtime admission, upstream response reading, compatibility retries, tool-result continuation and response cleanup. It is elapsed check time, not an upstream-only or database-only measurement. Failed and inconclusive attempts also have durations; untested protocols and older reports have none. A partial recheck retains other checks' results and their original durations. Timings do not change capability verdicts or the existing shared request and timeout budgets.
+
 Reading older model configurations preserves valid manual capability declarations when another field is incompatible, without rewriting the database. Saving still validates configuration fields and rejects arrays, strings and other non-object values; explicit `config: null` retains its existing reset behavior. Unknown capabilities are not promoted to supported during reads or upgrades, and an inconclusive capability check does not replace manual declarations.
 
 Model transport refusal logs distinguish recognized rate limits, billing failures and unclassified 429 responses without recording provider bodies. Numeric and HTTP-date `Retry-After` values pass through the existing JSON/SSE error contract; waits above one day are bounded to one day, already beyond the desktop retry budget. Billing errors omit retry hints. The Hub does not add a retry loop; the matching desktop update honors the provider wait only within its existing per-turn budget.
@@ -131,6 +184,12 @@ Process creation runs outside the shared session lock. Cancellation retains the 
 Model metadata carries its privacy classification from snapshot capture to remote projection. Switching to a Hub model while a read is pending cannot expose an older local model identity or its token counts. Attachment reads and follow-up workers also retain cancellation ownership until the underlying operation finishes.
 
 Run `python3 -m unittest test_runner_local_rpc test_runner_remote_rpc test_runner_event_delivery test_runner_usage_receipts test_runner_input_cleanup test_local_process_cleanup test_task_goal_stop_races` in the backend test environment. The private-pipe test uses a real Runner process and durable queue with synthetic discovery; process-cleanup tests use isolated operating-system children. These checks do not establish real-provider or Windows acceptance when run on another platform.
+
+## Plugin governance counts
+
+`GET /api/v1/admin/plugins/governance` counts distinct visible plugins in `summary.pendingReview` and `summary.attention`. A plugin with an older quarantined version still counts as pending review after a newer version is approved.
+
+`counts.review` and `summary.pendingReviewVersions` count individual versions. `summary.attentionItems` is the sum of all action counts. Each entry in `pluginCounts` gives that plugin's pending version count (`review`) and action count (`attention`). Totals are computed before each queue preview is limited to 30 items. Review actions retain their individual `versionId`. The existing query limits of 1,000 evaluations and 500 runs in the last 30 days still apply to the corresponding action counts.
 
 ## Offline quality gate
 

@@ -48,6 +48,13 @@ their upstream license files in the packaged `resources/ssh2` directory.
 - Version: 1.17.0
 - License: MIT (ssh2/asn1/safer-buffer); BSD-3-Clause (bcrypt-pbkdf); Unlicense (tweetnacl).
 
+## Undici
+
+Desktop authentication uses Undici 7.30.1 to establish HTTPS connections.
+The packaged `resources/node_modules/undici` directory includes its MIT license.
+
+- Project: https://github.com/nodejs/undici
+
 ## PyInstaller (Runner executable)
 
 The desktop installers for Windows, macOS and Linux include a standalone Runner

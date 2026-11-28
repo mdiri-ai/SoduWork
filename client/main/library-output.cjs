@@ -14,6 +14,10 @@ const MIME = {
   '.zip': 'application/zip', '.mp4': 'video/mp4', '.webm': 'video/webm',
 };
 
+function mimeTypeForFilename(filename) {
+  return MIME[path.extname(filename).toLowerCase()] || '';
+}
+
 // Resolve public artifact IDs in the main process; never interpret an ID as a path.
 function read(session, target) {
   if (!session) return { ok: false, reason: '会话不在了' };
@@ -30,7 +34,7 @@ function read(session, target) {
     const resolved = fs.realpathSync(candidate);
     const data = binary.readFile(resolved);
     return { ok: true, name: path.basename(resolved), size: data.length,
-      mimeType: MIME[path.extname(resolved).toLowerCase()] || 'application/octet-stream', data: data.toString('base64') };
+      mimeType: mimeTypeForFilename(resolved) || 'application/octet-stream', data: data.toString('base64') };
   } catch (error) { return { ok: false, reason: String(error.message || error) }; }
 }
 async function readAsync(session, target) {
@@ -43,4 +47,4 @@ async function readAsync(session, target) {
   }
   return read(session, target);
 }
-module.exports = { read, readAsync };
+module.exports = { read, readAsync, mimeTypeForFilename };

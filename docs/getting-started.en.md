@@ -115,7 +115,7 @@ To check prerequisites without installing anything:
 .\start.cmd --check --desktop
 ```
 
-`--check` is read-only: it reports prerequisites and path risks without creating test files. Passing it does not guarantee that every installation step will succeed. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
+`--check` reports dependencies and path risks, then briefly binds the requested `--host` and `--port`. It releases the port immediately. If the port is busy, choose a free port with `--port` and use the same setting at startup. Passing it does not guarantee that every installation step will succeed. Then run `.\start.cmd --desktop` in PowerShell or `start.cmd --desktop` in Command Prompt (CMD). Both terminals are supported; there is no need to avoid CMD.
 
 Path diagnostics use Chinese and English. Redirected output keeps its current encoding; characters it cannot represent are escaped so they do not interrupt startup, while the English guidance remains readable.
 

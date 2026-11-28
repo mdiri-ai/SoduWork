@@ -891,15 +891,18 @@ class Runner:
                 str(result.get("error") or "Agent launch failed"), result)
         self._admission_wake.set()
 
-    def _admission_load(self) -> dict:
+    def _admission_load(self, resource) -> dict:
         from app.services import ai_local
         from app.services.runner_event_scope import is_local
         with ai_local._LOCK:
             running_refs = {ref for ref, run in ai_local._RUNS.items() if run.get("state") == "running"}
             local_refs = {ref for ref, run in ai_local._RUNS.items() if is_local(run, ref)}
+            running_chats = sum(bool(ai_local._RUNS[ref].get("conversationMode"))
+                                for ref in running_refs & local_refs)
         return {"active": _busy_count() + self._admission.starting_count(),
                 "blocked_refs": running_refs, "hub_blocked": getattr(self, "_outbox_blocked", False),
-                "local_refs": local_refs}
+                "local_refs": local_refs,
+                "local_chat_limit": resource.local_chat_limit(self.concurrency_ceiling, running_chats)}
 
     async def _admission_loop(self) -> None:
         from app.services import ai_local
@@ -918,7 +921,7 @@ class Runner:
             self.max_concurrent = resource.limit
             while True:
                 item = self._admission.claim_next(
-                    limit=resource.limit, can_start=resource.can_start, **self._admission_load())
+                    limit=resource.limit, can_start=resource.can_start, **self._admission_load(resource))
                 if item is None:
                     if not resource.can_start and time.monotonic() >= next_pressure_log:
                         next_pressure_log = time.monotonic() + 30
@@ -1847,7 +1850,7 @@ class Runner:
                 if item.state == "queued":
                     resource = self._resource_budget.snapshot()
                     reason = self._admission.wait_reason(
-                        item, limit=resource.limit, can_start=resource.can_start, **self._admission_load())
+                        item, limit=resource.limit, can_start=resource.can_start, **self._admission_load(resource))
                     if reason:
                         data["waitReason"] = reason
                 return {"ok": True, "data": data}

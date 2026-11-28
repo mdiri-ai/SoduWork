@@ -175,11 +175,21 @@ def _read_reply(response, request_id, deadline: float):
             return result
     elif content_type == "text/event-stream":
         pending, data_lines, skip_lf = b"", [], False
+        at_start = True
         for chunk in _response_chunks(response, deadline):
             if skip_lf:
                 chunk = chunk[1:] if chunk.startswith(b"\n") else chunk
                 skip_lf = False
             pending += chunk
+            if at_start:
+                # SSE ignores one leading UTF-8 BOM, including when its bytes
+                # arrive in different network reads. Later BOMs are content.
+                bom = b"\xef\xbb\xbf"
+                if len(pending) < len(bom) and bom.startswith(pending):
+                    continue
+                if pending.startswith(bom):
+                    pending = pending[len(bom):]
+                at_start = False
             while True:
                 match = re.search(rb"[\r\n]", pending)
                 if not match:

@@ -238,7 +238,7 @@ async def _lock_rework_task(session, task):
     await session.refresh(task, ["status", "archived_at", "work_routing"])
 
 
-async def _return_to_rework(session: AsyncSession, task: models.Task, *, why: str) -> bool:
+async def return_to_rework(session: AsyncSession, task: models.Task, *, why: str) -> bool:
     """Apply the authorized transitions while holding the review task's lock."""
     from . import task_status
     if task.archived_at or task.status == "cancel" or await task_status.engine_owns(session, [task.id]):
@@ -312,7 +312,7 @@ async def resume_after_rejection(
 
     if wait_for_executor or not ref or ref.startswith("conversation:"):
         await _lock_rework_task(session, task)
-        if not await _return_to_rework(session, task, why="验收退回待返修"):
+        if not await return_to_rework(session, task, why="验收退回待返修"):
             return {"mode": "human", "started": False, "error": "需求状态已变化，请刷新后再安排返修"}
     if wait_for_executor:
         # Rejecting delivery requests revision; it does not authorize another
@@ -381,7 +381,7 @@ async def resume_after_rejection(
                     or (pending.get("versionId") and pending["versionId"] != artifact_version_id)):
         await session.commit()
         return receipt
-    applied = await _return_to_rework(session, task, why="人工退回后自动返修")
+    applied = await return_to_rework(session, task, why="人工退回后自动返修")
     if not applied and not pending:
         await session.commit()
         return receipt
@@ -489,10 +489,10 @@ async def _finalize_pending(
         pass
 
 
-async def _retry_one(session: AsyncSession, event_row: models.TaskEvent, *,
+async def _retry_one(session: AsyncSession, task_id: str, *,
                      now: datetime) -> str:
     """Retry one card and return sent, backoff, exhausted, or stale."""
-    task = await session.get(models.Task, event_row.task_id)
+    task = await session.get(models.Task, task_id)
     if task is None:
         return "stale"
     routing = dict(task.work_routing or {})
@@ -546,24 +546,25 @@ async def retry_once(session: AsyncSession, *, now: datetime | None = None) -> d
     now = now or datetime.now(timezone.utc)
     ev = models.TaskEvent
     newer_settled = _unsettled_exists()
-    rows = list((await session.execute(
-        select(ev).join(models.Task, models.Task.id == ev.task_id).where(
+    task_ids = (await session.scalars(
+        select(ev.task_id).join(models.Task, models.Task.id == ev.task_id).where(
             ev.kind == "ai.rework_pending",
             ev.at >= now - timedelta(days=_SCAN_WINDOW_DAYS),
             models.Task.status.in_(("doing", "done")),
             ~newer_settled,
         ).order_by(ev.at.desc(), ev.id.desc()).limit(20)
-    )).scalars().all())
-    counts = {"candidates": len(rows), "sent": 0, "backoff": 0,
+    )).all()
+    counts = {"candidates": len(task_ids), "sent": 0, "backoff": 0,
               "exhausted": 0, "stale": 0, "errors": 0}
-    for row in rows:
+    for task_id in task_ids:
         try:
-            outcome = await _retry_one(session, row, now=now)
+            outcome = await _retry_one(session, task_id, now=now)
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - One card failure must not abort the scan.
+            await session.rollback()
             counts["errors"] += 1
-            log.warning("返修补投失败 task=%s: %s", str(row.task_id)[:8], type(error).__name__)
+            log.warning("返修补投失败 task=%s: %s", task_id[:8], type(error).__name__)
             continue
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts

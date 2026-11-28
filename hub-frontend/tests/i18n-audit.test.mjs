@@ -77,3 +77,24 @@ test('unregistered deferred keys and unmarked strings still fail the source audi
   assert.deepEqual(report.missingOccurrences.map(row => row.locale), ['en-US', 'ja-JP', 'ko-KR'])
   assert.deepEqual(report.unmarked.map(row => row.source), ['未标记文案'])
 })
+
+test('audit recognizes cataloged copy passed to tx through destructured variables', (t) => {
+  const { status, report } = audit(t,
+    "for (const [key, label] of [['a', '已连接'], ['b', '重试']]) use(key, tx(label))\n"
+    + "for (const [key, message] of [['a', '连接失败']]) use(key, tx(message))")
+  assert.equal(status, 0)
+  assert.equal(report.uiOccurrences, 3)
+  assert.deepEqual(report.missingMessages, [])
+  assert.deepEqual(report.unmarked, [])
+})
+
+test('audit distinguishes translated map labels from raw rows retained by callbacks', (t) => {
+  const { status, report } = audit(t, [
+    "[['a', '已连接']].map(([key, label]) => <span key={key}>{tx(label)}</span>)",
+    "[['b', '重试']].filter(([key, label]) => key).map(row => <span>{row[1]}</span>)",
+    "[['c', '连接失败']].map(([key, label], i, rows) => <span title={rows[i][1]}>{tx(label)}</span>)",
+  ].join(';\n'))
+  assert.equal(status, 1)
+  assert.equal(report.uiOccurrences, 1)
+  assert.deepEqual(report.unmarked.map(row => row.source), ['重试', '连接失败'])
+})

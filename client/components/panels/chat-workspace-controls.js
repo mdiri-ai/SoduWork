@@ -165,7 +165,7 @@ function isEditorFile(file) {
   }
 
 function hasSourceViews(tab) {
-    return tab.sourceViews || isEditorFile(tab.file) || tab.view === 'code' || tab.view === 'diff';
+    return isEditorFile(tab.file) || tab.view === 'code' || tab.view === 'diff';
   }
 
 function codeMode(file) {
@@ -284,10 +284,9 @@ function codeModeToolbar(tab, libraryButton) {
     const change = fileChangeFor(tab.file);
     const diff = change ? '<button type="button" data-wb-code-view="diff" aria-pressed="' + (tab.view === 'diff') + '">' +
       '<span aria-hidden="true">↔</span><span>Diff</span></button>' : '';
-    const preview = tab.kind === 'markdown' ? '<button type="button" data-wb-code-view="preview" aria-pressed="' + (tab.view === 'preview') + '">预览</button>' : '';
     const draft = fileDraft(tab.file);
     return ctx.info.documentToolbar(tab, libraryButton, false, fileLocation(tab)) + '<div class="ncw-code-modebar" role="toolbar" aria-label="代码查看方式">' +
-      '<button type="button" data-wb-code-view="code" aria-pressed="' + (tab.view === 'code') + '">源码</button>' + diff + preview +
+      '<button type="button" data-wb-code-view="code" aria-pressed="' + (tab.view === 'code') + '">源码</button>' + diff +
       '<button type="button" data-wb-code-copy title="复制当前文件">复制</button>' +
       '<button type="button" data-wb-code-save' + (draft && !draft.saved && !tab.saving ? '' : ' disabled') + (canEditFile(tab.file) ? '' : ' hidden') + ' title="保存到当前工作区">保存</button></div>';
   }
@@ -319,11 +318,6 @@ function diffBody(tab) {
 
 function tabBody(tab) {
     if (!tab) return '';
-    if (tab.kind === 'command-record') {
-      const receipt = (text, fallback) => text ? '<pre data-user-content>' + ctx.esc(text) + '</pre>' : '<pre>' + fallback + '</pre>';
-      return '<section class="ncw-command-record"><h3>命令</h3>' + receipt(tab.record.input, '未记录') +
-        '<h3>输出</h3>' + receipt(tab.record.output, '（没有输出）') + '</section>';
-    }
     if (tab.kind === 'files') return ctx.filesHtml();
     if (tab.kind === 'browser' && tab.mediaType) {
       const media = tab.mediaType === 'video'
@@ -361,9 +355,8 @@ function tabBody(tab) {
           '<video src="' + ctx.esc(ctx.WB.previewText) + '" controls preload="metadata" playsinline aria-label="播放视频：' + ctx.esc(tab.file.name) + '"></video>') + '</div>';
     }
     if (tab.kind === 'markdown' || tab.kind === 'text') {
-      // Source and its requested preview share the same draft/journal contents.
-      // Ordinary document previews continue to read the published artifact.
-      if (tab.view !== 'diff') loadText(tab, tab.view === 'code' || tab.sourceViews ? inlineSource(tab.file) : undefined);
+      // Source uses the draft or complete journal text; document previews read the published artifact.
+      if (tab.view !== 'diff') loadText(tab, tab.view === 'code' ? inlineSource(tab.file) : undefined);
       const body = tab.view === 'diff' ? diffBody(tab)
         : ctx.WB.previewLoading ? '<div class="ncw-loading"><span></span>正在准备预览…</div>'
         : ctx.WB.previewError ? '<div class="ncw-preview-error">' + ctx.esc(ctx.WB.previewError) + '</div>'
@@ -510,9 +503,8 @@ function bindWorkbench(root, getContext) {
         const tab = ctx.activeTab();
         const view = hit.dataset.wbCodeView;
         if (!tab || tab.file?.readSnapshot || !hasSourceViews(tab)) return;
-        if (view !== 'code' && view !== 'diff' && !(view === 'preview' && tab.kind === 'markdown')) return;
+        if (view !== 'code' && view !== 'diff') return;
         tab.autoPreview = false;
-        tab.sourceViews = true;
         tab.view = view;
         ctx.WB.manualClosed = false; ctx.paint(); return;
       }

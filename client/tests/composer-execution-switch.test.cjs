@@ -46,6 +46,25 @@ test('delivery changed while confirmation is open never falls back to an empty l
 test('cloud continuation initially busy refuses the action',async()=>{
  const f=cloudFixture();f.snapshot.status='streaming';f.setBusy(true);await f.select();assert.equal(f.dialog,undefined);assert.equal(f.opened.length,0);
 });
+test('cloud confirmation forwards the generation shown in the dialog', async () => {
+ const f = cloudFixture(), calls = [];
+ const displayed = { phase: 'prepared', entryKind: 'cloud', confirmationGeneration: 'b'.repeat(32) };
+ const latest = { ...displayed, confirmationGeneration: 'c'.repeat(32) };
+ f.cloud.preview = async () => ({ ok: true, handoff: displayed });
+ f.cloud.recover = async (ref, input) => {
+   calls.push([ref, input.confirmationGeneration]);
+   return { ok: true, handoff: latest };
+ };
+ await f.window.ChatCloudHandoff.open('one');
+ assert.equal(f.dialog.querySelector('[type=submit]').textContent, '确认模型变更并继续');
+ f.snapshot.cloudHandoff = latest;
+ await f.submit();
+ await tick();
+ assert.deepEqual(calls, [['one', displayed.confirmationGeneration]]);
+ await f.submit();
+ await tick();
+ assert.deepEqual(calls, [['one', displayed.confirmationGeneration], ['one', latest.confirmationGeneration]]);
+});
 for(const invalidation of ['switchOwner','switchSession'])test('late cloud preview cannot disclose old workspace files after '+invalidation,async()=>{
  const f=cloudFixture(),wait=deferred();f.cloud.preview=()=>wait.promise;
  const pending=f.window.ChatCloudHandoff.open('one');f[invalidation]();wait.resolve({ok:true,targets:[{}],files:[{path:'old-private-file.txt',size:20}],total:20});await pending;

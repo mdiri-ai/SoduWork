@@ -30,7 +30,7 @@ function recordIds(html) {
   return Array.from(html.matchAll(/<button\b[^>]*\bdata-command-record="([^"]+)"[^>]*>/g), match => match[1]);
 }
 
-test('ended chat commands offer their execution record without revealing it in either transcript', () => {
+test('commands retain only their status in both transcripts even after a remembered expansion', () => {
   const { tools, renderer, sandbox, ctx } = harness();
   for (const state of ['running', 'done']) {
     const command = unreadableOutput({ id: 'normal-command', name: 'bash', state, after: 0,
@@ -69,7 +69,7 @@ test('ended chat commands offer their execution record without revealing it in e
 test('command failures and permission changes retain visible status without command details', () => {
   const { tools, renderer, sandbox } = harness();
   for (const extra of [{ state: 'error' }, { state: 'done', isError: true },
-    { state: 'failed' }, { state: 'cancelled', cancelReason: 'access-change', isError: false }]) {
+    { state: 'failed' }, { state: 'cancelled', cancelReason: 'access-change' }]) {
     const command = unreadableOutput({ id: 'important-command', name: 'exec_command',
       args: { command: 'npm test' }, ...extra });
     const html = renderer._toolHtml(command);
@@ -77,7 +77,7 @@ test('command failures and permission changes retain visible status without comm
     assert.deepEqual(recordIds(html), []);
     assert.match(sandbox._executionStreamToolHtml({ key: command.id, model: command }), /执行失败|权限已调整，未执行/);
     assert.equal(tools.render(command).summaryOnly, true);
-  
+
   }
 });
 
@@ -173,10 +173,10 @@ test('large command results and bridge details never enter transcript markup', (
   } });
   const html = renderer._toolHtml(bridge);
   assert.match(html, /SoduWork|查看我的任务/);
-  assert.doesNotMatch(html, /mcp\.mjs|secret\.json|C:\/private|ntool-body|title=|data-command-record/);
+  assert.doesNotMatch(html, /mcp\.mjs|secret\.json|C:\/private|ntool-body|title=/);
 });
 
-test('consecutive command groups offer only the records of already executed commands', () => {
+test('consecutive command groups retain a status line without a remembered expansion', () => {
   const { tools, renderer } = harness();
   const commands = [1, 2].map(after => unreadableOutput({ id: 'cmd-' + after,
     name: 'bash', state: after === 2 ? 'running' : 'done', args: { command: 'npm test' }, after }));
@@ -273,7 +273,7 @@ test('MCP server names cannot turn file tools into commands or record operations
     args: { command: 'npm test' }, state: 'done' });
   assert.equal(tools.render(command).commandOnly, true);
   assert.match(renderer._toolHtml(command), /执行/);
-  
+
   assert.doesNotMatch(renderer._toolHtml(command), /title="[^"]/);
   assert.equal(tools.kind({ name: 'mcp__terminal__read_file', toolKind: 'execute' }), 'command');
   assert.equal(tools.kind({ name: 'mcp__terminal__query', toolKind: 'read' }), 'read');
@@ -364,7 +364,7 @@ test('command summary and mixed file batches replace each other without stale co
   } } };
   sandbox.window = sandbox;
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../components/panels/chat-dom-patch.js'), 'utf8'), sandbox);
-  const host = new Element('host'), command = { id: 'cmd', name: 'bash', args: { command: 'npm test' }, state: 'running' };
+  const host = new Element('host'), command = { id: 'cmd', name: 'bash', args: { command: 'npm test' }, state: 'error' };
   const file = { id: 'file', name: 'read', args: { path: 'report.md' }, result: 'File evidence', state: 'done' };
   const paint = items => sandbox.ChatDomPatch.patchList(host,
     tools.batchHtml(items, 'same-group', true, tool => renderer._toolHtml(tool)));

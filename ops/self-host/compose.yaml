@@ -43,6 +43,7 @@ services:
       REPOSITORY_SYNC_INTERVAL_SECONDS: "0"
       LIBRARY_STORAGE_BACKEND: local
       LIBRARY_STORAGE_DIR: uploads/library
+      ARTIFACT_STAGING_DIR: ${ARTIFACT_STAGING_DIR:-/srv/app/hub-backend/uploads/.ingest}
       CLIENT_UPDATE_DIR: /srv/app/hub-backend/client-releases
     volumes:
       - uploads:/srv/app/hub-backend/uploads

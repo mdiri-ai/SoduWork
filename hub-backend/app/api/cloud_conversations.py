@@ -170,6 +170,7 @@ async def directory(
 @router.post("/{request_id}")
 async def create(request_id: str, options: str = Form(...),
                  files: list[UploadFile] = File(default=[]),
+                 confirmation_generation: str | None = Form(default=None, pattern=r"^[a-f0-9]{32}$"),
                  client=Depends(current_ai_client), session=Depends(get_session)):
     if len(options) > 250000:
         raise HTTPException(413, "云端会话说明过长")
@@ -177,7 +178,8 @@ async def create(request_id: str, options: str = Form(...),
         raw = json.loads(options)
     except (TypeError, ValueError) as exc:
         raise HTTPException(400, "云端会话选项必须是 JSON 对象") from exc
-    return await svc.create(session, client, request_id, raw, files)
+    return await svc.create(session, client, request_id, raw, files,
+                            confirmation_generation=confirmation_generation)
 
 
 @router.post("/{task_id}/branch")

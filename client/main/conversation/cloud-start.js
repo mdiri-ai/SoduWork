@@ -66,10 +66,11 @@ function create({ app, root, read, save, identity, request, publicRecord }) {
     return items.map(item => [String(item.name || path.basename(item.path || '')).normalize('NFC'),
       item.path ? path.resolve(item.path) : '', item.path ? '' : digest(Buffer.from(item.data instanceof ArrayBuffer ? new Uint8Array(item.data) : item.data || []))]);
   }
-  async function submit(record) {
+  async function submit(record, confirmationGeneration) {
     assertCloudModel(record.cloudStart.options.model);
     const current = await identity(record), form = new FormData();
     form.append('options', JSON.stringify(record.cloudStart.options));
+    if (confirmationGeneration) form.append('confirmation_generation', confirmationGeneration);
     for (const file of record.cloudStart.files) {
       const bytes = await fs.readFile(file.path);
       if (digest(bytes) !== file.sha256) throw Error('待发送附件已变化，请保留现场后重新创建会话');
@@ -80,8 +81,10 @@ function create({ app, root, read, save, identity, request, publicRecord }) {
     if (reply.transferId !== record.transferId || !['prepared', 'committing', 'committed', 'aborted'].includes(reply.phase)) throw Error('云端回执不匹配，请重试核对原请求');
     if (reply.source?.sessionId !== record.sessionId || reply.source?.adapterId !== record.adapterId ||
         reply.source?.entryKind !== 'cloud' || reply.phase === 'committed' && (!reply.taskId || !reply.ref)) throw Error('云端会话回执不完整，请重试核对原请求');
+    const accepted = typeof reply.accepted === 'boolean' ? reply.accepted : record.accepted === true;
     const next = { ...record, phase: reply.phase, taskId: reply.taskId || '', ref: reply.ref || '',
-      accepted: reply.accepted === true || record.accepted === true, acceptedAt: reply.acceptedAt || record.acceptedAt || '',
+      confirmationGeneration: reply.confirmationGeneration || undefined,
+      accepted, acceptedAt: accepted ? reply.acceptedAt || record.acceptedAt || '' : '',
       canAbort: reply.canAbort === true,
       ...(reply.deliveryMode === 'git' ? { deliveryPresentation: 'summary', codeDelivery: reply.codeDelivery || { kind: 'git' } } : {}),
       target: reply.target || null, error: reply.error || '', at: Date.now(),

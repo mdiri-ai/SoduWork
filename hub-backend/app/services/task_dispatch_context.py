@@ -179,7 +179,7 @@ async def _settle_work_dir(session, client, repo, repo_ctx: dict, task_id: str,
     try:
         cid = str(getattr(client, "id", "") or "")
         if cid:
-            creds = code_creds.resolve(client)
+            creds = code_creds.for_repo(client, getattr(repo, "git_url", ""))
     except Exception:  # noqa: BLE001
         creds = None
     r = await _aio_thread(workdirs.plan, root, repo,

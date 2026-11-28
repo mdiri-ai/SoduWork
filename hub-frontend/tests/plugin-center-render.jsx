@@ -84,7 +84,11 @@ if (params.get('view') === 'locale-review') {
     'en-US': { name: 'Old Operations Plugin', description: 'Old version' },
   }
 }
-const queues = { issues: [{ id: 'missing-identity', pluginId: 'contracts', versionId: 'contracts-v1', target: 'versions', title: '核对发布身份' }, { id: 'runtime', pluginId: 'prototype', target: 'runs', title: '上次运行需要检查' }] }
+const reviewDetail = 'Compare invoice totals <draft> & currency changes'
+const queues = {
+  review: [{ id: 'missing-identity', kind: 'review', pluginId: 'contracts', versionId: 'contracts-v1', target: 'versions', title: '核对发布身份', detail: reviewDetail }],
+  runtime: [{ id: 'runtime', kind: 'runtime', pluginId: 'prototype', target: 'runs', title: '上次运行需要检查' }],
+}
 for (const key of Object.keys(api)) api[key] = async () => { failures.push('Unexpected API: ' + key); throw new Error('Unmocked API: ' + key) }
 // HTTP responses are immutable snapshots, not shared references to server state.
 api.pluginGovernance = async () => structuredClone({ items: plugins, queues })
@@ -281,6 +285,7 @@ try {
     const close = button('关闭', modal)
     const mask = modal.closest('.modal-mask')
     check(close.disabled, 'Footer close is disabled during preflight')
+    check(modal.querySelector('.mx').disabled, 'Header close is disabled during preflight')
     await click(close)
     check(modal.isConnected, 'The footer keeps the pending report open')
     await click(modal.querySelector('.mx'))
@@ -326,16 +331,19 @@ try {
     rejectSingle(new Error('测试单包未通过校验'))
     await until(() => button('导入并送审'))
     check(Boolean(button('正在校验并导入…')), 'The bulk import still shows validation in progress after the single import finishes')
-    await click(button('取消'))
-    const discard = button('放弃改动')
-    if (discard) await click(discard)
-    check(Boolean(q('.plugin-bulk-import')), 'Cancelling during submission retains the packages in the batch')
+    const modal = q('.plugin-bulk-import').closest('.modal')
+    const cancel = button('取消', modal)
+    check(cancel.disabled && modal.querySelector('.mx').disabled, 'Both close buttons are disabled while importing')
+    await click(cancel)
     await escape()
+    const mask = modal.closest('.modal-mask')
+    mask.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+    await click(mask)
+    check(modal.isConnected && !button('放弃改动'), 'A pending import retains its draft without offering to discard it')
     finishImport({ imported: 1, failed: 1, items: [
       { filename: files[0].name, ok: true }, { filename: files[1].name, ok: false, error: '样本未通过校验' },
     ] })
     await until(() => q('.plugin-bulk-result .bad'))
-    check(!button('放弃改动'), 'A completed report dismisses the pending discard confirmation')
     check(q('.plugin-bulk-result .bad').textContent.includes('样本未通过校验'), 'The report retains the failed file and its validation error')
     check(q('.plugin-bulk-rights input').checked, 'The report keeps the authorization choice submitted with the batch')
     await click(button('关闭', q('.plugin-page .modal-foot')))
@@ -552,7 +560,10 @@ try {
   } else if (view === 'app-review') {
     await open('contracts'); const drawer = q('.plugin-detail-drawer')
     check(q('.plugin-title-copy .plugin-app-tag')?.textContent === '应用', 'selected application version has a detail tag')
-    await click(button('审核与版本', drawer))
+    await click(q('.plugin-issue-list').closest('details').querySelector('summary'))
+    const reviewRow = q('.plugin-issue-list button')
+    check(reviewRow.textContent.includes('核对发布身份') && reviewRow.textContent.includes(reviewDetail), 'review row shows the target and literal version summary')
+    await click(reviewRow)
     check(q('.plugin-review-callout .plugin-app-tag')?.textContent === '应用', 'application review reuses the plugin review callout with a tag')
     const disclosure = all('details').find(item => item.querySelector('summary')?.textContent.includes('版本记录与回退'))
     await click(disclosure.querySelector('summary'))

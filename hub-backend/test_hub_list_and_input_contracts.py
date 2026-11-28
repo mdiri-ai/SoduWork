@@ -68,6 +68,19 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, expected, (method, path, response.status_code))
         return response.json()
 
+    async def test_create_task_rejects_missing_or_blank_title(self):
+        schemas = self.app.openapi()["components"]["schemas"]
+        self.assertIn("title", schemas["TaskCreate"]["required"])
+        self.assertNotIn("default", schemas["TaskCreate"]["properties"]["title"])
+        self.assertNotIn("title", schemas["TaskSyncCreate"].get("required", []))
+        for body in ({}, {"title": ""}, {"title": "  "}, {"assigneeUserId": "missing"}):
+            with self.subTest(body=body):
+                result = await self.request("POST", "tasks", 400, json=body)
+                self.assertEqual(result["detail"], "请填写需求标题")
+        await self.request("POST", "tasks", 422, json={"due": True})
+        async with self.sessions() as session:
+            self.assertEqual(await session.scalar(select(func.count()).select_from(models.Task)), 0)
+
     async def test_invalid_team_scope_preserves_setting_and_audit(self):
         path = "admin/team-module-scope"
         await self.request("PUT", path, json={"scope": " EVERYONE "})
@@ -254,6 +267,29 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         for params in ({"limit": -1}, {"offset": -1}, {"offset": 2**63}):
             await self.request("GET", path, 422, params=params)
 
+    async def test_legacy_receipt_list_and_timeline_bound_fields_without_rewriting_history(self):
+        from app.services import task_events
+
+        async with self.sessions() as session:
+            task = models.Task(id="old", owner_client_id="row-0", title="工" * 201)
+            session.add(task)
+            await session.flush()
+            raw = {"to": "N" * 65, "contact": "c" * 201}
+            session.add(models.TaskEvent(id="old-event", task_id=task.id, kind="receipt", detail=raw))
+            await session.commit()
+            timeline = await task_events.timeline(session, task.id)
+            self.assertEqual(timeline[0]["detail"]["contact"], "")
+            self.assertEqual(timeline[0]["detail"]["fieldWarnings"],
+                             {"requesterName": "truncated", "contact": "omitted"})
+        row, = await self.request("GET", "admin/receipts")
+        self.assertEqual((row["title"], row["requesterName"], row["contact"]),
+                         ("工" * 199 + "…", "N" * 63 + "…", ""))
+        self.assertEqual(row["fieldWarnings"],
+                         {"title": "truncated", "requesterName": "truncated", "contact": "omitted"})
+        async with self.sessions() as session:
+            original = await session.get(models.TaskEvent, "old-event")
+            self.assertEqual(original.detail, raw)
+
     async def test_receipt_queries_clamp_large_limits_in_the_database(self):
         async with self.sessions() as session:
             session.add_all(models.TaskEvent(id=f"r-{i}", task_id="removed", kind="receipt")
@@ -406,6 +442,24 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
             stored = (await session.scalars(select(models.TaskComment.body))).all()
             self.assertEqual(stored, ["x" * 4000])
 
+    async def test_dispatch_requester_limits_apply_before_creating_tasks(self):
+        for path, target in (("admin/dispatch", {"targets": ["row-0"]}),
+                             ("team/tasks", {"assigneeUserId": "row-0"}),
+                             ("tasks/assigned", {"assigneeUserId": "row-1"})):
+            with self.subTest(path=path):
+                fields = {"requesterName": "名" * 64, "requesterContact": "a" * 200}
+                if path != "team/tasks":
+                    fields["requesterUserId"] = "u" * 36
+                payload = {"title": "External request", **target, **fields}
+                for field, value in fields.items():
+                    rejected = await self.request("POST", path, 422, json={**payload, field: value + "x"})
+                    self.assertEqual(rejected["detail"][0]["loc"][-1], field)
+                accepted = await self.request("POST", path, json=payload)
+                task = accepted["task"] if path == "tasks/assigned" else accepted["tasks"][0]
+                self.assertEqual({key: task[key] for key in fields}, fields)
+        async with self.sessions() as session:
+            self.assertEqual(await session.scalar(select(func.count()).select_from(models.Task)), 3)
+
     async def test_workflow_guide_targets_effective_plugin_in_selected_org(self):
         async with self.sessions() as session:
             for plugin_id, org_id, enabled in (
@@ -431,6 +485,11 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
                            json={"key": "testing", "tier": "unlisted"})
         env = await self.request("POST", "admin/environments", json={"key": "testing", "name": ""})
         self.assertEqual(env["name"], "testing")
+        endpoint = f"admin/environments/{env['id']}"
+        for body in ({"name": ""}, {"name": "  "}, {"orgId": "row-1", "name": "Changed"}):
+            await self.request("PATCH", endpoint, 422, json=body)
+        saved = await self.request("PATCH", endpoint, json={"orgId": env.get("orgId")})
+        self.assertEqual((saved["name"], saved.get("orgId")), ("testing", env.get("orgId")))
         await self.request("PATCH", f"admin/environments/{env['id']}", 400, json={"tier": "unlisted"})
         await self.request("POST", "admin/work-catalog/professions", 400,
                            json={"orgId": "row-0", "name": "Analyst", "category": "unlisted"})

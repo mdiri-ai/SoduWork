@@ -125,7 +125,8 @@ class ScheduleRunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         await self.cloud_target()
         note = '创建晨报，每天09:00，工作内容：只回复 AUTO-OK，不读写文件，先暂停保存。'
         self.schedule.note = note
-        async def dispatch(task_id, body, client, session):
+        async def dispatch(task_id, body, client, session, *, handoff_claim):
+            self.assertTrue(handoff_claim)
             return {"ok": True, "ref": "fixture-ref"}
         with patch.object(task_dispatch, "dispatch", side_effect=dispatch):
             result = await personal_schedules.run_my_schedule(
@@ -145,7 +146,8 @@ class ScheduleRunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         await self.cloud_target()
         dispatched = []
 
-        async def dispatch(task_id, body, client, session):
+        async def dispatch(task_id, body, client, session, *, handoff_claim):
+            self.assertTrue(handoff_claim)
             dispatched.append(task_id)
             return {"ok": True, "ref": "fixture-ref"}
 
@@ -330,7 +332,8 @@ class ScheduleRunnerDispatchTests(unittest.IsolatedAsyncioTestCase):
         await self.session.commit()
         result = await self.preflight()
         self.assertEqual(result['state'], 'ready', result)
-        async def dispatch(task_id, body, client, session):
+        async def dispatch(task_id, body, client, session, *, handoff_claim):
+            self.assertTrue(handoff_claim)
             return {'ok': True, 'ref': 'fixture-own-pc'}
         with patch.object(task_dispatch, 'dispatch', dispatch):
             result = await personal_schedules.run_my_schedule('schedule', body={}, client=self.client, session=self.session)

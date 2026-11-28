@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const {createHash} = require('node:crypto');
 const { attachmentUrl, latestDeliveryAttachments, prepare, request } = require('../main/pi-session/task-input');
 
 test('native prepare distinguishes inferred defaults from legacy manual policy and terminal receipts', async t => {
@@ -331,6 +332,28 @@ test('failed attachment download never reserves or starts the task', async () =>
  } finally {global.fetch=oldFetch;}
 });
 
+test('native preparation refuses same-length changed attachment bytes before reserving execution', async t => {
+ const manifest = [{id: 'a', name: 'brief.txt', size: 4, sha256: createHash('sha256').update('good').digest('hex')}];
+ const calls = [];
+ t.mock.method(global, 'fetch', async (url, options = {}) => {
+  calls.push(url);
+  if (url.endsWith('/tasks/t')) return Response.json({id: 't'});
+  if (url.endsWith('/ai-preview')) {
+   assert.deepEqual(JSON.parse(options.body).inputManifest, manifest);
+   return Response.json({carried: {inputManifest: manifest, confirmedDispatch: true}});
+  }
+  if (url.endsWith('/tasks/t/attachments')) return Response.json([
+   {id: 'a', filename: 'brief.txt', url: '/api/v1/attachments/a?ticket=fixture'},
+   {id: 'extra', filename: 'omitted.txt', url: '/api/v1/attachments/extra?ticket=fixture'},
+  ]);
+  if (url.includes('/attachments/a?')) return new Response('edit');
+  throw Error('unexpected request');
+ });
+ await assert.rejects(prepare({hub: 'http://fixture'}, 't', 'chat', 'turn', '', {inputManifest: manifest}),
+  /附件.*已变化/);
+ assert.ok(calls.every(url => !url.includes('/conversation-turn') && !url.includes('/attachments/extra')));
+});
+
 test('native task model including default is carried to the queue while controlled models stay with their executor', async t => {
  t.mock.method(global, 'fetch', async url => {
   if (url.endsWith('/tasks/t')) return Response.json({id:'t',executionContext:{model:'saved-model'}});
@@ -602,4 +625,81 @@ test('recovery never claims another conversation, remote executor, or a live loc
   await assert.rejects(prepare(identity,'t','chat','new','继续',{reuseConversation:true,followUp:true},runtime),/需求已在执行/);
  }
  assert.equal(claims,1);
+});
+
+function confirmedNativeRecovery(t, turnState = 'queued', stored = 'kept') {
+ const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-confirmed-recovery-'));
+ t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+ const inputManifest = [{id: 'a', name: 'brief.txt', size: 4, sha256: createHash('sha256').update('kept').digest('hex')}];
+ const turn = {state: turnState, executor: 'native', conversationId: 'chat', turnId: 'original-turn'};
+ const task = {id: 't', status: turnState === 'queued' ? 'todo' : 'doing', ownerClientId: 'd',
+  workRouting: {conversationTurn: turn}};
+ const calls = [], writes = [];
+ t.mock.method(global, 'fetch', async (url, options = {}) => {
+  calls.push(url);
+  if (url.endsWith('/tasks/t')) return Response.json(task);
+  if (url.endsWith('/ai-preview')) {
+   assert.deepEqual(JSON.parse(options.body).inputManifest, inputManifest);
+   return Response.json({carried: {confirmedDispatch: true, inputManifest}});
+  }
+  if (url.endsWith('/tasks/t/attachments')) return Response.json([
+   {id: 'a', filename: 'brief.txt', url: '/api/v1/attachments/a?ticket=fixture'},
+   {id: 'extra', filename: 'omitted.txt', url: '/api/v1/attachments/extra?ticket=fixture'},
+  ]);
+  if (url.includes('/attachments/a?')) return new Response(stored);
+  if (url.endsWith('/conversation-turn')) {
+   writes.push(JSON.parse(options.body));
+   return Response.json({task, turn: {...turn, state: 'running'}});
+  }
+  throw Error('unexpected request');
+ });
+ const identity = {hub: 'http://fixture', clientId: 'd', session:
+  Buffer.from(JSON.stringify({typ:'device',uid:'u',cid:'d',iat:1,exp:9e9})).toString('base64url')+'.'+'0'.repeat(64)};
+ let claims = 0;
+ const runtime = {handle: {sessionId: 'chat', cwd: root, adapterId: 'pi', taskIds: ['t'],
+  claimInterruptedTask(id) {
+   assert.equal(id, 't');
+   return ++claims === 1 ? 'claim-token' : null;
+  },
+  releaseInterruptedTask() {},
+ }, app: {getPath: () => root}};
+ return {prepare: (turnId = turn.turnId) => prepare(identity, 't', 'chat', turnId, '继续',
+  {reuseConversation: true, followUp: true, inputManifest}, runtime),
+  calls, writes, get claims() {return claims;}};
+}
+
+test('confirmed recovery of an interrupted queued native task loads only the frozen attachments and starts the original turn', async t => {
+ const fixture = confirmedNativeRecovery(t);
+ const input = await fixture.prepare();
+ assert.equal(fixture.claims, 1);
+ assert.equal(input.controlled, null);
+ assert.deepEqual(input.attachments.map(file => [file.attachmentId, file.data.toString()]), [['a', 'kept']]);
+ assert.deepEqual(fixture.writes, []);
+ await input.beforeTurn();
+ assert.deepEqual(fixture.writes.map(row => [row.action, row.conversationId, row.turnId]),
+  [['start', 'chat', 'original-turn']]);
+});
+
+test('confirmed recovery of an already running native receipt cannot start a second turn', async t => {
+ const fixture = confirmedNativeRecovery(t, 'running');
+ const input = await fixture.prepare();
+ assert.equal((await input.beforeTurn()).turn.turnId, 'original-turn');
+ await assert.rejects(fixture.prepare(), /原派发轮次暂不可恢复/);
+ await assert.rejects(input.beforeRetry(), /重新预览/);
+ assert.deepEqual(fixture.writes, []);
+});
+
+test('confirmed recovery with another submission ID cannot claim the active native receipt', async t => {
+ const fixture = confirmedNativeRecovery(t);
+ await assert.rejects(fixture.prepare('another-turn'), /重新预览/);
+ assert.equal(fixture.claims, 0);
+ assert.deepEqual(fixture.calls, ['http://fixture/api/v1/tasks/t']);
+});
+
+test('changed material rejects interrupted native recovery before the original receipt is claimed', async t => {
+ const fixture = confirmedNativeRecovery(t, 'queued', 'edit');
+ await assert.rejects(fixture.prepare(), /需求附件.*已变化/);
+ assert.equal(fixture.claims, 0);
+ assert.deepEqual(fixture.writes, []);
 });

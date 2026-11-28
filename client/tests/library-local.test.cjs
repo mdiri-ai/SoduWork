@@ -55,7 +55,7 @@ test('legacy extension loss is identified without writes and explicit repair pre
     assert.equal(listed.filenameIssue, 'check');
     assert.equal(fs.readFileSync(indexPath, 'utf8'), before, 'diagnosis must not migrate or rewrite the index');
     await assert.rejects(f.call('openExternal', { id: original.id }), /格式/);
-    const result = (await f.call('repairFilename', { id: original.id, filename: repaired })).item;
+    const result = (await f.call('updateItem', { id: original.id, title: repaired })).item;
     for (const key of ['id', 'folderId', 'favorite', 'sourceType', 'sourceLabel', 'sessionId', 'conversationTitle',
       'sourceSessionId', 'sourceConversationTitle', 'extra', 'createdAt', 'size', 'contentType']) {
       assert.deepEqual(result[key], original[key], key);
@@ -73,15 +73,29 @@ test('legacy extension loss is identified without writes and explicit repair pre
   }
 });
 
-test('ordinary rename still retains the extension, while explicit repair replaces a truncated extension', async t => {
-  const f = fixture(t), original = await legacyItem(f, 'a'.repeat(158) + '.p', 'unchanged');
-  const renamed = (await f.call('updateItem', { id: original.id, title: 'correct.pdf' })).item;
-  assert.equal(renamed.filename, 'correct.pdf.p');
-  assert.equal(renamed.contentType, 'application/octet-stream');
-  const repaired = (await f.call('repairFilename', { id: original.id, filename: 'correct.pdf' })).item;
-  assert.equal(repaired.filename, 'correct.pdf');
-  assert.equal((await f.call('readBinary', { id: original.id })).name, 'correct.pdf');
-  const note = (await create(f, { kind: 'note', filename: 'note.txt' })).item;
+test('rename preserves healthy extensions and repairs only a legacy suffix explicitly completed by the user', async t => {
+  const f = fixture(t), correctMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  const inputs = [
+    { filename: 'ordinary.doc', contentType: 'application/msword', title: 'report.pdf', expected: 'report.pdf.doc' },
+    { filename: 'a'.repeat(156) + '.doc', contentType: correctMime, title: 'recovered.docx', expected: 'recovered.docx' },
+    { filename: 'b'.repeat(156) + '.doc', contentType: 'application/msword', title: 'budget.docx', expected: 'budget.docx.doc' },
+    { filename: 'c'.repeat(156) + '.doc', contentType: 'application/octet-stream', title: 'unknown.docx', expected: 'unknown.docx.doc' },
+    { filename: 'd'.repeat(156) + '.foo', contentType: 'application/octet-stream', title: 'different.txt', expected: 'different.txt.foo' },
+    { filename: 'e'.repeat(156) + '.foo', contentType: 'application/octet-stream', title: 'different.foobar', expected: 'different.foobar.foo' },
+    { filename: 'f'.repeat(158) + '.p', contentType: 'image/png', title: 'different.pdf', expected: 'different.pdf.p' },
+    { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: 'application/msword', title: 'next.docx', expected: 'next.docx.doc' },
+    { filename: 'budget.docx.doc', storedTitle: 'budget.docx', contentType: correctMime, title: 'fixed.docx', expected: 'fixed.docx' },
+    { filename: 'ordinary.docx.doc', contentType: correctMime, title: 'unchanged-type.docx', expected: 'unchanged-type.docx.doc' },
+    { filename: 'recovered.pdf.p', storedTitle: 'recovered.pdf', title: 'old-report.pdf', expected: 'old-report.pdf' },
+  ];
+  for (const { filename, contentType, storedTitle, title, expected } of inputs) {
+    const original = await legacyItem(f, filename, 'original bytes', { contentType, title: storedTitle || filename });
+    const renamed = (await f.call('updateItem', { id: original.id, title })).item;
+    assert.equal(renamed.filename, expected); assert.equal(renamed.contentType, original.contentType);
+    const binary = await f.call('readBinary', { id: original.id });
+    assert.equal(binary.name, expected); assert.equal(Buffer.from(binary.data, 'base64').toString(), 'original bytes');
+  }
+  const note = (await f.call('createItem', { kind: 'note', title: 'note', content: 'keep' })).item;
   assert.equal((await f.call('repairFilename', { id: note.id, filename: 'note.md' })).item.kind, 'note');
 });
 
@@ -461,6 +475,49 @@ test('the first work-directory access migrates the legacy userData library witho
   assert.equal(listed.items[0].filename, 'legacy.txt');
   assert.equal(fs.existsSync(path.join(f.account(), 'index.json')), true);
   assert.equal(Buffer.from((await f.call('readBinary', { id: listed.items[0].id })).data, 'base64').toString(), 'legacy bytes');
+});
+
+test('a failed legacy object copy is retried before the library migration is considered complete', async t => {
+  const f = fixture(t);
+  const store = require('../main/library-local-store.cjs').create(f.deps.app, OWNER_A, () => {});
+  const { execute } = require('../main/library-local-actions.cjs');
+  const originals = [];
+  for (const name of ['first.txt', 'second.txt']) {
+    const bytes = 'original legacy bytes for ' + name;
+    const { item } = await store.run(index => execute(store, index, 'upload', { name, dataBase64: data(bytes) }));
+    originals.push({ item, bytes });
+  }
+  const legacy = path.join(f.root, 'library', 'accounts', OWNER_A);
+  fs.mkdirSync(path.dirname(legacy), { recursive: true });
+  fs.renameSync(store.root, legacy);
+  const sourceIndex = fs.readFileSync(path.join(legacy, 'index.json'));
+  let copiedObject, objectCopies = 0;
+  const copy = fsp.copyFile, failure = Object.assign(Error('destination disk full'), { code: 'ENOSPC' });
+  const fault = t.mock.method(fsp, 'copyFile', async (from, to, flags) => {
+    if (from.startsWith(path.join(legacy, 'objects') + path.sep)) {
+      if (++objectCopies === 2) throw failure;
+      copiedObject = to;
+    }
+    return copy(from, to, flags);
+  });
+  await assert.rejects(f.call('list', { scope: 'all' }), error => error === failure);
+  const prematurelyPublished = fs.existsSync(path.join(f.account(), 'index.json'));
+  fault.mock.restore();
+  const past = new Date('2020-01-01T00:00:00Z');
+  fs.utimesSync(copiedObject, past, past);
+  f.install();
+  const listed = await f.call('list', { scope: 'all' });
+  assert.deepEqual(listed.items.map(item => item.id).sort(), originals.map(row => row.item.id).sort());
+  for (const { item, bytes } of originals) {
+    const binary = await f.call('readBinary', { id: item.id });
+    assert.notEqual(binary.ok, false, JSON.stringify(binary));
+    assert.equal(Buffer.from(binary.data, 'base64').toString(), bytes);
+    const sourceObject = JSON.parse(sourceIndex).items.find(row => row.id === item.id)._object;
+    assert.equal(fs.readFileSync(path.join(legacy, sourceObject), 'utf8'), bytes);
+  }
+  assert.equal(fs.statSync(copiedObject).mtimeMs, past.getTime(), 'completed objects are reused on retry');
+  assert.equal(prematurelyPublished, false, 'the index must not mark a partial migration complete');
+  assert.deepEqual(fs.readFileSync(path.join(legacy, 'index.json')), sourceIndex);
 });
 
 test('trash retains bytes, restores to root after folder deletion, and purges only deleted files', async t => {

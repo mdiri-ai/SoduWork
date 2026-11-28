@@ -1,8 +1,8 @@
 """Public module behavior and service contracts."""
 from __future__ import annotations
 
-import json
 import copy
+import json
 import logging
 import os
 import re
@@ -12,34 +12,69 @@ import time
 import uuid
 from types import SimpleNamespace
 
-# Re-export the same shared objects imported from local_base.
-# ai_exec uses ai_local._RUNS for routing, so object identity must be preserved.
-from .local_base import (_CTX_WINDOW_DEFAULT, _LOCK, _PROFILES, _RUNS, _STORE,  # noqa: F401
-                         _cfg_profile, _data_root, _env_for, _workspace_root,
-                         _opencode_bin)
-from .local_base import (_load_baseline, _read_events, _record_event, _save_baseline, _save_meta,  # noqa: F401
-                         _pid_alive, _store_dir, raw_tail_sync, reclaim,
-                         _friendly, ctx_pct)
-from .local_stream import _kill_tree, _spawn, _window_for  # noqa: F401
-from .local_stream import _OVERFLOW_PAT, _learn_window  # noqa: F401 - Overflow detection is also used by audit scripts.
-from .local_stream import comment_sync, is_running, stop_sync  # noqa: F401 - Part of the provider contract.
-from . import agent_naming, declared_outputs, dispatch_identity, execution_policy, conversation_plugins, access_policy
-from .local_ctx import _note, _try_compact  # noqa: F401
-from . import ai_prompts   # Product instructions shared across execution providers.
-from . import local_artifacts, runner_usage_receipts
+from . import (
+    access_policy,
+    agent_naming,
+    ai_prompts,  # Product instructions shared across execution providers.
+    artifact_bytes,
+    conversation_plugins,
+    declared_outputs,
+    dispatch_identity,
+    execution_policy,
+    local_artifacts,
+    runner_usage_receipts,
+)
 from .local_artifacts import (
+    _ART_CAP,
+    _BUNDLE_MAX_BYTES,
+    _BUNDLE_PREFIX,
     _SKIP_DIRS,
     _SKIP_NAMES,
     _SKIP_PREFIX,
     _SKIP_SUFFIX,
-    _is_noise,
-    _snapshot,
-    _ART_CAP,
-    _BUNDLE_PREFIX,
-    _BUNDLE_MAX_BYTES,
     _fresh_entries,
-    _safe_work_file,
+    _is_noise,
     _rel_name,
+    _safe_work_file,
+    _snapshot,
+)
+
+# Re-export the same shared objects imported from local_base.
+# ai_exec uses ai_local._RUNS for routing, so object identity must be preserved.
+# Audit scripts use overflow detection, and stream controls are part of the provider contract.
+from .local_base import (  # noqa: F401
+    _CTX_WINDOW_DEFAULT,
+    _LOCK,
+    _PROFILES,
+    _RUNS,
+    _STORE,
+    _cfg_profile,
+    _data_root,
+    _env_for,
+    _friendly,
+    _load_baseline,
+    _opencode_bin,
+    _pid_alive,
+    _read_events,
+    _record_event,
+    _save_baseline,
+    _save_meta,
+    _store_dir,
+    _workspace_root,
+    ctx_pct,
+    raw_tail_sync,
+    reclaim,
+)
+from .local_ctx import _note, _try_compact  # noqa: F401
+from .local_stream import (  # noqa: F401
+    _OVERFLOW_PAT,
+    _kill_tree,
+    _learn_window,
+    _spawn,
+    _window_for,
+    comment_sync,
+    is_running,
+    stop_sync,
 )
 
 log = logging.getLogger("uvicorn.error")
@@ -1104,10 +1139,8 @@ def _read_in(run: dict, att_id: str) -> bytes | None:
     if not p:
         return None
     try:
-        if os.path.getsize(p) > _BUNDLE_MAX_BYTES:
-            return None
         with open(p, "rb") as f:
-            return f.read()
+            return artifact_bytes.read(f, _BUNDLE_MAX_BYTES)
     except OSError:
         return None
 
@@ -1128,13 +1161,11 @@ def fetch_attachment_sync(cfg: dict, att_id: str) -> bytes | None:
     with _LOCK:
         runs = list(_RUNS.values())
     for run in runs:
-        p = os.path.join(run["ws"], att_id)
-        if os.path.isfile(p) and os.path.abspath(p).startswith(os.path.abspath(run["ws"])):
+        p = _safe_work_file(run, att_id)
+        if p:
             try:
-                if os.path.getsize(p) > 20 * 1024 * 1024:
-                    return None
                 with open(p, "rb") as f:
-                    return f.read()
+                    return artifact_bytes.read(f, 20 * 1024 * 1024)
             except OSError:
                 return None
     return None

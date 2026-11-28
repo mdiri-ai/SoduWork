@@ -123,17 +123,18 @@ async def _cleanup(objects):
         await asyncio.to_thread(storage.delete, key, backend)
 
 
-async def _resume(session, client, row, digest):
+async def _resume(session, client, row, digest, confirmation_generation):
     if row.owner_user_id != client.user_ref:
         raise HTTPException(403, "设备归属已变更，不能访问原账号的云端会话")
     if row.phase == "aborted":
         return handoffs.public(row)
     if (row.source or {}).get("entryKind") != "cloud" or row.request_hash != digest:
         raise HTTPException(409, "此云端会话请求编号已用于另一条消息或附件，请使用原请求重试")
-    return await handoffs.commit(session, client, row.transfer_id, row.sha256)
+    return await handoffs.commit(session, client, row.transfer_id, row.sha256,
+                                 confirmation_generation=confirmation_generation)
 
 
-async def create(session, client, request_id, raw, uploads):
+async def create(session, client, request_id, raw, uploads, *, confirmation_generation=None):
     user = await handoffs.owner(session, client)
     row_id = handoffs.identity(client.id, request_id)
     requested = clean_options(raw, has_files=bool(uploads))
@@ -144,7 +145,9 @@ async def create(session, client, request_id, raw, uploads):
                                       separators=(",", ":")).encode()).hexdigest()
     old = await session.get(Handoff, row_id)
     if old:
-        return await _resume(session, client, old, digest)
+        return await _resume(session, client, old, digest, confirmation_generation)
+    if confirmation_generation:
+        raise HTTPException(404, "找不到需要确认的原云端会话")
     if requested.get("acceptance"):
         from . import cloud_acceptance
         await cloud_acceptance.validate(session, client, requested["acceptance"])
@@ -180,6 +183,8 @@ async def create(session, client, request_id, raw, uploads):
                **({"targetRunnerKind": requested["targetRunnerKind"]}
                   if requested["targetRunnerKind"] else {})}
     picked = await handoffs.destination(session, client, options, source)
+    if "managedModelSelection" in picked:
+        options["managedModelSelection"] = picked["managedModelSelection"]
     if requested.get("plugins"):
         from . import conversation_turn_plugins
         await conversation_turn_plugins.validate_start(session, client, picked["runnerId"])
@@ -229,7 +234,7 @@ async def create(session, client, request_id, raw, uploads):
         old = await session.get(Handoff, row_id, populate_existing=True)
         if old is None:
             raise
-        return await _resume(session, client, old, digest)
+        return await _resume(session, client, old, digest, confirmation_generation)
     except BaseException:
         await session.rollback()
         if committing:
@@ -242,7 +247,7 @@ async def create(session, client, request_id, raw, uploads):
                        if key.split("/")[-2] not in protected]
         await _cleanup(objects)
         raise
-    return await handoffs.commit(session, client, request_id, "")
+    return await handoffs.commit(session, client, request_id, "", accepted_only=True)
 
 
 async def dispatch_inputs(session, row, extra):

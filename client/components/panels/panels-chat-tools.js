@@ -411,7 +411,8 @@
           : '此操作在执行前因权限调整而取消，将按新权限继续当前任务。') + '</pre>',
       };
     }
-    // Commands stay summaries. Only an explicit click may open their recorded input and output.
+    // Conversation command cards show status only, without expandable command/receipt details or hover payloads.
+    // Avoid reading potentially large result/partial payloads here; execution records retain them intact.
     if (isCommandTool(t)) {
       const done = t.state !== 'running';
       const mcp = mcpView(t, '', done);
@@ -421,7 +422,7 @@
       const stdin = t.name === 'write_stdin';
       return {
         title: !done ? (stdin ? '输入' : '执行中')
-          : (t.isError || /^(?:error|failed)$/i.test(t.state) ? (stdin ? '输入失败' : '执行失败') : (stdin ? '输入了' : '执行了')),
+          : (t.isError || /^(?:error|failed|cancelled)$/i.test(t.state) ? (stdin ? '输入失败' : '执行失败') : (stdin ? '输入了' : '执行了')),
         sub: raw ? (raw.length > 40 ? raw.slice(0, 40) + '…' : raw) : '',
         commandOnly: true, summaryOnly: true, recordAvailable: finishedCommand(t), tip: '',
         get body() { const cmd = String(t.args?.command || t.args?.cmd || t.args?.chars || ''); return (cmd ? '<div data-user-content>' + esc(cmd) + '</div>' : '') + uiOutput(t.result, done ? '（没有输出）' : '（还没有输出）'); },
