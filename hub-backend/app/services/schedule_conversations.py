@@ -100,10 +100,6 @@ async def prepare(session, schedule, client, repo, run_id, adapter, personal):
     # device-local personal plugin.
     from .schedule_execution import normalize_conversation_schedule
     normalize_conversation_schedule(schedule)
-    # Read the reuse pointer before any later commit can expire schedule
-    # attributes; the claim below must not lazily refresh an async row.
-    session_mode = str(getattr(schedule, 'session_mode', '') or 'fresh')
-    recurring_id = str(getattr(schedule, 'recurring_conversation_id', '') or '')
     run = await session.get(models.AiScheduleRun, run_id)
     if run is None:
         raise ValueError('自动化运行记录尚未建立')
