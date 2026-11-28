@@ -39,14 +39,43 @@ def image_rejected(error: model_errors.UpstreamError) -> bool:
         r'|(?:图片|图像|多模态).{0,30}(?:数量|上限|限制|超限)', message))
 
 
+def _flatten_text_parts(body: dict, field: str, max_tokens_limit: int | None = None) -> dict:
+    """Compat fixes for text-only OpenAI-compatible gateways (e.g. Spark).
+
+    - Collapse array-form content made of plain text parts back to a string;
+      some gateways reject the OpenAI array shape with "invalid data".
+    - Clamp max_tokens to the gateway's cap; oversized values surface as
+      mid-stream error events instead of HTTP errors.
+    Non-text blocks (images, audio) are left untouched for the vision path.
+    """
+    messages = body.get(field)
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get('content')
+            if not isinstance(content, list) or not content:
+                continue
+            if all(isinstance(part, dict) and part.get('type') == 'text'
+                   and isinstance(part.get('text'), str) for part in content):
+                message['content'] = ''.join(part['text'] for part in content)
+    if max_tokens_limit is not None:
+        limit = int(body.get('max_tokens') or 0)
+        if limit > max_tokens_limit:
+            body['max_tokens'] = max_tokens_limit
+    return body
+
+
 async def open_request(conf: dict, path: str, payload: dict, analyze):
     """Open a response without consuming it; caller owns streaming and close."""
     field = 'messages' if path == '/chat/completions' else 'input'
+    # Spark caps chat output at 32768 tokens; larger values fail mid-stream.
+    max_tokens_limit = 32768 if 'xf-yun.com' in str(conf.get('base') or '') else None
 
     async def send(body):
         return await model_transport.open_response(
             conf, path,
-            json.dumps(body, ensure_ascii=False).encode('utf-8'),
+            json.dumps(_flatten_text_parts(body, field, max_tokens_limit), ensure_ascii=False).encode('utf-8'),
             stream=bool(payload.get('stream')))
 
     has_images = responses_vision.has_images({field: payload.get(field)})
