@@ -200,6 +200,47 @@
     (key === 'apps'
       ? '<svg class="ws-rail-app-icon ws-icon-solid" viewBox="0 0 24 24" data-icon="apps" aria-hidden="true" focusable="false"><g transform="translate(12 11.425) scale(1.15) translate(-12 -11.425)">' + APP_PAGE_GIFT_MARKUP + '</g></svg>'
       : '<svg class="ws-icon-solid" viewBox="0 0 24 24" data-icon="' + key + '" aria-hidden="true" focusable="false">' + (SOLID_ICONS[key] || ICONS[key] || ICONS.history) + '</svg>');
+  // The standalone settings window shares this menu and the ordinary page openers.
+  // It has no chat sidebar, workspace history, or per-process restore record.
+  if (global.__deskPanel === 'preferences') {
+    let current = 'account';
+    const frame = document.getElementById('wsSettingsDialog');
+    const menu = frame.querySelector('.ws-nav');
+    const close = frame.querySelector('#wsSettingsClose');
+    function paint(key) {
+      current = key;
+      for (const item of menu.querySelectorAll('[data-view]')) {
+        item.classList.toggle('active', item.dataset.view === key);
+        if (item.dataset.view === key) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+      }
+    }
+    function localize() {
+      menu.innerHTML = navHtml(SETTINGS_GROUPS);
+      frame.setAttribute('aria-label', wsT('settings', '设置'));
+      menu.parentElement.setAttribute('aria-label', wsT('settings', '设置'));
+      close.title = wsT('releaseNotes.close', '关闭');
+      close.setAttribute('aria-label', close.title);
+      paint(current);
+    }
+    menu.addEventListener('click', event => {
+      const button = event.target.closest('button[data-view]');
+      if (button) global.WorkspaceHost.open(button.dataset.view);
+    });
+    close.addEventListener('click', () => global.soduWorkAPI?.closeDeskWindow?.());
+    global.PreferencesWindow = {
+      includes: key => SETTINGS_KEYS.has(key),
+      show(key, panel) {
+        if (panel) frame.querySelector('#wsSettingsContent').appendChild(panel);
+        frame.hidden = false;
+        paint(key);
+      },
+    };
+    localize();
+    global.addEventListener('soduwork-locale-change', localize);
+    return;
+  }
+
   let root = null, active = '', nav = null, rail = null, railMoreMenu = null, recent = null, chats = null, pinnedChats = null, chatItems = [];
   /* The main process persists the last manually selected directory. It is a fallback
      for new chats, not project membership; choosing the default workspace clears it. */
@@ -244,12 +285,31 @@
     return 'utility';
   }
 
+  const SIDEBAR_WIDTH_KEY = 'soduwork_work_ws_side_w';
+  const clampSideWidth = width => Math.max(168, Math.min(440, width));
+  let finishSidebarDrag = null;
+
+  function restoreSidebarWidth(view) {
+    let stored;
+    try {
+      stored = localStorage.getItem(SIDEBAR_WIDTH_KEY + ':' + view);
+      // The old shared width has no page identifier. Keep it for the conversation composer.
+      if (stored === null && view === 'create') stored = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    } catch (_) { /* Fall back to the responsive stylesheet. */ }
+    const width = Number(stored);
+    const style = document.documentElement.style;
+    if (Number.isFinite(width) && width > 0) style.setProperty('--ws-side-w', clampSideWidth(width) + 'px');
+    else style.removeProperty('--ws-side-w');
+  }
+
   function syncWorkspaceLayout(key) {
     if (!root) return;
     const layout = layoutForView(key);
     root.dataset.layout = layout;
     const html = document.documentElement;
     if (html.dataset.deskPanel !== 'workspace') return;
+    if (finishSidebarDrag) finishSidebarDrag();
+    restoreSidebarWidth(key);
     html.dataset.workspaceLayout = layout;
     if (layout === 'utility') html.style.setProperty('--ws-main-left', 'var(--ws-rail-w,52px)');
     else html.style.removeProperty('--ws-main-left');
@@ -544,11 +604,7 @@
        Set the variable on documentElement: fixed business panels are body children
        and cannot inherit a custom property from the workspace shell. */
     (function wireSideResize() {
-      const KEY = 'soduwork_work_ws_side_w';
       const CSSROOT = document.documentElement;
-      const clamp = (w) => Math.max(168, Math.min(440, w));
-      const setW = (w) => CSSROOT.style.setProperty('--ws-side-w', clamp(w) + 'px');
-      try { const s = parseInt(localStorage.getItem(KEY) || '', 10); if (s) setW(s); } catch (e) { /* Use defaults when storage is unavailable. */ }
       const rz = root.querySelector('#wsResizer') || document.getElementById('wsResizer');
       if (!rz) return;
       /* Move the separator to body to escape the shell stacking context.
@@ -556,22 +612,35 @@
          Keep this move idempotent and place the separator after the panels. */
       if (rz.parentElement !== document.body) document.body.appendChild(rz);
       rz.addEventListener('pointerdown', (e) => {
+        if (!e.isPrimary || e.button !== 0 || finishSidebarDrag) return;
         e.preventDefault();
+        const view = active || CSSROOT.dataset.workspaceView || 'create';
         const side = root.querySelector('.ws-side');
         const startX = e.clientX;
         const startW = side ? side.getBoundingClientRect().width : 220;
         CSSROOT.classList.add('ws-resizing');
         try { rz.setPointerCapture(e.pointerId); } catch (_e) { /* Pointer capture is unavailable in some environments. */ }
-        const onMove = (ev) => { setW(startW + (ev.clientX - startX)); };
-        const onUp = () => {
+        let width = startW;
+        const onMove = (ev) => {
+          if (ev.pointerId !== e.pointerId) return;
+          width = clampSideWidth(startW + ev.clientX - startX);
+          CSSROOT.style.setProperty('--ws-side-w', width + 'px');
+        };
+        const onUp = (ev) => {
+          if (ev && ev.pointerId !== e.pointerId) return;
+          finishSidebarDrag = null;
           CSSROOT.classList.remove('ws-resizing');
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
-          const s2 = root.querySelector('.ws-side');
-          if (s2) { try { localStorage.setItem(KEY, String(Math.round(s2.getBoundingClientRect().width))); } catch (_e) {} }
+          document.removeEventListener('pointercancel', onUp);
+          if (width !== startW) {
+            try { localStorage.setItem(SIDEBAR_WIDTH_KEY + ':' + view, String(Math.round(width))); } catch (_e) {}
+          }
         };
+        finishSidebarDrag = onUp;
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel', onUp);
       });
     })();
 

@@ -53,6 +53,15 @@ check('从发起窗口打开表单时相对定位且不会越界', () => {
   inside(b, area);
 });
 
+check('头像设置窗相对主窗居中并限制大屏上的初始尺寸', () => {
+  const area = { x: 0, y: 0, width: 1920, height: 1040 };
+  const owner = { x: 100, y: 60, width: 1440, height: 900 };
+  assert.deepEqual(layout.initial(specs.preferences, area, owner, 0),
+    { x: 259, y: 132, width: 1123, height: 756 });
+  assert.deepEqual(layout.initial(specs.preferences, area, area, 0),
+    { x: 360, y: 110, width: 1200, height: 820 });
+});
+
 check('配置工具首次打开贴近屏幕右侧但留出边距', () => {
   const area = { x: 0, y: 0, width: 1920, height: 1040 };
   const b = layout.initial(specs.settings, area, null, 0);

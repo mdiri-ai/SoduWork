@@ -7,7 +7,7 @@
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(
   #schPanel,#historyBoard,#capPanel,#briefPanel,#aiDeskPanel,#teamPanel,#libraryPanel,
   #usagePanel,#agPanel,#mdPanel,#cloudEnvironmentPanel,#caPanel,#skPanel,#sessionMemoryPanel,#noticePanel,
-  #skinManager,#settingsPanel,#addMask,#archivePanel
+  #skinManager,#settingsPanel,#addMask,#archivePanel,#shortcutsPanel
 ) .ws-page-head{
   box-sizing:border-box!important;display:flex!important;align-items:flex-start!important;
   justify-content:space-between!important;flex:0 0 auto!important;flex-wrap:wrap!important;
@@ -33,7 +33,7 @@ html[data-desk-panel="workspace"] #libraryPanel .ws-page-head h1::before{
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(
   #schPanel,#historyBoard,#capPanel,#briefPanel,#aiDeskPanel,#teamPanel,
   #usagePanel,#agPanel,#mdPanel,#cloudEnvironmentPanel,#caPanel,#skPanel,#sessionMemoryPanel,#noticePanel,
-  #skinManager,#settingsPanel,#addMask
+  #skinManager,#settingsPanel,#addMask,#shortcutsPanel
 ) .ws-page-head > :is(
   .sch-h-txt,.hb-title,.br-page-title,.dk-title,.np-title,
   .set-page-title,.detail-page-title,.add-page-title
@@ -41,28 +41,28 @@ html[data-desk-panel="workspace"] #libraryPanel .ws-page-head h1::before{
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(#teamPanel,#skinManager) > .ws-page-head > div:first-child{
   display:flex!important;flex-direction:row!important;align-items:center!important;flex-wrap:nowrap!important;
   flex:1 1 240px!important;min-width:0!important;min-height:35px;margin:0!important;gap:12px!important;
-  color:var(--ink)!important;font:650 18px/1.4 var(--font-display)!important;letter-spacing:-.02em!important;
+  color:var(--ink)!important;font:650 var(--ui-font-18, 18px)/1.4 var(--font-display)!important;letter-spacing:-.02em!important;
   white-space:nowrap;
 }
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(
   #schPanel,#historyBoard,#capPanel,#briefPanel,#aiDeskPanel,#teamPanel,#libraryPanel,
-  #usagePanel,#agPanel,#mdPanel,#cloudEnvironmentPanel,#caPanel,#skPanel,#sessionMemoryPanel,#skinManager,#settingsPanel
+  #usagePanel,#agPanel,#mdPanel,#cloudEnvironmentPanel,#caPanel,#skPanel,#sessionMemoryPanel,#skinManager,#settingsPanel,#shortcutsPanel
 ) .ws-page-head :is(
   .sch-h-title,#hbTitleText,.br-page-title h1,.dk-title-name,.tp-title,.sm-title,.set-page-main-title,.library-head h1
 ){
   flex:0 0 auto!important;min-width:0!important;margin:0!important;color:var(--ink)!important;
-  font:650 18px/1.4 var(--font-display)!important;letter-spacing:-.02em!important;white-space:nowrap;
+  font:650 var(--ui-font-18, 18px)/1.4 var(--font-display)!important;letter-spacing:-.02em!important;white-space:nowrap;
 }
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(
   #schPanel,#historyBoard,#capPanel,#briefPanel,#aiDeskPanel,#teamPanel,
   #usagePanel,#agPanel,#mdPanel,#cloudEnvironmentPanel,#caPanel,#skPanel,#sessionMemoryPanel,#noticePanel,
-  #skinManager,#settingsPanel,#addMask
+  #skinManager,#settingsPanel,#addMask,#shortcutsPanel
 ) .ws-page-head :is(
   .sch-h-sub,.hb-count,.br-page-title p,.dk-sub,.tp-sub,.sm-sub,.np-sub,
   .set-page-sub,.detail-page-sub,.add-page-sub,.sch-h-txt > .cmem-muted
 ){
   min-width:0!important;margin:0!important;color:var(--ink-3)!important;
-  font:400 14.5px/1.5 var(--font-ui)!important;letter-spacing:normal!important;
+  font:400 var(--ui-font-14-5, 14.5px)/1.5 var(--font-ui)!important;letter-spacing:normal!important;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap!important;
 }
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(
@@ -81,7 +81,7 @@ html[data-desk-panel="workspace"] #libraryPanel .ws-page-head h1::before{
   .btn-mini,.br-quiet,.dk-agent-manage,.dk-refresh,.np-clear,.cmem-secondary
 ){
   box-sizing:border-box;min-height:32px!important;height:32px!important;padding:0 12px!important;border-radius:var(--r-md)!important;
-  font:600 14.5px/1.2 var(--font-ui)!important;white-space:nowrap;
+  font:600 var(--ui-font-14-5, 14.5px)/1.2 var(--font-ui)!important;white-space:nowrap;
   transition:background-color .16s ease,border-color .16s ease,color .16s ease;
 }
 :is(html[data-desk-panel="workspace"],html[data-desk-panel="add"]) :is(#schPanel,#historyBoard,#capPanel,#aiDeskPanel) > .ws-page-head :is(.btn-mini.primary){
@@ -99,6 +99,49 @@ html[data-desk-panel="workspace"] #aiDeskPanel > .ws-page-head .dk-agent-manage{
 }
 html[data-desk-panel="workspace"] #aiDeskPanel > .ws-page-head .dk-agent-manage:hover{
   border-color:var(--accent);background:var(--accent-soft);color:var(--accent);
+}
+/* Use the same content edges whether a settings page or just its body scrolls. */
+html[data-desk-panel="workspace"]:not([data-preferences-window]) {
+  --settings-heading-inset:8px;
+  --settings-nav-inset:12px;
+  & :is(#personalAccountPanel,#archivePanel.workspace-hosted) {right:var(--ws-frame-right)!important}
+  & :is(#personalAccountPanel,#usagePanel,#mdPanel,#caPanel,#agPanel,#cloudEnvironmentPanel,#skinManager,#archivePanel,#settingsPanel,#shortcutsPanel) > .ws-page-head {
+    align-items:center!important;
+    padding-inline:calc(var(--ws-head-gutter) + var(--settings-heading-inset))!important;
+    overflow:hidden;
+  }
+  & #agPanel .sch-h-acts:not(:has(.btn-mini:not([hidden]))) {display:none!important}
+  & :is(#settingsPanel,#archivePanel),
+  & :is(#personalAccountPanel,#usagePanel,#mdPanel,#caPanel,#agPanel,#cloudEnvironmentPanel,#skinManager) > :is(.ws-page-head,.personal-account-body,.usage-body,.sch-body,.sm-body),
+  & #shortcutsPanel > :is(.ws-page-head,.shortcuts-main,.shortcuts-toolbar) {
+    scrollbar-gutter:stable both-edges;
+    scrollbar-width:auto;
+    scrollbar-color:auto;
+  }
+  & #settingsPanel {--settings-gutter:var(--ws-head-gutter)!important}
+  & #settingsPanel::-webkit-scrollbar {width:5px}
+  & #settingsPanel > .ws-page-head {padding-inline:calc(var(--settings-gutter) + var(--settings-heading-inset))!important}
+  & :is(.archive-history-toolbar,.skin-section-title) {padding-inline:var(--settings-heading-inset)}
+  & .skin-grid {padding-inline:0}
+  & #shortcutsPanel {--shortcut-gutter:var(--ws-head-gutter)}
+  & #shortcutsPanel .shortcuts-toolbar {overflow:hidden}
+  & #workspaceShell[data-layout="settings"] :is(.ws-section-label,.ws-nav-item) {padding-inline:var(--settings-nav-inset)}
+  & #personalAccountPanel > .personal-account-head {flex-wrap:nowrap}
+  & #personalAccountPanel .personal-account-head h1 {flex:none}
+  & #personalAccountPanel .personal-account-head p {
+    flex:0 1 auto;
+    min-width:0;
+    overflow:hidden;
+    white-space:nowrap;
+    text-overflow:ellipsis;
+  }
+  & :is(#personalAccountPanel > .personal-account-body,#usageBody,#mdBody,#agPanel > .sch-body,#caPanel > .sch-body,#cloudEnvironmentPanel > .sch-body,#skinManager > .sm-body) {
+    box-sizing:border-box;
+    padding:20px var(--ws-head-gutter) 32px!important;
+  }
+  & #personalAccountPanel .personal-account-body > *,
+  & :is(#mdPanel,#caPanel,#agPanel,#cloudEnvironmentPanel).cfg-panel .sch-body > *,
+  & #usageBody > * {max-width:none}
 }
 /* Settings cards may be centered, but their page title uses the shared gutter. */
 html[data-desk-panel="workspace"] #settingsPanel > .ws-page-head{
@@ -145,6 +188,6 @@ html[data-desk-panel="workspace"][data-workspace-view="add"] #addMask .modal > .
   html[data-desk-panel="workspace"] .ws-page-head button{transition:none!important}
 }
 
-html[data-desk-panel="workspace"] #schPanel > .ws-page-head .sch-create-trigger{height:32px;min-height:32px;font-size:max(var(--font-min-readable, 14.5px), 13px)}
+html[data-desk-panel="workspace"] #schPanel > .ws-page-head .sch-create-trigger{height:32px;min-height:32px;font-size:max(var(--font-min-readable, 14.5px), var(--ui-font-13, 13px))}
 html[data-desk-panel="add"] #addMask .modal{padding-top:0!important;padding-inline:var(--ws-head-gutter)!important}
 html[data-desk-panel="add"] #addMask .modal > .ws-page-head{margin:0 calc(-1 * var(--ws-head-gutter)) 20px!important}

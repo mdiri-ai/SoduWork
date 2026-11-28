@@ -161,7 +161,7 @@
         clearTimeout(this._syncC);
         this._syncC = setTimeout(() => { this._syncC = null; if (current(epoch, key)) this._syncCfgToHub(); }, 400);
       },
-      _syncCfgToHub() {
+      _syncCfgToHub({ notifyFailure = true } = {}) {
         if (!api()?.syncConfig) return;
         const epoch = this._taskEpoch, revision = this._cfgRevision, key = scope();
         const pending = pendingConfig(key);
@@ -174,7 +174,7 @@
             if (sameDraft()) clearPendingConfig(key);
             if (this._cfgSyncWarned) { this._cfgSyncWarned = false; global.petSay?.('设置已同步到后台'); }
           }
-          else if (!this._cfgSyncWarned) {
+          else if (notifyFailure && !this._cfgSyncWarned) {
             this._cfgSyncWarned = true;
             global.petSay?.('设置已保存到本机；后台暂不可达，稍后自动重试');
           }
@@ -245,14 +245,15 @@
             for (const field of Object.keys(this._cfg)) if (!(field in draft)) delete this._cfg[field];
             Object.assign(this._cfg, stripServerOwned(draft));
           }
-          this._syncCfgToHub();
+          this._syncCfgToHub({ notifyFailure: global.__deskPanel !== 'preferences' });
           return;
         }
         const job = Promise.resolve().then(() => api().getConfig(
           () => current(epoch, key) && this._cfgRevision === revision && !hasPendingConfig(key))).then(apiCfg => {
           if (!current(epoch, key)) return;
           this._localLocaleIntent = localLocaleIntent();
-          if (hasPendingConfig(key)) this._syncCfgToHub();
+          // A new settings window retries pending device settings even before the user edits anything here.
+          if (hasPendingConfig(key)) this._syncCfgToHub({ notifyFailure: global.__deskPanel !== 'preferences' });
           else if (this._cfgRevision === revision && apiCfg && Object.keys(apiCfg).length) {
             const previous = JSON.stringify(this._cfg);
             const incoming = stripServerOwned({ ...apiCfg });

@@ -139,7 +139,7 @@ function _caRender() {
 
   box.innerHTML = '<div class="cfg-master-detail ca-master-detail">' +
     '<aside class="cfg-master ca-master" aria-label="代码账号设置">' +
-      '<div class="cfg-master-head"><span data-i18n="eyebrow.source_control">SOURCE CONTROL</span>' +
+      '<div class="cfg-master-head"><span id="caSectionListLabel" data-i18n="eyebrow.source_control">SOURCE CONTROL</span>' +
         '<strong>' + esc(name || '代码提交身份') + '</strong>' +
         '<small>' + esc(email || '设置提交署名和仓库推送凭据') + '</small>' +
         '<span class="cfg-state ca-master-state ' + (okAll ? 'is-ready' : (_caDirty() ? 'is-dirty' : 'is-warn')) + '">' +
@@ -157,6 +157,7 @@ function _caRender() {
       g, repos, name, email, tokenSet, keySet, identityReady, credentialReady
     }) + '</main></div>';
 
+  if (box.closest?.('#wsSettingsContent, html[data-workspace-layout="settings"]')) bindSettingsListDivider(box, 'caSectionList', 'soduwork.codeAccountListWidth');
   _caBind(box);
   _caMark();
 }

@@ -5,7 +5,7 @@
   --shortcut-line: var(--line, #e2e8f0);
   --shortcut-muted: var(--ink-3, #667085);
   --shortcut-faint: var(--ink-4, #8b95a7);
-  --shortcut-text: max(var(--font-min-readable, 14.5px), 14px);
+  --shortcut-text: max(var(--font-min-readable, 14.5px), var(--ui-font-14, 14px));
   --shortcut-gutter: clamp(20px, 3vw, 36px);
   position: fixed;
   inset: calc(var(--window-menu-height, 0px) + 10px) 10px 10px var(--ws-main-left, 220px);
@@ -27,18 +27,14 @@
 html[data-desk-panel="workspace"] #shortcutsPanel { overflow: hidden !important; overscroll-behavior: contain; }
 #shortcutsPanel :is(button, input) { font: inherit; }
 #shortcutsPanel :is(button, input):focus-visible { outline: 2px solid var(--shortcut-accent); outline-offset: 3px; }
-#shortcutsPanel .shortcuts-page-head {
+#shortcutsPanel .shortcuts-toolbar {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 22px var(--shortcut-gutter) 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 12px var(--shortcut-gutter) 0;
 }
-#shortcutsPanel .shortcuts-page-heading { min-width: 0; }
-#shortcutsPanel h1 { margin: 0; color: var(--ink, #1e293b); font: 700 23px/1.3 var(--font-display, sans-serif); }
-#shortcutsPanel .shortcuts-page-heading p { margin: 5px 0 0; color: var(--shortcut-muted); font-size: var(--shortcut-text); line-height: 1.5; }
-#shortcutsPanel .shortcuts-page-actions { display: flex; align-items: center; flex: 0 0 auto; }
+#shortcutsPanel [data-shortcut-reset-all] { white-space: nowrap; }
 #shortcutsPanel .shortcut-btn {
   min-height: 34px;
   padding: 6px 12px;
@@ -58,19 +54,18 @@ html[data-desk-panel="workspace"] #shortcutsPanel { overflow: hidden !important;
 #shortcutsPanel .shortcut-btn-quiet:hover { border-color: transparent; color: var(--shortcut-accent); }
 #shortcutsPanel .shortcut-btn-danger { color: var(--s-critical, #c64151); }
 #shortcutsPanel .shortcut-btn-danger:hover { border-color: color-mix(in srgb, var(--s-critical, #c64151) 35%, var(--shortcut-line)); background: color-mix(in srgb, var(--s-critical, #c64151) 6%, var(--shortcut-paper)); color: var(--s-critical, #c64151); }
-#shortcutsPanel .shortcuts-toolbar { flex: 0 0 auto; padding: 0 var(--shortcut-gutter) 18px; border-bottom: 1px solid var(--shortcut-line); }
 #shortcutsPanel .shortcuts-search {
   display: flex;
   align-items: center;
   gap: 9px;
-  width: min(100%, 680px);
+  width: 100%;
   min-width: 0;
   min-height: 38px;
   box-sizing: border-box;
   padding: 0 12px;
   border: 1px solid var(--shortcut-line);
   border-radius: 8px;
-  background: var(--bg-1, #f6f8fb);
+  background: var(--shortcut-paper);
   color: var(--shortcut-faint);
 }
 #shortcutsPanel .shortcuts-search:focus-within { border-color: var(--shortcut-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--shortcut-accent) 11%, transparent); }
@@ -102,7 +97,7 @@ html[data-desk-panel="workspace"] #shortcutsPanel { overflow: hidden !important;
   border-radius: 6px;
   background: color-mix(in srgb, var(--shortcut-accent) 8%, var(--shortcut-paper));
   color: var(--ink, #1e293b);
-  font-size: max(var(--shortcut-text), 16px);
+  font-size: max(var(--shortcut-text), var(--ui-font-16, 16px));
   font-weight: 700;
   line-height: 1.5;
 }
@@ -167,11 +162,7 @@ html[data-desk-panel="workspace"] #shortcutsPanel { overflow: hidden !important;
 }
 @media (max-width: 680px) {
   #shortcutsPanel { --shortcut-gutter: 16px; inset: calc(var(--window-menu-height, 0px) + 4px) 4px 4px var(--ws-main-left, 0px) !important; border-radius: 12px; }
-  #shortcutsPanel .shortcuts-page-head { align-items: flex-start; padding-top: 16px; padding-bottom: 14px; gap: 10px; }
-  #shortcutsPanel h1 { font-size: 21px; }
-  #shortcutsPanel .shortcuts-page-heading p { max-width: 230px; }
-  #shortcutsPanel .shortcuts-page-actions .shortcut-btn { padding-inline: 9px; white-space: nowrap; }
-  #shortcutsPanel .shortcuts-toolbar { padding-bottom: 14px; }
+  #shortcutsPanel .shortcuts-toolbar { gap: 8px; }
   #shortcutsPanel .shortcuts-main { padding-top: 14px; }
   #shortcutsPanel .shortcut-group-title { padding-inline: 4px; }
   #shortcutsPanel .shortcut-row { padding-inline: 4px; }

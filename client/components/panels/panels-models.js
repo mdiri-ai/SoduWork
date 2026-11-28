@@ -314,7 +314,7 @@ function _mdRender() {
 
   const html = '<div class="cfg-master-detail md-master-detail">' +
     '<aside class="cfg-master md-master" aria-label="模型服务">' +
-      '<div class="cfg-master-head"><div class="md-master-toolbar"><span>模型服务</span>' +
+      '<div class="cfg-master-head"><div class="md-master-toolbar"><span id="mdServiceListLabel">模型服务</span>' +
         '<button type="button" class="cfg-master-add" id="mdAddInline" aria-label="添加服务" title="添加服务"><span aria-hidden="true">＋</span> <span>添加</span></button></div>' +
         (_mdData.managedCatalogUnavailable ? '<div class="md-hub-retry"><small>' +
           _mdMessage('models.pi.hubOffline', 'Hub 模型清单暂时无法读取', {}) + '</small> ' +
@@ -341,6 +341,11 @@ function _mdRender() {
     '</main></div>';
 
   const restoreView = _mdRenderView(box, html, target?.id || '');
+  if (box.closest?.('#wsSettingsContent')) {
+    const catalog = box.querySelector('.cfg-subsection:has([data-md-model])');
+    if (catalog) catalog.parentElement.prepend(catalog);
+  }
+  if (box.closest?.('#wsSettingsContent, html[data-workspace-layout="settings"]')) bindSettingsListDivider(box, 'mdServiceList', 'soduwork.modelListWidth');
   _mdBind(box);
   const emptyAdd = document.getElementById('mdEmptyAdd');
   if (emptyAdd) emptyAdd.addEventListener('click', _mdAddService);
@@ -378,6 +383,7 @@ function _mdProviderNameAttrs(p) {
 
 function _mdNavItemHtml(p) {
   const state = _mdState(p);
+  const host = _mdHost(p.baseUrl);
   const own = _mdCanEdit(p) ? _mdMyModels.filter((m) => m.providerId === p.id) : [];
   const count = _mdCatalogModels(p).length + own.length;
   const selected = String(_mdOpen) === String(p.id);
@@ -385,7 +391,7 @@ function _mdNavItemHtml(p) {
     (selected ? ' is-selected' : '') + '" data-mdselect="' + esc(p.id) + '" aria-pressed="' +
     (selected ? 'true' : 'false') + '">' +
       '<span class="md-provider-icon">' + _MD_ICON + '<i class="cfg-nav-dot"></i></span><span class="cfg-nav-copy"><b' + _mdProviderNameAttrs(p) + '>' + esc(p.name || p.id) + '</b>' +
-        '<small>' + esc(_mdHost(p.baseUrl) || '未填写服务地址') + '</small></span>' +
+        '<small>' + (host ? _mdHostHtml(host) : '未填写服务地址') + '</small></span>' +
       '<span class="cfg-nav-meta"><em>' + _mdMessage('models.count', '{count} 模型', { count }) + '</em><small>' + _MD_ST[state].t + '</small></span>' +
     '</button>';
 }
@@ -458,14 +464,15 @@ function _mdDetailHtml(p) {
   const own = _mdCanEdit(p) ? _mdMyModels.filter((m) => m.providerId === p.id) : [];
   const test = _mdTest[p.id];
   const count = models.length + own.length;
-  const host = _mdHost(p.baseUrl) || '尚未连接';
+  const host = _mdHost(p.baseUrl);
   const route = state === 'mine' ? '使用你的个人额度' : state === 'org' ? '使用公司统一额度' :
     state === 'managed' ? '凭据由管理员维护' :
     state === 'local' ? (p.authMode === 'none' ? '本机免密服务' : '本机保存的访问凭据') : '完成配置后可用';
   return '<header class="cfg-detail-head">' +
       '<span class="cfg-detail-icon">' + _MD_ICON + '</span>' +
       '<div class="cfg-detail-title"><span>模型服务</span><h2' + _mdProviderNameAttrs(p) + '>' + esc(p.name || '添加模型服务') + '</h2>' +
-        '<p><span' + (_mdHost(p.baseUrl) ? ' data-user-content' : '') + '>' + esc(host) + '</span> · <span>' + esc(route) + '</span></p></div>' +
+        '<p><span' + (host ? ' data-user-content' : '') + '>' + (host ? _mdHostHtml(host) : '尚未连接') +
+        '</span> <span>· <span>' + esc(route) + '</span></span></p></div>' +
       '<span class="cfg-state is-' + state + '">' + _MD_ST[state].t + '</span></header>' +
     '<div class="cfg-detail-facts"><span><small>接口协议</small><b>' +
       (p.kind === 'anthropic' ? 'Anthropic' : 'OpenAI 兼容') + '</b></span>' +
@@ -553,6 +560,9 @@ function _mdBodyHtml(p, s, ms, own, t) {
 
 function _mdHost(raw) {
   try { return new URL(String(raw || '')).host; } catch (e) { return ''; }
+}
+function _mdHostHtml(host) {
+  return esc(host).replaceAll('.', '.<wbr>');
 }
 
 function _mdAddService() {

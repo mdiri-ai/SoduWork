@@ -1,0 +1,347 @@
+/* Electron owns the frame and shadow. No backdrop covers the other windows. */
+html[data-preferences-window] .window-menu { display: none; }
+#wsSettingsDialog[hidden] { display: none; }
+#wsSettingsDialog {
+  --settings-inset: clamp(16px, 2.8vw, 28px);
+  --settings-heading-inset: 8px;
+  --settings-nav-inset: 12px;
+  --ws-head-gutter: var(--settings-inset);
+  --ws-head-height: 54px;
+  display: grid;
+  position: fixed;
+  inset: 0;
+  z-index: 21;
+  grid-template-columns: clamp(166px, 23vw, 220px) minmax(0, 1fr);
+  grid-template-rows: 36px minmax(0, 1fr);
+  min-height: 0;
+  box-sizing: border-box;
+  color: var(--ink);
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.ws-settings-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-inline: 4px;
+  -webkit-app-region: drag;
+}
+#wsSettingsClose {
+  -webkit-app-region: no-drag;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink-3);
+  background: transparent;
+}
+#wsSettingsClose:hover { color: var(--ink); background: var(--bg-3); }
+#wsSettingsClose svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; }
+.ws-settings-sidebar {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable both-edges;
+  padding: 8px var(--settings-heading-inset) 20px;
+}
+#wsSettingsDialog .ws-nav { display: grid; gap: 16px; }
+#wsSettingsDialog .ws-nav-group { gap: 3px; margin: 0; }
+#wsSettingsDialog .ws-section-label {
+  margin: 0 0 4px;
+  padding: 0 var(--settings-nav-inset);
+  font-size: var(--ui-font-12-5, 12.5px);
+  line-height: 1.4;
+  color: var(--ink-3);
+}
+#wsSettingsDialog .ws-nav-item { min-height: 36px; height: auto; padding: 7px var(--settings-nav-inset); gap: 10px; line-height: 1.4; }
+#wsSettingsDialog .ws-nav-item .ws-settings-icon { width: 18px; height: 18px; flex-basis: 18px; }
+#wsSettingsDialog .ws-nav-item.active { background: var(--bg-3); color: var(--ink); font-weight: 600; }
+#wsSettingsDialog .ws-nav-item.active::before { display: none; }
+#wsSettingsDialog :is(#wsSettingsClose,.ws-nav-item):focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+#wsSettingsContent {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  container: settings-content / inline-size;
+}
+#wsSettingsContent > [id]:not(.show) { display: none !important; }
+/* Existing hosted panels have fixed viewport geometry. Give just the active
+   settings panel the content cell as its containing block and scroll boundary. */
+html[data-desk-panel="workspace"] #wsSettingsContent > .workspace-hosted[id] {
+  position: absolute !important;
+  inset: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  background: var(--bg-1) !important;
+}
+#wsSettingsContent > .workspace-hosted { --shortcut-gutter: var(--settings-inset); }
+html[data-desk-panel="workspace"] #wsSettingsContent > #settingsPanel { --settings-gutter: var(--settings-inset) !important; }
+html[data-desk-panel="workspace"] #wsSettingsContent > [id] > :is(.ws-page-head,.personal-account-head) {
+  min-height: var(--ws-head-height) !important;
+  align-items: center !important;
+  padding: 8px calc(var(--settings-inset) + var(--settings-heading-inset)) 12px !important;
+  border: 0 !important;
+  background: var(--bg-1) !important;
+}
+/* Match the native scroll gutters on the fixed header and the scrolling body.
+   Archive and Settings scroll the entire panel, so they need only one pair. */
+#wsSettingsContent > :is(#archivePanel,#settingsPanel),
+#wsSettingsContent > [id] > :is(.personal-account-body,.usage-body,.sch-body,.sm-body,.shortcuts-main),
+#wsSettingsContent > [id]:not(#archivePanel,#settingsPanel) > :is(.ws-page-head,.shortcuts-toolbar) {
+  scrollbar-gutter: stable both-edges;
+  scrollbar-color: auto;
+}
+#wsSettingsContent > [id]:not(#archivePanel,#settingsPanel) > :is(.ws-page-head,.shortcuts-toolbar) {
+  overflow: hidden;
+}
+#wsSettingsDialog #wsSettingsContent > [id] > :is(.personal-account-body,.usage-body,.sch-body) > * { max-width: none; }
+#wsSettingsContent > #settingsPanel::-webkit-scrollbar { width: 5px; }
+#wsSettingsContent #agPanel .sch-h-acts:not(:has(.btn-mini:not([hidden]))) { display: none !important; }
+#wsSettingsContent .archive-history-toolbar,
+#wsSettingsContent .skin-section-title { padding-inline: var(--settings-heading-inset); }
+#wsSettingsContent .skin-grid { padding-inline: 0; }
+html[data-desk-panel="workspace"] #wsSettingsContent > [id] > :is(.personal-account-body,.usage-body,.sch-body,.sm-body,.archive-history-body) {
+  box-sizing: border-box;
+  padding: 0 var(--settings-inset) 24px !important;
+  background: var(--bg-1);
+}
+#wsSettingsContent #personalAccountPanel :is(.personal-account-summary,.personal-account-content,.personal-account-device),
+#wsSettingsContent #settingsPanel > .set-group {
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--bg-0);
+  box-shadow: none;
+}
+#wsSettingsContent #personalAccountPanel .personal-account-content:has(> .ac-center-tabs) { padding-top: 0; }
+#wsSettingsContent #personalAccountPanel :is(.personal-account-content,.personal-account-device) { margin-top: 14px; }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-master-detail {
+  box-sizing: border-box;
+  overflow: clip;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+/* Keep the search and selection frames on the same edges even when the list scrolls. */
+:is(#wsSettingsContent, html[data-workspace-layout="settings"]) {
+  & :is(#mdPanel,#caPanel) :is(.cfg-master-head,.cfg-master-actions,.cfg-master-scroll,.cfg-master-foot) {
+    scrollbar-width: thin;
+    scrollbar-color: auto;
+    scrollbar-gutter: stable both-edges;
+    padding-inline: var(--settings-heading-inset);
+  }
+  & :is(#mdPanel,#caPanel) :is(.cfg-master-head,.cfg-master-actions,.cfg-master-foot) { overflow: hidden; }
+  & :is(#mdPanel,#caPanel) :is(.cfg-master-head,.cfg-master-foot) { padding-inline: calc(var(--settings-heading-inset) + var(--settings-nav-inset)); }
+  & #mdPanel .cfg-nav-group > header { padding-inline: var(--settings-nav-inset); }
+  & :is(#mdPanel,#caPanel) .cfg-nav-item { padding-inline: calc(var(--settings-nav-inset) - 1px); }
+  & :is(#mdPanel,#caPanel) .cfg-detail { --detail-inset: clamp(16px, 2vw, 24px); }
+  & :is(#mdPanel,#caPanel) :is(.cfg-detail-head,.cfg-detail-scroll) {
+    scrollbar-width: thin;
+    scrollbar-color: auto;
+    scrollbar-gutter: stable both-edges;
+  }
+  & :is(#mdPanel,#caPanel) .cfg-detail-head {
+    overflow: hidden;
+    padding-inline: calc(var(--detail-inset) + var(--settings-heading-inset));
+  }
+  & :is(#mdPanel,#caPanel) .cfg-detail-scroll { padding-inline: var(--detail-inset); }
+  /* Chromium measures a custom scrollbar even for the hidden-overflow header. */
+  & :is(#mdPanel,#caPanel) :is(.cfg-master-head,.cfg-master-actions,.cfg-master-scroll,.cfg-master-foot,.cfg-detail-head,.cfg-detail-scroll)::-webkit-scrollbar,
+  & #agPanel :is(.rn-directory > header,.rn-directory-scroll)::-webkit-scrollbar { width: 5px; }
+}
+/* Give the service name its own line and share the next line between host and count. */
+#wsSettingsContent #mdPanel .cfg-master-head { padding-block: 12px 8px; }
+#wsSettingsContent #mdPanel .md-master-toolbar { margin-bottom: 2px; }
+#wsSettingsContent #mdPanel .cfg-master-head strong { font-size: var(--ui-font-18, 18px); }
+#wsSettingsContent #mdPanel .cfg-nav-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "icon name name" "icon host count";
+  gap: 3px 8px;
+  min-height: 58px;
+  padding-block: 8px;
+}
+#wsSettingsContent #mdPanel .md-provider-icon { grid-area: icon; width: 28px; height: 28px; }
+#wsSettingsContent #mdPanel .cfg-nav-copy { display: contents; }
+#wsSettingsContent #mdPanel .cfg-nav-copy b { grid-area: name; }
+#wsSettingsContent #mdPanel .cfg-nav-copy small { grid-area: host; }
+#wsSettingsContent #mdPanel .cfg-nav-meta { grid-area: count; max-width: none; }
+#wsSettingsContent :is(#mdPanel,#caPanel) :is(.cfg-master-head strong,.cfg-master-head small,.cfg-nav-copy b,.cfg-nav-copy small,.cfg-detail-title h2,.cfg-detail-title p,.cfg-detail-facts b) {
+  display: block;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+}
+#wsSettingsContent #mdPanel .cfg-detail { container: model-detail / inline-size; }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-detail-head { flex-wrap: wrap; gap: 6px 12px; padding-block: 16px; }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-detail-title { flex: 1 1 220px; }
+#wsSettingsContent #mdPanel .cfg-detail-title p > span { display: inline-block; max-inline-size: 100%; vertical-align: top; }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-detail-head > .cfg-state { margin-inline-start: auto; max-width: 100%; white-space: normal; }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-list-divider {
+  display: none;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+  background: var(--bg-0);
+}
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-list-divider::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 50%;
+  width: 1px;
+  background: var(--line);
+}
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-list-divider:is(:hover,:focus-visible,:active)::before { width: 2px; background: var(--accent); }
+#wsSettingsContent :is(#mdPanel,#caPanel) .cfg-list-divider:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+/* Paint over the existing edges so neither the frame nor the drag target takes column space. */
+.cfg-workspace-split {
+  position: relative;
+  overflow: clip;
+  border-radius: 12px;
+  outline: 1px solid var(--line);
+  outline-offset: -1px;
+}
+.cfg-workspace-split > .cfg-list-divider {
+  display: var(--cfg-divider-display, block);
+  position: absolute;
+  grid-area: 1 / 1 / 2 / 2;
+  inset-block: 0;
+  inset-inline-end: -4px;
+  width: 8px;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+.cfg-workspace-split > .cfg-list-divider:is(:hover,:focus-visible,:active)::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 3px;
+  width: 2px;
+  background: var(--accent);
+}
+#wsSettingsContent #mdPanel .sch-body { container-name: model-page settings-split; }
+#wsSettingsContent #caPanel .sch-body { container: settings-split / inline-size; overflow: auto; }
+#wsSettingsContent #caPanel .ca-detail { container: code-account-detail / inline-size; }
+#wsSettingsContent #caPanel .ca-nav-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas: "icon name status" "icon summary summary";
+  gap: 3px 8px;
+}
+#wsSettingsContent #caPanel .ca-nav-icon { grid-area: icon; }
+#wsSettingsContent #caPanel .cfg-nav-copy { display: contents; }
+#wsSettingsContent #caPanel .cfg-nav-copy b { grid-area: name; }
+#wsSettingsContent #caPanel .cfg-nav-copy small { grid-area: summary; }
+#wsSettingsContent #caPanel .ca-nav-item > .cfg-state { grid-area: status; transform: none; }
+#wsSettingsContent #caPanel :is(.cfg-detail-callout,.ca-preview,.ca-test-r) { overflow-wrap: anywhere; }
+#wsSettingsContent #caPanel .cfg-detail-section > header { flex-wrap: wrap; }
+/* Measure the two panes together, after the outer sidebar, gutters and border. */
+@container settings-split (min-width: 670px) {
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-master-detail {
+    min-height: 0;
+    grid-template-columns: min(var(--cfg-list-width, 320px), calc(100% - 428px)) 8px minmax(420px, 1fr);
+  }
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-master { border-inline-end: 0; }
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-list-divider { display: block; }
+}
+@container settings-split (width < 670px) {
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-master-detail {
+    height: auto;
+    min-height: 100%;
+    grid-template: auto auto / minmax(0, 1fr);
+  }
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-master {
+    height: auto;
+    max-height: clamp(220px, 42vh, 360px);
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-detail-scroll { overflow: visible; }
+  #wsSettingsContent :is(#mdPanel,#caPanel) .cfg-detail-head { scrollbar-gutter: auto; }
+  #wsSettingsContent #caPanel .ca-master { overflow: auto; }
+  #wsSettingsContent #caPanel .ca-master > * { flex-shrink: 0; }
+  #wsSettingsContent #caPanel .ca-nav {
+    flex: none;
+    overflow: visible;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  }
+}
+@container code-account-detail (max-width: 460px) {
+  #wsSettingsContent #caPanel .ca-grid,
+  #wsSettingsContent #caPanel .ca-testrow { grid-template-columns: minmax(0, 1fr); }
+  #wsSettingsContent #caPanel .cfg-detail-callout { flex-direction: column; gap: 4px; }
+}
+@container model-detail (max-width: 560px) {
+  #wsSettingsContent #mdPanel .cfg-detail-icon { display: none; }
+  #wsSettingsContent #mdPanel .cfg-detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  #wsSettingsContent #mdPanel .md-addgrid { grid-template-columns: minmax(0, 1fr); }
+  #wsSettingsContent #mdPanel .md-addgrid > * { grid-column: 1; }
+}
+:is(#wsSettingsContent, html[data-workspace-layout="settings"]) {
+  & #agPanel .rn-control-section { container: runner-controls / inline-size; }
+  & #agPanel .rn-workspace {
+    grid-template-columns: minmax(0, 1fr) minmax(290px, 29%);
+    gap: 16px;
+  }
+  & #agPanel .rn-grid { grid-template-columns: minmax(0, 1fr); }
+  & #agPanel .rn-card-compact { padding: 18px 20px; gap: 14px; }
+  & #agPanel .rn-card-head { gap: 10px; }
+  & #agPanel .rn-card-scan {
+    display: grid;
+    grid-template-columns: minmax(0, 1.8fr) repeat(4, minmax(0, .65fr));
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  & #agPanel .rn-health-inline > span,
+  & #agPanel .rn-mini-fact { flex-direction: column; align-items: flex-start; gap: 2px; }
+  & #agPanel .rn-health-inline small { max-width: 100%; color: var(--ink-3); }
+  & #agPanel .rn-mini-fact { padding-inline-start: 14px; color: var(--ink-3); }
+  & #agPanel .rn-mini-fact b { font-size: var(--ui-font-16, 16px); font-weight: 600; color: var(--ink-2); }
+  & #agPanel .rn-actions { flex-wrap: wrap; padding-top: 9px; border-top: 1px solid var(--line-2); }
+  & #agPanel .rn-actions .btn-mini { white-space: nowrap; }
+  & #agPanel .rn-directory { position: static; box-shadow: none; }
+  & #agPanel :is(.rn-directory > header,.rn-directory-scroll) {
+    scrollbar-width: thin;
+    scrollbar-color: auto;
+    scrollbar-gutter: stable both-edges;
+  }
+  & #agPanel .rn-directory > header {
+    overflow: hidden;
+    padding-inline: calc(var(--settings-heading-inset) + var(--settings-nav-inset));
+  }
+  & #agPanel .rn-directory-scroll { padding-inline: var(--settings-heading-inset); }
+  & #agPanel .rn-dir-machines { padding-inline: 0; }
+  & #agPanel .rn-dir-machine { padding-inline: calc(var(--settings-nav-inset) - 1px); }
+}
+@container runner-controls (width > 860px) {
+  #agPanel .rn-workspace:has(.rn-card:only-child) .rn-directory { max-height: none; }
+}
+@container runner-controls (max-width: 860px) {
+  :is(#wsSettingsContent, html[data-workspace-layout="settings"]) #agPanel .rn-workspace { grid-template-columns: minmax(0, 1fr); }
+}
+@container runner-controls (max-width: 560px) {
+  :is(#wsSettingsContent, html[data-workspace-layout="settings"]) #agPanel {
+    & .rn-card-scan { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    & .rn-health-inline { grid-column: 1 / -1; }
+    & .rn-mini-fact { padding-inline-start: 6px; }
+  }
+}
+@container settings-content (max-width: 680px) {
+  #wsSettingsContent #settingsPanel > .set-group { grid-column: 1 / -1; }
+  #wsSettingsContent .archive-history-filters { grid-template-columns: minmax(0, 1fr); }
+}

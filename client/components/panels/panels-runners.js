@@ -469,13 +469,37 @@ function _rnBind(box, refresh, nodes) {
     _rnSetMode(el.getAttribute('data-rn-do') || '', el.getAttribute('data-mode') || '')));
 }
 
-function _rnCompactAgents(agents) {
+function _rnCompactAgents(agents, expanded) {
   agents = Array.isArray(agents) ? agents : [];
   if (!agents.length) return '<span class="rn-agent-empty">未发现 Agent</span>';
-  const visible = agents.slice(0, 5);
-  return visible.map((a) => '<span>' + esc(a.name || a.key) +
-    (a.version ? ' <i>' + esc(typeof AgentBrand !== 'undefined' ? AgentBrand.version(a) : a.version) + '</i>' : '') + '</span>').join('') +
-    (agents.length > visible.length ? '<em>+' + (agents.length - visible.length) + '</em>' : '');
+  const tags = agents.map((a) => '<span>' + esc(a.name || a.key) +
+    (a.version ? ' <i>' + esc(typeof AgentBrand !== 'undefined' ? AgentBrand.version(a) : a.version) + '</i>' : '') + '</span>').join('');
+  return '<div class="rn-agent-tag-list"' + (expanded ? '' : ' data-rn-preview') + '>' + tags +
+    (expanded ? '' : '<em hidden></em>') + '</div>';
+}
+
+function _rnFitAgentPreview(list) {
+  if (!list.clientWidth) return;
+  const tags = list.querySelectorAll('span');
+  const marker = list.lastElementChild;
+  for (const tag of tags) tag.hidden = false;
+  marker.hidden = true;
+  const edge = list.getBoundingClientRect().right;
+  let shown = 0;
+  while (shown < tags.length && tags[shown].getBoundingClientRect().right <= edge) shown++;
+  if (shown === tags.length) return;
+  for (let i = shown; i < tags.length; i++) tags[i].hidden = true;
+  marker.hidden = false;
+  // The overflow count also needs space on the same row.
+  marker.textContent = '+' + (tags.length - shown);
+  while (shown > 0 && marker.getBoundingClientRect().right > edge) {
+    tags[--shown].hidden = true;
+    marker.textContent = '+' + (tags.length - shown);
+  }
+}
+
+function _rnCardExpanded(id) {
+  return _rnCardOpen === id || _rnNaming[id] !== undefined || _rnConfirm === id || _rnCapabilityOpen === id;
 }
 
 function _rnCompactCard(r, preferred) {
@@ -489,8 +513,7 @@ function _rnCompactCard(r, preferred) {
   const working = _rnWorking[id] || '';
   const confirm = _rnConfirm === id;
   const naming = _rnNaming[id];
-  const expanded = _rnCardOpen === id || naming !== undefined || confirm ||
-    _rnCapabilityOpen === id;
+  const expanded = _rnCardExpanded(id);
   const modeAction = r.mode === 'draining' ? 'accepting' : 'draining';
   const modeText = r.mode === 'draining' ? '恢复接单' : '停止接新任务';
   const environmentLabel = r.scope === 'current-instance' || r.isCurrentDevice === true ? '当前客户端'
@@ -541,9 +564,9 @@ function _rnCompactCard(r, preferred) {
       '</b>等待</span><span class="rn-mini-fact"><b>' + _rnPercent(r.cpuPercent) +
       '%</b>CPU</span><span class="rn-mini-fact"><b>' + _rnPercent(r.memoryPercent) +
       '%</b>内存</span></div>' +
-    '<div class="rn-chips rn-chips-compact">' + _rnCompactAgents(agents) + '</div>' +
+    '<div class="rn-chips rn-chips-compact">' + _rnCompactAgents(agents, expanded) + '</div>' +
     details +
-    '<div class="rn-actions"><button class="btn-mini rn-detail-toggle" data-rn-card-toggle="' +
+    '<div class="rn-actions"><button class="btn-mini rn-detail-toggle" aria-expanded="' + expanded + '" data-rn-card-toggle="' +
       esc(id) + '">' + (expanded ? '收起' : '查看详情') + '</button>' +
       '<button class="btn-mini" data-rn-probe="' + esc(id) + '"' +
         (!r.online || working ? ' disabled' : '') + '>' +
@@ -567,13 +590,15 @@ function _rnMachineDirectoryHtml(nodes) {
   return '<div class="rn-dir-machines">' + nodes.map((r) => {
     const state = _rnState(r);
     const agents = Array.isArray(r.agents) ? r.agents : [];
-    return '<button class="rn-dir-machine" data-rn-card-jump="' + esc(r.runnerId || '') + '">' +
+    const id = String(r.runnerId || '');
+    const expanded = _rnCardExpanded(id);
+    return '<button class="rn-dir-machine" data-rn-card-jump="' + esc(id) + '">' +
       '<i class="st-' + state.key + '"></i><span><b>' +
         esc(r.label || r.host || '未命名机器') + '</b><small>' +
         esc(state.text + ' · ' + Number(r.busy || 0) + '/' + _rnLimit(r) +
           ' 运行 · ' + _rnWaiting(r) + ' 等待 · ' + agents.length + ' Agent') +
       '</small></span><em>定位</em></button>' +
-      '<div class="rn-dir-agents">' + _rnCompactAgents(agents) + '</div>';
+      '<div class="rn-dir-agents">' + _rnCompactAgents(agents, expanded) + '</div>';
   }).join('') + '</div>';
 }
 
@@ -622,6 +647,19 @@ function _rnWorkspaceRender(nodes) {
 
 function _rnWorkspaceBind(box, refresh, nodes) {
   _rnBind(box, refresh, _rnOwnedNodes(nodes));
+  const previews = box.querySelectorAll('[data-rn-preview]');
+  if (previews.length) {
+    const observer = new ResizeObserver(entries => {
+      for (const { target } of entries) {
+        if (target.isConnected) _rnFitAgentPreview(target);
+        else observer.unobserve(target);
+      }
+    });
+    for (const list of previews) {
+      _rnFitAgentPreview(list);
+      observer.observe(list);
+    }
+  }
   box.querySelectorAll('[data-rn-card-toggle]').forEach((el) => el.addEventListener('click', () => {
     const id = el.getAttribute('data-rn-card-toggle') || '';
     _rnCardOpen = _rnCardOpen === id ? '' : id;

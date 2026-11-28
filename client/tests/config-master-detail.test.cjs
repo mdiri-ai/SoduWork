@@ -35,7 +35,9 @@ test('两个 Electron 入口加载同一套响应式连接中心样式', () => {
   const overlay = read('index.html');
   assert.match(desk, /panels-connections\.css/);
   assert.match(overlay, /panels-connections\.css/);
-  assert.match(css, /grid-template-columns:320px minmax\(0,1fr\)/);
+  for (const width of [320, 300, 280, 260]) {
+    assert.ok(css.includes(`grid-template-columns:var(--cfg-list-width,${width}px) minmax(0,1fr)`));
+  }
   assert.match(css, /@media\(max-width:720px\)/);
   assert.match(css, /\.cfg-nav-item\.is-selected::before/);
 });

@@ -27,6 +27,17 @@ function contain(bounds, area) {
 }
 
 function initial(spec, area, anchor, openCount) {
+  if (spec.placement === 'preferences') {
+    const owner = anchor || area;
+    const size = sizeFor(spec, area, {
+      width: Math.min(spec.w, owner.width * 0.78),
+      height: Math.min(spec.h, owner.height * 0.84),
+    });
+    return contain({
+      ...size, x: owner.x + (owner.width - size.width) / 2,
+      y: owner.y + (owner.height - size.height) / 2,
+    }, area);
+  }
   const size = sizeFor(spec, area);
   let x;
   let y;

@@ -21,6 +21,9 @@ if (typeof electron === 'string') {
     });
   }
   (async () => {
+    if (process.argv.includes('--model-layout-only')) { await run('model-layout'); return; }
+    if (process.argv.includes('--code-account-layout-only')) { await run('code-account-layout'); return; }
+    if (process.argv.includes('--font-only')) { await run('font'); return; }
     await run('reopen'); await run('cold');
     const reports = ['reopen', 'cold'].map(phase => JSON.parse(fs.readFileSync(path.join(output, phase + '.json'), 'utf8')));
     fs.writeFileSync(path.join(output, 'report.json'), JSON.stringify({ ok: true, profile: root, reports }, null, 2));
@@ -88,13 +91,15 @@ if (typeof electron === 'string') {
     'work-preview-occlusion', 'access-preferences-get', 'file-open-list', 'platform-connection-status',
     'personal-plugin-list', 'personal-plugin-debug', 'pi-session-mode', 'work-preview-destroy', 'recent-workspace-get',
     'work-preview-reset-embedded', 'work-preview-app-data-changed', 'pi-session-conversation-runtimes',
-    'window-shortcuts-state', 'release-notes-release']) {
+    'window-shortcuts-state', 'release-notes-release', 'cloud-computer-status']) {
     handle(channel, () => ({ ok: true, items: [], files: [], runtimes: [], capabilities: [] }));
   }
   handle('work-root-default', () => profile);
   handle('pi-session-workdir', () => ({ dir: profile, name: 'Fixture workspace' }));
   let win, route, holdBoot = false;
-  const js = code => win.webContents.executeJavaScript(code, true);
+  const js = code => win.webContents.executeJavaScript(code, true).catch(error => {
+    throw new Error(code.slice(0, 170) + ': ' + error.message);
+  });
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function until(code, label = code) {
     for (let i = 0; i < 240; i++) { if (await js('Boolean(' + code + ')')) return; await delay(40); }
@@ -127,6 +132,13 @@ if (typeof electron === 'string') {
     const old = win;
     await new Promise(resolve => { old.once('closed', resolve); old.close(); });
   }
+  // Exercise the standalone prototype explicitly in its opt-in layout checks.
+  async function openPreferences() {
+    route.openDeskWindow({ panel: 'preferences' }, windows.get('workspace'));
+    win = windows.get('preferences');
+    await until('window.WorkspaceHost?.view === "account"');
+    return win;
+  }
   app.whenReady().then(async () => {
     session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] },
       (_request, callback) => callback({ cancel: true }));
@@ -145,13 +157,18 @@ if (typeof electron === 'string') {
       }
       route = { _desktopOverlay: { notifyBlur() {}, setWorkspaceMaximized() {} },
         _WORK_SPEC: require('../main/window-specs'), _workspaceState: state, _workWindows: windows,
-        _geom: { get: () => null, restore: () => null, initial: () => ({ width: 1440, height: 1000 }),
-          limits: () => ({ minWidth: 800, minHeight: 540 }), remember() {} },
+        _geom: { get: () => null, restore: () => null,
+          initial: (spec, source) => spec.placement === 'preferences'
+            ? require('../main/window-layout').initial(spec, {x:0,y:0,width:1440,height:1000}, source.getBounds(), 1)
+            : { width: 1440, height: 1000 },
+          limits: spec => spec.placement === 'preferences'
+            ? { minWidth: spec.minW, minHeight: spec.minH } : { minWidth: 800, minHeight: 540 }, remember() {} },
         rendererRoot: () => client, _workspaceTitlebar: { windowOptions: () => ({}), attach() {} },
         BrowserWindow: FixtureWindow, _appIcon: () => undefined, __dirname: client, path,
         attachWorkWindowRecovery() {}, revealWorkWindow() {}, setTimeout, clearTimeout };
       vm.runInNewContext(main.slice(start, end), route);
-      ipcMain.on('open-desk-window', (_event, payload) => route.openDeskWindow(payload));
+      ipcMain.on('open-desk-window', (event, payload) => route.openDeskWindow(payload, BrowserWindow.fromWebContents(event.sender)));
+      ipcMain.on('close-desk-window', event => BrowserWindow.fromWebContents(event.sender)?.close());
       session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (_request, reply) => reply({ cancel: true }));
       await session.defaultSession.protocol.handle('file', request => {
         if (path.basename(fileURLToPath(request.url.split('?')[0])) !== 'desk.html') return net.fetch(request.url, { bypassCustomProtocolHandlers: true });
@@ -161,10 +178,11 @@ if (typeof electron === 'string') {
           document.addEventListener('click',e=>{window.fixtureLastClick=e.target.outerHTML.slice(0,300);},true);
           window.fixtureUser='unbound';
           const fixtureProjectTask=${JSON.stringify(projectTask)};
-          window.SoduWorkAPI=new Proxy({online:true,taskStorageKey:()=>fixtureUser,
+          window.SoduWorkAPI=new Proxy({online:true,taskStorageKey:kind=>fixtureUser+':'+kind,
             clientAuthSnapshot:()=>({state:fixtureUser==='unbound'?'pending':'active',clientId:'fixture-device',
-              user:fixtureUser==='unbound'?null:{id:fixtureUser}}),
+              user:fixtureUser==='unbound'?null:{id:fixtureUser,displayName:'示例用户',username:'demo.user'}}),
             myModels:async()=>({usable:[]}),pluginCatalog:async()=>({items:[]}),listTeammates:async()=>[],
+            cloudEnvironments:async()=>({environments:[],permissions:{canCreate:true}}),
             getTask:async id=>id===fixtureProjectTask.id?fixtureProjectTask:null,
             getTeamCapability:async()=>({canManage:false,meId:'fixture'}),getConfig:async()=>({})},
             {get:(target,key)=>key in target?target[key]:async()=>({items:[],skills:[],enabled:[],schedules:[],runs:[]})});
@@ -175,7 +193,105 @@ if (typeof electron === 'string') {
         return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
       });
       await open(phase === 'reopen' ? { panel: 'workspace', view: 'account' } : undefined);
-      if (phase === 'cold') {
+      if (phase === 'model-layout' || phase === 'code-account-layout') {
+        const workspace = win;
+        workspace.setBounds({ x: 0, y: 0, width: 1440, height: 900 });
+        const check = phase === 'model-layout' ? require('./preferences-model-layout.cjs') : require('./preferences-code-account-layout.cjs');
+        await check({ workspace, openPreferences, close, js, click, until, output, report });
+      } else if (phase === 'font') {
+        const workspace = win;
+        await js('openTaskConversation(fixtureProjectTask.id, fixtureProjectTask.title, {source:"task-list", chatId:"project-chat"})');
+        const bus = main.slice(main.indexOf("ipcMain.on('soduwork-work-broadcast'"));
+        vm.runInNewContext(bus.slice(0, bus.indexOf('\n});') + 4), {ipcMain, BrowserWindow});
+        await openPreferences();
+        await click('#wsSettingsDialog [data-view="settings"]');
+        const bounds = [workspace.getBounds(), win.getBounds()];
+        const measure = (w, selectors) => w.webContents.executeJavaScript(
+          `(${JSON.stringify(selectors)}).map(s => parseFloat(getComputedStyle(document.querySelector(s)).fontSize))`
+        ).catch(error => { throw new Error(selectors.join(', ') + ': ' + error.message); });
+        const rows = [];
+        for (const scale of ['small', 'medium', 'large']) {
+          await click(`#fontSeg [data-font="${scale}"]`);
+          await until(`document.querySelector('#fontSeg .active').dataset.font === '${scale}'`);
+          const cfg = await workspace.webContents.executeJavaScript('Store._cfg.fontScale');
+          assert.equal(cfg, scale);
+          const settings = await measure(win, ['.ws-settings-sidebar .ws-nav-item','.set-page-main-title','#fontSeg button']);
+          await click('#wsSettingsDialog [data-view="account"]');
+          await click('[data-email-change]');
+          const dialog = await measure(win, ['.ac-email-change .ac-muted', '.ac-email-change button[type=submit]']);
+          await click('.ac-email-change [data-ac-close]');
+          await click('#wsSettingsDialog [data-view="settings"]');
+          rows.push([...settings, ...dialog, ...await measure(workspace, ['.ws-brand b','#nchatInput','.ntext'])]);
+          assert.deepEqual([workspace.getBounds(), win.getBounds()], bounds);
+        }
+        for (let i = 0; i < rows[0].length; i++) {
+          assert.ok(rows[0][i] >= 12 && rows[0][i] < rows[1][i] && rows[1][i] < rows[2][i],
+            'Font sizes for sample ' + i + ': ' + JSON.stringify(rows));
+        }
+        await close(); await openPreferences();
+        assert.equal((await measure(win, ['.ws-settings-sidebar .ws-nav-item']))[0], rows[2][0]);
+        report.cloudIconColors = {};
+        for (const skin of ['soduwork-logo', 'bear-ruby']) {
+          await click('#wsSettingsDialog [data-view="skin"]');
+          await click(`.skin-card[data-id="${skin}"]`);
+          await until(`document.querySelector('.skin-card.active[data-id="${skin}"]')`);
+          await click('#wsSettingsDialog [data-view="cloud"]');
+          await until('document.querySelector(".ce-empty > svg")');
+          await click('.ce-empty [data-ce-add]');
+          await until('document.querySelector(".ce-dialog[open] .ce-dialog-icon svg")');
+          const icons = await js(`['.ws-settings-sidebar [data-view=cloud] svg', '.ce-empty > svg', '.ce-dialog-icon svg'].map(selector => {
+            const svg = document.querySelector(selector), path = svg.querySelector('path'), style = getComputedStyle(path);
+            return { path: path.getAttribute('d'), viewBox: svg.getAttribute('viewBox'), color: style.stroke,
+              strokeWidth: style.strokeWidth, width: getComputedStyle(svg).width };
+          })`);
+          for (const icon of icons.slice(1)) {
+            assert.equal(icon.path, icons[0].path);
+            assert.equal(icon.viewBox, icons[0].viewBox);
+            assert.equal(icon.strokeWidth, icons[0].strokeWidth);
+          }
+          assert.deepEqual(icons.map(icon => icon.width), ['18px', '32px', '24px']);
+          const accent = await js("getComputedStyle(document.querySelector('.ce-dialog button.ce-primary')).backgroundColor");
+          assert.equal(icons[1].color, accent);
+          assert.equal(icons[2].color, accent);
+          report.cloudIconColors[skin] = accent;
+          await click('.ce-dialog footer [data-ce-dismiss]');
+          await until('!document.querySelector(".ce-dialog[open]")');
+        }
+        assert.notEqual(report.cloudIconColors['soduwork-logo'], report.cloudIconColors['bear-ruby']);
+        const prefs = win;
+        await click('#wsSettingsDialog [data-view="settings"]');
+        win = workspace;
+        report.checks.push('Compared cloud icons and verified setup dialog accent colors under two built-in skins');
+        await js(`{const now = Date.now();
+          const item = {id:'density',title:'示例需求',kind:'requirement',status:'doing',createdAt:now,start:now,due:now,
+            myRoles:['creator','executor'],assigneeName:'示例用户'};
+          SoduWorkAPI.getTasksSnapshot = async () => ({online:true,items:[item]});
+          tasks = Store._tasks;
+        } void 0`);
+        await js('WorkspaceHost.open("history");void 0');
+        await until('document.querySelector(".rq-menu-toggle")');
+        await click('.rq-menu-toggle'); await click('[data-rq-view="gantt"]');
+        await click('[data-rq-scope="all"]');
+        await until('document.querySelector(".gv-bar")');
+        const density = [];
+        report.ganttSizes = density;
+        for (const choice of ['small','medium','large']) {
+          win = prefs; await click(`#scaleSeg [data-scale="${choice}"]`);
+          win = workspace;
+          await until(`Store._cfg.uiScale === '${choice}'`);
+          density.push(await js(`['.gv-daynum','.gv-row:not(.gv-headrow) .gv-lane','.gv-bar'].map((s,i) => {
+            const r=document.querySelector(s).getBoundingClientRect(); return i===0 ? r.width : r.height;
+          })`));
+        }
+        for (let i = 0; i < 3; i++) assert.ok(density[0][i] < density[1][i] && density[1][i] < density[2][i], JSON.stringify(density));
+        assert.deepEqual([workspace.getBounds(), prefs.getBounds()], bounds);
+        report.checks.push('Changed the requirement Gantt density in both open windows');
+        await close(); await open();
+        assert.equal(await js('document.documentElement.style.getPropertyValue("--ui-scale")'), '1.22');
+        report.fontSizes = rows;
+        report.checks.push('Default desktop, sidebar, preferences and account dialog scale together; reopening restores large text');
+        console.log(JSON.stringify(report.fontSizes));
+      } else if (phase === 'cold') {
         assert.equal(await js('WorkspaceHost.view'), 'create');
         assert.equal(await js('NativeChat.hasSession()'), false);
         assert.equal(opens, 0); report.checks.push('a second complete Electron process opens home using the same profile');
@@ -197,7 +313,17 @@ if (typeof electron === 'string') {
         await js('{const i=document.getElementById("nchatInput");i.value="unsent project draft";i.dispatchEvent(new Event("input",{bubbles:true}));}void 0;');
         const attachedBeforeProfile = opens;
         await click('#wsRailMine');
-        await until('WorkspaceHost.view==="account" && document.querySelector("#personalAccountPanel.show")');
+        await until('WorkspaceHost.view==="account" && document.querySelector("#personalAccountPanel.show [data-email-change]")');
+        assert.equal(windows.size, 1);
+        fs.writeFileSync(path.join(output, 'workspace-profile.png'), (await win.webContents.capturePage()).toPNG());
+        await click('#wsRail .ws-rail-settings');
+        await until('WorkspaceHost.view==="settings"');
+        await click('#wsNav [data-view="shortcuts"]');
+        await until('WorkspaceHost.view==="shortcuts"');
+        await click('#wsMine');
+        await until('WorkspaceHost.view==="account"');
+        assert.equal(windows.size, 1);
+        report.checks.push('both avatar entries and the settings shortcut navigate in the existing workspace window');
         await click('#wsBack');
         await until('WorkspaceHost.view==="create" && document.querySelector("#composePanel.show").dataset.stage==="chat"');
         const returned = await js('NativeChat.sessionInfo()');
