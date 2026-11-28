@@ -97,6 +97,33 @@ test('local provider URLs cannot embed credentials', async t => {
   assert.equal(fs.existsSync(path.join(f.root, 'local-models.secure.json')), false);
 });
 
+test('saved local provider IDs retain alias context estimates through IPC', async t => {
+  const f = fixture(), handlers = new Map();
+  t.after(() => { store.configure(null); fs.rmSync(f.root, { recursive: true, force: true }); });
+  require('../main/local-model-ipc.cjs').install({ app: { getPath: () => f.root }, safeStorage: f.safeStorage,
+    ipcMain: { handle: (name, fn) => handlers.set(name, fn) } });
+  const frame = { url: require('node:url').pathToFileURL(path.resolve(__dirname, '../desk.html')).href };
+  const event = { senderFrame: frame, sender: { mainFrame: frame } };
+  for (const [id, ctxWindow, expected, source] of [
+    ['deepseek', 0, 64000, 'catalog'],
+    ['custom-fixture', 0, 128000, 'safe-default'],
+    ['deepseek', 32000, 32000, 'configured'],
+  ]) {
+    const saved = handlers.get('local-models-save')(event, {
+      providers: [{ id, name: 'DeepSeek', baseUrl: 'http://127.0.0.1:8686/v1', authMode: 'none' }],
+      models: [{ providerId: id, name: 'internal-deployment', ctxWindow }],
+    });
+    const resolved = await modelConfig.fetchModel(null, saved.usable[0].id, undefined,
+      () => { throw new Error('Local configuration must not fetch Hub or model service'); },
+      false, 'pi', { allowLocal: true });
+    assert.equal(resolved.ok, true);
+    assert.equal(resolved.model.provider, id);
+    assert.equal(resolved.model.wireModelId, 'internal-deployment');
+    assert.equal(resolved.model.contextWindow, expected, id);
+    assert.equal(resolved.model.contextWindowSource, source, id);
+  }
+});
+
 test('long Unicode local model references survive creation, selection and saved preferences', async t => {
   const f = fixture();
   t.after(() => { store.configure(null); fs.rmSync(f.root, { recursive: true, force: true }); });
