@@ -66,6 +66,11 @@
 .ntool-name+.ntool-file{margin-inline-start:-6px}
 .ntool-file:hover,.ntool-head:focus-visible .ntool-file{color:var(--accent);text-decoration-color:currentColor}
 .ntool-head.ntool-summary,.ntool-batch-head.ntool-summary{cursor:default!important;background:transparent}
+/* Command/cancellation cards expand inline like the thinking block; the caret shows on hover only. */
+.ntool-head.ntool-summary[data-tool]{cursor:pointer!important}
+.ntool-summary .ntool-caret{opacity:0;transition:opacity .14s ease,transform .16s ease}
+.ntool-head.ntool-summary:hover .ntool-caret,.ntool-head.ntool-summary:focus-visible .ntool-caret{opacity:1}
+.ntool.open .ntool-head.ntool-summary .ntool-caret{transform:rotate(90deg)}
 .ntool-record-link{appearance:none;border:0;background:transparent;padding:2px 4px;
   color:var(--accent);font:inherit;white-space:nowrap;cursor:pointer}
 .ntool-record-link:hover,.ntool-record-link:focus-visible{text-decoration:underline}

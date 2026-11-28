@@ -30,6 +30,18 @@ _PERSONAL_PLUGIN_VERSION = re.compile(
 _PERSONAL_PLUGIN_CHECKSUM = re.compile(r"^[a-f0-9]{64}$")
 PERSONAL_PLUGIN_VERSION_POLICIES = ("latest", "pinned")
 MODEL_SOURCES = ("managed", "device")
+# Reuse-mode runs continue one conversation, so a still-active run must hold
+# back the next occurrence instead of dispatching a duplicate prompt into it.
+ACTIVE_RUN_STATES = ("starting", "running", "waiting")
+
+
+async def latest_run_active(session: AsyncSession, schedule_id: str) -> bool:
+    """Return whether this schedule's newest run is still being executed."""
+    latest = await session.scalar(select(models.AiScheduleRun).where(
+        models.AiScheduleRun.schedule_id == str(schedule_id or "")
+    ).order_by(models.AiScheduleRun.started_at.desc(),
+               models.AiScheduleRun.id.desc()).limit(1))
+    return latest is not None and str(getattr(latest, "state", "") or "") in ACTIVE_RUN_STATES
 
 
 def clean_schedule_model_reference(value) -> str:
@@ -269,9 +281,15 @@ def _run_iso(value: datetime | None) -> str:
     return value.astimezone(timezone.utc).isoformat() if value else ""
 
 
-def automation_conversation_title(schedule, started_at: datetime | None) -> str:
+def automation_conversation_title(schedule, started_at: datetime | None,
+                                  *, stable: bool = False) -> str:
     """Return the stable title shared by manual and scheduled automation runs."""
     title = " ".join(str(getattr(schedule, "title", "") or "自动化").split()) or "自动化"
+    prefix = "自动化 · "
+    if stable:
+        # Reuse-mode runs continue one conversation; the wall-clock suffix
+        # would rename it every run. Keep the shared prefix and length clamp.
+        return f"{prefix}{title[:max(1, 200 - len(prefix))]}"
     zone_name = str(getattr(schedule, "time_zone", "") or "Asia/Shanghai").strip()
     try:
         zone = ZoneInfo(zone_name)
@@ -280,7 +298,6 @@ def automation_conversation_title(schedule, started_at: datetime | None) -> str:
     started = _run_time(started_at) or datetime.now(timezone.utc)
     local = started.astimezone(zone)
     suffix = f" · {local:%Y-%m-%d %H:%M}"
-    prefix = "自动化 · "
     title = title[:max(1, 200 - len(prefix) - len(suffix))]
     return f"{prefix}{title}{suffix}"
 
@@ -314,6 +331,9 @@ def _new_run(s, trigger: str, idempotency_key: str = ""):
         trigger == "retry" and bool(getattr(s, "once_fired", False))) else "manual"}
         if getattr(s, "every", "") == "once" else {})
     started_at = datetime.now(timezone.utc)
+    # Reuse-mode runs continue one conversation, so the receipt title must be
+    # stable across runs and the session mode travels with the run.
+    reuse = str(getattr(s, "session_mode", "") or "fresh") == "reuse"
     return models.AiScheduleRun(
         idempotency_key=(str(idempotency_key or "")[:180]
                          or "manual:" + uuid.uuid4().hex),
@@ -323,7 +343,9 @@ def _new_run(s, trigger: str, idempotency_key: str = ""):
         owner_user_id=getattr(s, "owner_user_id", None),
         trigger=trigger, attempt=attempt, state="starting",
         receipt={"schema": "soduwork.automation-receipt/v1", "mode": mode,
-                 "conversationTitle": automation_conversation_title(s, started_at),
+                 "conversationTitle": automation_conversation_title(
+                     s, started_at, stable=reuse),
+                 "sessionMode": "reuse" if reuse else "fresh",
                  "plugin": plugin, "inputSnapshot": clean_plugin_inputs(
                      getattr(s, "plugin_inputs", {}) or {}),
                  "route": {"requested": requested}, "timing": snapshot(s), **origin},

@@ -234,6 +234,10 @@
   function unexecuted(item) {
     return item?.state === 'cancelled' && ['access-change', 'output-limit'].includes(item.cancelReason) && item.isError === false;
   }
+  function finishedCommand(item) {
+    return Boolean(item.id) && /^(?:done|completed|success|error|failed|cancelled)$/i.test(item.state) &&
+      !unexecuted(item) && item.phase !== 'preparing';
+  }
   function recordOwner(ctx) {
     return JSON.stringify([ctx._ref, ctx._viewEpoch, ctx._draftScopeEpoch, ctx._draftOwnerScope?.()]);
   }
@@ -250,6 +254,8 @@
     const current = running[running.length - 1] || items[items.length - 1] || null;
     const state = running.length ? 'running' : errors.length ? 'error' : cancelled.length === items.length && items.length ? 'cancelled' : 'done';
     const commandsOnly = items.length > 0 && items.every(item => isCommandTool(item) && render(item)?.commandOnly);
+    /* 只要组里有命令就用命令组的文案（执行中/执行了），与纯命令组保持一致。 */
+    const hasCommand = items.length > 0 && items.some(item => isCommandTool(item) && render(item)?.commandOnly);
     return {
       total: items.length,
       complete,
@@ -257,12 +263,12 @@
       state,
       commandsOnly,
       title: running.length
-        ? (commandsOnly ? '正在运行命令' : '正在执行操作')
+        ? (hasCommand ? '执行中' : '正在执行操作')
         : errors.length
-          ? (commandsOnly ? '命令执行有异常' : '执行有异常')
+          ? (hasCommand ? '执行了' : '执行有异常')
           : cancelled.length === items.length && items.length
             ? (reasons.size === 1 ? cancellationTitle(cancelled[0]) : '操作未执行')
-          : (commandsOnly ? '运行了命令' : '完成了操作'),
+          : (hasCommand ? '执行了' : '完成了操作'),
       detail: running.length ? conciseTool(current)
         : (errors.length ? errors.length + ' 项异常' : cancelled.length && cancelled.length < items.length ? '部分操作未执行' : ''),
     };
@@ -272,16 +278,12 @@
     if (!items.length) return '';
     const summary = batchSummary(items);
     const id = String(key || (items[0] && items[0].id) || 'batch');
-    if (summary.commandsOnly) {
-      return '<div class="ntool-batch ' + summary.state +
-        '" data-tool-node="batch:commands:' + esc(id) + '">' +
-        '<div class="ntool-batch-head ntool-summary">' + icon(items[0]) +
-          '<span class="ntool-batch-title">' + esc(summary.title) + '</span>' +
-          (summary.total > 1 ? '<span class="ntool-batch-count">' + summary.total + ' 项</span>' : '') +
-          (summary.errors ? '<span class="ntool-batch-detail">' + summary.errors + ' 项异常</span>' :
-            summary.detail && summary.state !== 'running' ? '<span class="ntool-batch-detail">' + esc(summary.detail) + '</span>' : '') +
-        '</div></div>';
+    let detail = summary.detail;
+    if (summary.commandsOnly || summary.errors) {
+      /* 失败统一在后面标识，与纯命令组一致。 */
+      detail = summary.errors ? '失败了 ' + summary.errors + ' 次' : '';
     }
+    const detailHtml = detail ? '<span class="ntool-batch-detail">' + esc(detail) + '</span>' : '';
     const rows = typeof itemHtml === 'function' ? items.map(itemHtml).join('') : '';
     return '<div class="ntool-batch ' + summary.state + (open ? ' open' : '') +
       '" data-tool-node="batch:' + esc(id) + '">' +
@@ -289,8 +291,8 @@
         '" aria-expanded="' + (open ? 'true' : 'false') + '">' +
         icon(items[0]) +
         "<span class=\"ntool-batch-copy\"><b class=\"ntool-batch-title\">" + esc(summary.title) + '</b>' +
-          (summary.detail ? '<span class="ntool-batch-detail">' + esc(summary.detail) + '</span>' : '') + '</span>' +
-        (summary.total > 1 ? '<span class="ntool-batch-count">' + summary.total + ' 项</span>' : '') +
+          detailHtml + '</span>' +
+        (summary.total > 0 ? '<span class="ntool-batch-count">' + summary.total + ' 个项目</span>' : '') +
         '<svg class="ntool-batch-caret" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>' +
       '</button><div class="ntool-batch-body">' + rows + '</div></div>';
   }
@@ -392,9 +394,16 @@
       sub: baseName(pick(t.args, ['path', 'filePath', 'file_path'])), summaryOnly: true, body: '', tip: '',
     };
     if (unexecuted(t)) {
-      if (isCommandTool(t)) return {
-        title: cancellationTitle(t), sub: '', commandOnly: true, summaryOnly: true, body: '', tip: '',
-      };
+      if (isCommandTool(t)) {
+        /* 拦截的命令同样露出执行内容，点开看它是什么，不再空白。 */
+        const held = String(t.args?.command || t.args?.cmd || t.args?.chars || '').replace(/\s+/g, ' ').trim();
+        return {
+          title: cancellationTitle(t),
+          sub: held ? (held.length > 40 ? held.slice(0, 40) + '…' : held) : '',
+          commandOnly: true, summaryOnly: true, tip: '',
+          get body() { return held ? '<div data-user-content>' + esc(held) + '</div>' : ''; },
+        };
+      }
       return {
         title: cancellationTitle(t), sub: conciseTool(t), tip: t.name || '',
         body: '<pre>' + esc(t.cancelReason === 'output-limit'
@@ -408,9 +417,15 @@
       const done = t.state !== 'running';
       const mcp = mcpView(t, '', done);
       if (mcp) return { ...mcp, summaryOnly: true, body: '', tip: '' };
+      /* 每条命令带上执行内容，过长截断，避免摘要只写“执行”看不出在干什么。 */
+      const raw = String(t.args?.command || t.args?.cmd || t.args?.chars || '').replace(/\s+/g, ' ').trim();
+      const stdin = t.name === 'write_stdin';
       return {
-        title: done ? (t.isError || /^(?:error|failed|cancelled)$/i.test(t.state) ? '命令执行异常' : '运行了命令') : '正在运行命令',
-        sub: '', commandOnly: true, summaryOnly: true, body: '', tip: '',
+        title: !done ? (stdin ? '输入' : '执行中')
+          : (t.isError || /^(?:error|failed|cancelled)$/i.test(t.state) ? (stdin ? '输入失败' : '执行失败') : (stdin ? '输入了' : '执行了')),
+        sub: raw ? (raw.length > 40 ? raw.slice(0, 40) + '…' : raw) : '',
+        commandOnly: true, summaryOnly: true, recordAvailable: finishedCommand(t), tip: '',
+        get body() { const cmd = String(t.args?.command || t.args?.cmd || t.args?.chars || ''); return (cmd ? '<div data-user-content>' + esc(cmd) + '</div>' : '') + uiOutput(t.result, done ? '（没有输出）' : '（还没有输出）'); },
       };
     }
     if (t.name === 'generate_image') return {
@@ -571,11 +586,17 @@
     return execute ? execute.progressIndex : (rows[0] ? rows[0].progressIndex : null);
   }
   function appendTimeline(parts, input, previous, anchor, narrated, itemHtml, openGroups,
-      progressRows, progressState) {
+      progressRows, progressState, onTick) {
     if (!input.length) return;
+    /* Queued calls project as phase 'preparing' before they actually start. */
+    let rendered = input.filter(tool => !tool || String(tool.phase || '') !== 'preparing');
+    if (!rendered.length) { previous.push(...input); return; }
+    /* Commands of one message run together or in order depending on the runtime; both
+       render every row with its own live state. */
+    const isCommand = tool => isCommandTool(tool) && render(tool)?.commandOnly;
     const staged = narrated && Array.isArray(progressRows) && progressRows.length && progressState;
     if (!staged) {
-      const rows = narrated ? timeline(input, previous) : [{ tools: input, key: anchor }];
+      const rows = narrated ? timeline(rendered, previous) : [{ tools: rendered, key: anchor }];
       rows.forEach((row) => {
         if (row.note) {
           parts.push('<div class="nprocess" data-chat-node="process:' + esc(anchor + ':' + row.key) + '">' +
@@ -583,9 +604,12 @@
         }
         if (row.tools && row.tools.length) {
           const groupKey = anchor + ':' + row.key;
-          const content = row.tools.length >= 2
-            ? batchHtml(row.tools, groupKey, openGroups.has(groupKey), itemHtml)
-            : row.tools.map(itemHtml).join('');
+          const shown = row.tools;
+          /* Commands always fold into the group summary row;展开才看见每条命令的小单元。 */
+          const fold = shown.length >= 2 || (shown.length === 1 && isCommand(shown[0]));
+          const content = fold
+            ? batchHtml(shown, groupKey, openGroups.has(groupKey), itemHtml)
+            : shown.map(itemHtml).join('');
           parts.push('<div class="nmsg ai" data-chat-node="tools:' + esc(anchor + ':' + row.key) + '">' +
             content + '</div>');
         }
@@ -601,14 +625,16 @@
       sequence += 1;
       const groupKey = anchor + ':goal:' + String(boundary == null ? 'legacy' : boundary) +
         ':' + String(bucket[0].id || sequence);
-      const content = bucket.length >= 2
-        ? batchHtml(bucket, groupKey, openGroups.has(groupKey), itemHtml)
-        : bucket.map(itemHtml).join('');
+      const shown = bucket;
+      /* Commands always fold into the group summary row; other runs fold from two up. */
+      const content = (shown.length >= 2 || (shown.length === 1 && isCommand(shown[0])))
+        ? batchHtml(shown, groupKey, openGroups.has(groupKey), itemHtml)
+        : shown.map(itemHtml).join('');
       parts.push('<div class="nmsg ai" data-chat-node="tools:' + esc(groupKey) + '">' +
         content + '</div>');
       bucket = [];
     };
-    input.forEach((tool) => {
+    rendered.forEach((tool) => {
       const nextBoundary = toolProgressBoundary(tool, progressRows);
       if (bucket.length && nextBoundary !== boundary) flush();
       appendGoalProgress(parts, progressRows, progressState, nextBoundary);
