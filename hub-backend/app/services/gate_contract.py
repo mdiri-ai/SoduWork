@@ -17,6 +17,7 @@ from ..schemas import attachment_to_api
 from . import task_execution_contract
 
 SCHEMA_VERSION = "soduwork.gate/1.1"
+EVIDENCE_KINDS = frozenset({"file", "url", "commit", "text", "check", "image"})
 
 _TITLES = {
     "baseline": "确认需求基线",

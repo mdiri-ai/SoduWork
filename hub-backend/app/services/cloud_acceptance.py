@@ -74,7 +74,7 @@ async def inputs(session, row, *, instruction):
         files.append((name, data, attachment.content_type))
         index.append({"id": aid, "attachedAs": name})
     material = {k: packet.get(k) for k in ("approvalId", "artifactVersionId", "requirementVersion",
-                "criteria", "artifact", "evidence")}
+                "criteria", "artifact", "evidence", "evidenceRefOptions")}
     material.update(taskId=binding["taskId"], title=packet["task"].get("title"),
                     note=packet["task"].get("note"), attachments=index,
                     requirementTimeline=packet["requirementTimeline"])
@@ -88,6 +88,8 @@ async def inputs(session, row, *, instruction):
               "保留固定验收标准及 criterion 编号；如新说明解释或覆盖旧标准的业务要求，"
               "逐项报告须引用说明来源和时间，并核验实际成果，不得修改固定证据或放宽权限、审批规则。\n"
               "逐项实际读取核验，不能仅按文件存在判定通过；无法证实或任一不满足必须 reject。\n"
+              "每项可选 evidenceRefs 数组可引用材料 evidenceRefOptions 中完整的 kind、ref、fingerprint，并可加 note；"
+              "不要猜测编号或指纹。引用用于定位固定版本，不能替代实际核验，evidence 文本仍必填。\n"
               "不得直接调用审批或任务修改接口。完成后由系统重新核对权限和版本并提交验收。\n"
               "将 UTF-8 JSON 报告写入工作目录文件 " + report_name(row) + "，并作为本轮输出保留。\n"
               "格式：" + json.dumps(example, ensure_ascii=False) + "\n固定版本材料：\n" +

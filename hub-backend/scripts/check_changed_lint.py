@@ -1,6 +1,7 @@
 """Report new Ruff findings in Hub application files relative to a Git revision."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -11,6 +12,23 @@ from pathlib import Path
 
 def git(*args):
     return subprocess.check_output(["git", *args])
+
+
+def comparison_base(base):
+    # A queued PR's merge ref can advance after the event's base SHA was
+    # recorded. The depth-two checkout contains the actual merge parents,
+    # while that old event commit may be absent or include unrelated changes.
+    if (os.environ.get("GITHUB_EVENT_NAME") == "pull_request"
+            and re.fullmatch(r"refs/pull/\d+/merge", os.environ.get("GITHUB_REF", ""))
+            and base == os.environ.get("BASE_SHA")
+            and re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", base)):
+        parents = git("show", "-s", "--format=%P", "HEAD").decode().split()
+        if len(parents) == 2:
+            actual = git("rev-parse", "--verify", parents[0] + "^{commit}").decode().strip()
+            if actual != base:
+                print(f"PR merge baseline: {actual} (event baseline: {base})")
+            return actual
+    return base
 
 
 def changed_files(base):
@@ -70,6 +88,7 @@ def new_findings(path, before, after):
 
 
 def main(base):
+    base = comparison_base(base)
     failed = False
     for old_path, new_path in changed_files(base):
         before = git("show", f"{base}:./{old_path}") if old_path else b""

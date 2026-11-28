@@ -83,6 +83,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_requirement_projection.py",
     "test_native_execution_choice.py",
     "test_acceptance_summary.py",
+    "test_acceptance_evidence_refs.py",
     # The four other maintenance suites have their own release entries below.
     # Run every case under its module deadline rather than repeat all five in
     # one aggregate process that exceeds the same 300-second deadline.

@@ -415,6 +415,34 @@ test('request exposes structured authentication failures without retrying foreve
  } finally { global.fetch = oldFetch; }
 });
 
+test('request preserves a structured validation message and code without treating it as a retryable outage', async () => {
+ const previous = global.fetch;
+ const detail = {error_code:'invalid_acceptance_evidence_ref',message:'验收报告检查项格式不正确',
+  parameters:{path:['report','checks',0,'evidenceRefs',0],reason:'unbound_or_changed'}};
+ let calls=0;
+ global.fetch=async()=>{calls++;return Response.json({detail},{status:422});};
+ try {
+  await assert.rejects(request({hub:'http://127.0.0.1:9080'},'/tasks/t/auto-review',{report:{}}),error=>{
+   assert.equal(error.message,detail.message);
+   assert.equal(error.code,detail.error_code);
+   assert.equal(error.status,422);
+   assert.equal(error.retryable,false);
+   assert.equal(error.authRequired,false);
+   assert.equal(error.permissionRequired,false);
+   return true;
+  });
+  assert.equal(calls,1);
+ } finally {global.fetch=previous;}
+});
+
+test('request preserves a structured conflict message while keeping the general request code', async t => {
+ const detail = {message:'需求附件已变更，请重新预览',error_code:'unbound_or_changed'};
+ t.mock.method(global,'fetch',async()=>Response.json({detail},{status:409}));
+ await assert.rejects(request({hub:'http://fixture'},'/tasks/t/ai-preview',{inputManifest:[]}), {
+  message:detail.message, code:'REQUEST_FAILED', status:409, retryable:false,
+ });
+});
+
 test('model recovery refreshes only the receipt attempt, retaining original task text and attachments', async t => {
  const calls=[];
  t.mock.method(global,'fetch',async(url,options)=>{
