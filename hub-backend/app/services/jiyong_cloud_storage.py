@@ -199,6 +199,9 @@ def _object_key(space, asset):
 
 async def assets(connection, space, schema, method, params):
     settings = get_settings()
+    use_object_store = bool(settings.jiyong_object_endpoint and settings.jiyong_object_access_key
+                            and settings.jiyong_object_secret_key and settings.jiyong_object_bucket)
+    root = Path(settings.jiyong_asset_dir) / space
     if method == 'data.assetPut':
         data = params['data']
         row_id = asset_id(params['name'], params['type'], data)
@@ -207,10 +210,13 @@ async def assets(connection, space, schema, method, params):
             size = await connection.scalar(text(f'SELECT COALESCE(sum(size),0) FROM "{schema}".assets'))
             if size + len(data) > get_settings().jiyong_max_asset_bytes_per_space:
                 raise database.CloudError('云端素材空间已达上限', 'JIYONG_QUOTA', 409)
-        def put():
-            _object_store().put_object(settings.jiyong_object_bucket, _object_key(space, row_id),
-                                       BytesIO(data), length=len(data), content_type=params['type'])
-        await asyncio.to_thread(put)
+        if use_object_store:
+            def put():
+                _object_store().put_object(settings.jiyong_object_bucket, _object_key(space, row_id),
+                                           BytesIO(data), length=len(data), content_type=params['type'])
+            await asyncio.to_thread(put)
+        else:
+            await asyncio.to_thread(write_asset, root / row_id, data)
         metadata = {'id': row_id, 'name': params['name'], 'type': params['type'], 'size': len(data)}
         await connection.execute(text(f'INSERT INTO "{schema}".assets VALUES (:id,:name,:type,:size) ON CONFLICT(id) DO NOTHING'), metadata)
         return {'ok': True, 'asset': metadata}
@@ -220,11 +226,15 @@ async def assets(connection, space, schema, method, params):
     try:
         if metadata['size'] > 8 * 1024 * 1024:
             raise OSError('invalid size')
-        def get():
-            response = _object_store().get_object(settings.jiyong_object_bucket, _object_key(space, params['id']))
-            try: return response.read()
-            finally: response.close(); response.release_conn()
-        data = await asyncio.to_thread(get)
+        if use_object_store:
+            def get():
+                response = _object_store().get_object(settings.jiyong_object_bucket, _object_key(space, params['id']))
+                try: return response.read()
+                finally: response.close(); response.release_conn()
+            data = await asyncio.to_thread(get)
+        else:
+            file = root / params['id']
+            data = await asyncio.to_thread(file.read_bytes)
         if len(data) != metadata['size']:
             raise OSError('invalid size')
         if asset_id(metadata['name'], metadata['type'], data) != metadata['id']:
