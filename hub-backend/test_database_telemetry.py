@@ -258,5 +258,140 @@ class DatabaseTelemetryTests(unittest.IsolatedAsyncioTestCase):
         await engine.dispose()
 
 
+class ErrorRequestIdTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        import httpx
+        from fastapi import APIRouter, HTTPException, Request
+        from starlette.responses import StreamingResponse
+        from app.main import app, AuthCacheUnavailable, TaskOwnershipChanged
+
+        self.observed = {}
+        router = APIRouter(prefix="/_request_id_fixture")
+
+        @router.get("/unhandled/{case}")
+        async def unhandled(case: str, request: Request):
+            self.observed[case] = request.state.request_id
+            await asyncio.sleep(0)  # Let concurrent requests overlap before failing.
+            raise RuntimeError("synthetic-private-exception-detail")
+
+        @router.get("/handled/{status}")
+        async def handled(status: int):
+            raise HTTPException(status, detail="synthetic handled error")
+
+        @router.get("/validation")
+        async def validation(value: int):
+            return {"value": value}
+
+        @router.get("/ownership")
+        async def ownership():
+            raise TaskOwnershipChanged("synthetic ownership change")
+
+        @router.get("/cache")
+        async def cache():
+            raise AuthCacheUnavailable("synthetic cache unavailable")
+
+        @router.get("/stream")
+        async def stream():
+            async def chunks():
+                yield b"synthetic first chunk\n"
+                raise RuntimeError("synthetic failure after headers")
+            return StreamingResponse(chunks(), media_type="text/plain")
+
+        # Exercise the production middleware stack without retaining fixture routes.
+        routes = patch.object(app.router, "routes", list(app.router.routes))
+        routes.start()
+        self.addCleanup(routes.stop)
+        app.include_router(router)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://fixture")
+        self.addAsyncCleanup(self.client.aclose)
+
+    def assert_error_id(self, response, expected):
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.headers.get("x-request-id"), expected)
+        self.assertEqual(response.json(), {"detail": "服务器内部错误", "requestId": expected})
+        self.assertRegex(expected, r"^[A-Za-z0-9._:-]{8,64}$")
+
+    async def test_unhandled_errors_correlate_response_state_log_and_telemetry(self):
+        from app.services import runtime_telemetry
+        for index, offered in enumerate((None, "fixture-error:638", "bad id!", "short", "a" * 65)):
+            with self.subTest(offered=offered):
+                case = str(index)
+                path = "/_request_id_fixture/unhandled/" + case
+                headers = {} if offered is None else {"X-Request-ID": offered}
+                with self.assertLogs("uvicorn.error", level="ERROR") as logs:
+                    response = await self.client.get(path, headers=headers)
+                request_id = self.observed[case]
+                self.assert_error_id(response, request_id)
+                self.assertTrue(any(record.args[:3] == (request_id, "GET", path)
+                                    for record in logs.records))
+                self.assertEqual(runtime_telemetry._recent_errors[0]["requestId"], request_id)
+                if offered == "fixture-error:638":
+                    self.assertEqual(request_id, offered)
+                else:
+                    self.assertRegex(request_id, r"^[0-9a-f]{32}$")
+                    self.assertNotEqual(request_id, offered)
+
+    async def test_concurrent_errors_keep_their_own_request_ids(self):
+        offered = ["fixture-concurrent-" + str(i) if i % 2 else None for i in range(6)]
+        paths = ["/_request_id_fixture/unhandled/concurrent-" + str(i) for i in range(6)]
+        with self.assertLogs("uvicorn.error", level="ERROR") as logs:
+            responses = await asyncio.gather(*(self.client.get(
+                path, headers={"X-Request-ID": request_id} if request_id else {})
+                for path, request_id in zip(paths, offered)))
+        ids = []
+        for index, response in enumerate(responses):
+            request_id = self.observed["concurrent-" + str(index)]
+            self.assert_error_id(response, request_id)
+            self.assertTrue(any(record.args[:3] == (request_id, "GET", paths[index])
+                                for record in logs.records))
+            if offered[index]:
+                self.assertEqual(request_id, offered[index])
+            ids.append(request_id)
+        self.assertEqual(len(set(ids)), len(ids))
+
+    async def test_handler_without_request_id_generates_one_for_state_log_and_response(self):
+        from fastapi import Request
+        from app.main import global_exception_handler
+        for state in ({}, {"request_id": ""}):
+            with self.subTest(state=state.copy()):
+                request = Request({"type": "http", "method": "GET", "path": "/fixture",
+                                   "headers": [], "query_string": b"", "state": state})
+                with self.assertLogs("uvicorn.error", level="ERROR") as logs:
+                    response = await global_exception_handler(request, RuntimeError("synthetic-private"))
+                request_id = response.headers.get("x-request-id")
+                self.assertIsNotNone(request_id)
+                self.assertRegex(request_id, r"^[0-9a-f]{32}$")
+                self.assertEqual(request.state.request_id, request_id)
+                self.assertEqual(logs.records[0].args[0], request_id)
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(json.loads(response.body),
+                                 {"detail": "服务器内部错误", "requestId": request_id})
+
+    async def test_handled_errors_keep_existing_status_body_and_request_header(self):
+        cases = [("/_request_id_fixture/handled/" + str(status), status)
+                 for status in (400, 403, 404, 500)]
+        cases += [("/api/v1/admin/operations/overview", 401),
+                  ("/_request_id_fixture/validation?value=bad", 422),
+                  ("/_request_id_fixture/ownership", 409), ("/_request_id_fixture/cache", 503)]
+        for path, status in cases:
+            with self.subTest(path=path):
+                response = await self.client.get(path, headers={"X-Request-ID": "fixture-handled-638"})
+                self.assertEqual(response.status_code, status)
+                self.assertEqual(response.headers.get("x-request-id"), "fixture-handled-638")
+                self.assertEqual(set(response.json()), {"detail"})
+                if "/handled/" in path:
+                    self.assertEqual(response.json()["detail"], "synthetic handled error")
+
+    async def test_failure_after_stream_headers_keeps_started_response(self):
+        with self.assertLogs("uvicorn.error", level="ERROR"):
+            response = await self.client.get("/_request_id_fixture/stream",
+                                             headers={"X-Request-ID": "fixture-stream-638"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("x-request-id"), "fixture-stream-638")
+        self.assertEqual(response.text, "synthetic first chunk\n")
+
+
 if __name__ == "__main__":
     unittest.main()

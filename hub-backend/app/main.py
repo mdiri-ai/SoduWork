@@ -419,10 +419,14 @@ async def global_exception_handler(request: Request, exc: Exception):
     traces.
     """
     request.state.exception_type = type(exc).__name__
-    request_id = getattr(request.state, "request_id", "")
+    request_id = getattr(request.state, "request_id", "") or uuid.uuid4().hex
+    request.state.request_id = request_id
     log.error("未捕获异常 request_id=%s %s %s: %s", request_id,
               request.method, request.url.path, exc, exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "服务器内部错误"})
+    # ServerErrorMiddleware builds this response outside request_observability,
+    # so its normal response-header path cannot attach the correlation id.
+    return JSONResponse(status_code=500, headers={"X-Request-ID": request_id},
+                        content={"detail": "服务器内部错误", "requestId": request_id})
 
 
 for _r in (cloud_execution_sync.router, legal_documents.router, legal_documents.admin_router, account_profile.router, account_profile.admin_router, admin_mail.router, client_email_auth.router, account_conversations.router, conversation_projects.router, remote_screen.router, im_api.router, admin_cloud_runners.router, cloud_environments.router, cloud_conversations.router, conversation_handoffs.router, session_memory.router, memory_records.router, memory_records.admin_router, client_auth.router, clients.router, tasks.router, retired_endpoints.router, task_options.router, approvals.router, delivery.router, aidesk.router, config_api.router,
