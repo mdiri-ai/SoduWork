@@ -348,6 +348,24 @@ test('sending during a background automatic selection surfaces its failure inste
   }
 });
 
+test('a failed automatic replacement keeps the remaining models listed for manual choice', async () => {
+  for (const thrown of [false, true]) {
+    const selection = deferred(), f = fixture({ selectModel: () => selection.promise });
+    const opened = f.open(); await tick();
+    f.requests[0].resolve({ usable: [{ name: 'local:replacement', localOnly: true, label: 'Replacement' }] }); await tick();
+    // The directory is already painted while the automatic replacement waits.
+    assert.match(f.field.innerHTML, /Replacement/);
+    assert.equal(f.controls.modelCatalogState().status, 'ready');
+    if (thrown) selection.reject(Error('offline')); else selection.resolve({ ok: false, reason: 'offline' });
+    await opened; await tick();
+    // The failure must not blank the picker: the remaining models stay selectable.
+    assert.match(f.field.innerHTML, /Replacement/);
+    assert.doesNotMatch(f.field.innerHTML, /data-model-retry/);
+    assert.equal(f.controls.modelCatalogState().status, 'ready');
+    assert.equal(f.selections.length, 1);
+  }
+});
+
 test('a destroyed composer cannot release send admission after a delayed execution-option acknowledgement', async () => {
   for (const adapterId of ['qwen', 'codex']) {
     const runtime = deferred(), f = fixture({ runtimeWait: () => runtime.promise });
