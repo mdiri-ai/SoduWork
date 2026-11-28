@@ -444,12 +444,32 @@ function _eventKind(touched, state) {
   return 'state.changed';
 }
 
+async function probeRuntime(runtime, adapterId) {
+  const timeout = 15000;
+  const deadline = Date.now() + timeout;
+  const probe = remaining => runtime.rpc('runtime.detect', { key: adapterId }, remaining);
+  let reply = await probe(timeout);
+  if (adapterId !== 'ai-planning') return reply;
+  // The chooser can still own the single per-runtime probe slot when Send opens
+  // the session. Only retry an explicit rejection of this read-only probe.
+  for (const delay of [100, 250, 500, 1000]) {
+    if (reply?.ok !== false || reply.code !== 'RUNNER_RPC_BUSY' ||
+        reply.retryable !== true || reply.uncertain !== false) break;
+    await new Promise(resolve => setTimeout(resolve, delay));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    reply = await probe(remaining);
+  }
+  return reply;
+}
+
 async function createRunnerHandle(request, defaults, initialSession) {
   const opts = _legacyOptions(request);
   const runtime = defaults.runnerRuntime || runnerRuntime;
   const models = defaults.modelConfig || modelConfig;
   const runtimeSpec = defaults.runtimeSpec || runtimeCatalog.runtime(ADAPTER_ID);
   const adapterId = String(runtimeSpec && runtimeSpec.id || ADAPTER_ID);
+  const planning = adapterId === 'ai-planning';
   const displayName = String(runtimeSpec && runtimeSpec.displayName || 'Codex Harness');
   if (runtimeSpec.goalMode !== 'native' &&
       (request.consumer === 'goal' || opts.intent === 'goal' || opts.mode === 'goal')) {
@@ -491,8 +511,10 @@ async function createRunnerHandle(request, defaults, initialSession) {
   }
   const cwd = path.resolve(String(opts.cwd || process.cwd()));
   let accessControl = { schema: 'soduwork.access-policy/v1', supported: false, modes: [], canChangeDuringSession: false };
+  if (planning && !opts.accessPolicy && !resumeNative)
+    opts.accessPolicy = require('../access-control/policy').create(opts.readOnly ? 'readonly' : 'standard', cwd);
   if (opts.accessPolicy) {
-    const probe = await runtime.rpc('runtime.detect', { key: adapterId }, 15000);
+    const probe = await probeRuntime(runtime, adapterId);
     if (!probe?.ok) {
       throw new RuntimeContractError('RUNNER_PROBE_FAILED', '执行机探测失败，请检查执行机状态后重试');
     }
@@ -505,7 +527,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
   let prepared = accountModel
     ? { ok: true, model: { id: modelName, name: modelName || displayName, baseUrl: '', key: '' } }
     : await models.fetchModel(identity, modelName, undefined, undefined, false, adapterId,
-      { app, allowLocal: true, allowHistorical: Boolean(resumedRef || opts.resumedConversation) });
+      { app, allowLocal: !planning, allowHistorical: !planning && Boolean(resumedRef || opts.resumedConversation) });
   // A Runner archive can outlive the model catalog just like a native Pi archive.
   // Historical model names are hints, not a reason to make the whole conversation
   // unreadable. Retry only resumed conversations with the current default; new
@@ -519,8 +541,8 @@ async function createRunnerHandle(request, defaults, initialSession) {
     const fallback = accountModel
       ? { ok: true, model: { id: '', name: displayName, baseUrl: '', key: '' } }
       : await models.fetchModel(identity, '', undefined, undefined, false, adapterId,
-        { app, allowLocal: true, ignoreAgentPreference: true,
-          allowHistorical: Boolean(resumedRef || opts.resumedConversation) });
+        { app, allowLocal: !planning, ignoreAgentPreference: true,
+          allowHistorical: !planning && Boolean(resumedRef || opts.resumedConversation) });
     if (fallback?.ok && fallback.model) {
       modelName = '';
       prepared = fallback;
@@ -599,7 +621,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     generation: accountModel ? undefined : models.generation,
     async resolve(name) {
       if (!accountModel) return models.fetchModel(identity, name, undefined, undefined, false, adapterId,
-        { app, allowLocal: true });
+        { app, allowLocal: !planning });
       if (adapterId !== 'codex') return { ok: false };
       const catalog = await require('./native-model-catalog').list(adapterId);
       const row = (catalog.models || []).find(model => model.id === name);
@@ -681,7 +703,18 @@ async function createRunnerHandle(request, defaults, initialSession) {
     }
   }
 
+  let authorization = null;
+  function revokePlanning() { authorization?.revoke(); authorization = null; }
+  function runnerConfig(input, policy) {
+    if (planning && !authorization && !input) throw Error('Planning 本轮授权已释放，请核对本地交付记录后新建一轮');
+    if (planning && !authorization) authorization = require('./planning-host.cjs').issue({
+      app, identity, runId: runnerRef, cwd, model: state.model, currentIdentity: () => require('../conversation/requirement-context').cachedIdentity(app),
+      operation: state.unconfirmedAdmissionKey, input, policy, currentPolicy: () => state.nextAccessPolicy || state.accessPolicy,
+    });
+    return _runnerConfig(state.model, adapterId, state.capabilityIds, authorization?.config);
+  }
   function settle(result) {
+    revokePlanning();
     for (const waiter of waiters) waiter(result);
     waiters.clear();
     if (state.status === 'idle' && turnQueue.size()) queueMicrotask(drainTurns);
@@ -1077,7 +1110,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       if (data.authorizationRequired && !readOnly) {
         const authorization = await runtime.rpc('job.authorize', {
           ref: state.runnerRef,
-          cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), ...(state.accessPolicy ? { accessPolicy: state.accessPolicy } : {}) },
+          cfg: { ...runnerConfig(), ...(state.accessPolicy ? { accessPolicy: state.accessPolicy } : {}) },
         }, 15000);
         const authorized = authorization && authorization.data || {};
         if (!authorization || authorization.ok === false || authorized.ok === false) {
@@ -1355,7 +1388,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     runtime.rpc('job.dispatch', {
       cli: adapterId,
       dispatchId: state.dispatchId,
-      cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
+      cfg: { ...runnerConfig(note, turnPolicy), pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
         ...(adapterId === 'codex' ? { codex_reasoning_effort: dispatchedEffort } : {}),
         ...(turnPolicy ? { accessPolicy: turnPolicy } : {}) },
       task: { id: state.alias, title: state.title, note, status: 'doing',
@@ -1483,7 +1516,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
       promptText: [next.promptText || _conversationPrompt(text, { ...opts, intent: state.intent, accessPolicy: turnPolicy }),
         next.materialUnderstandingPrompt,
         ...(opts.contextPrompts || []), taskContext, _languageContract()].filter(Boolean).join('\n\n'),
-      cfg: { ..._runnerConfig(state.model, adapterId, state.capabilityIds), skillSelection: next[TURN_SKILLS] || _skillRows(state.selectedSkills),
+      cfg: { ...runnerConfig(text, turnPolicy), skillSelection: next[TURN_SKILLS] || _skillRows(state.selectedSkills),
         ...(adapterId === 'codex' ? { codex_reasoning_effort: state.agentExecution?.reasoningEffort || '' } : {}),
         pluginResourceBundles: next[pluginTurn.RESOURCE_BUNDLES] || [],
         ...(turnPolicy ? { accessPolicy: turnPolicy } : {}) },
@@ -2050,6 +2083,7 @@ async function createRunnerHandle(request, defaults, initialSession) {
     },
 
     cancel() {
+      revokePlanning();
       pausedPreparation = null;
       observationCancellation++;
       state.queueImmediate.cancel();
@@ -2281,7 +2315,7 @@ function createRunnerRuntimeAdapter(options) {
     capabilities: runnerCapabilities(runtimeSpec),
     async detect() {
       try {
-        const reply = await runtime.rpc('runtime.detect', { key: adapterId }, 15000);
+        const reply = await probeRuntime(runtime, adapterId);
         const item = reply && reply.data || {};
         return item.installed && !['unauthed', 'nollm', 'missing'].includes(item.state)
           ? { ok: true, version: item.version || '', path: item.bin || '', state: item.state || 'ready',

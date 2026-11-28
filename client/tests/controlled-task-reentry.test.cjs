@@ -36,7 +36,7 @@ for (const { id } of catalog.runtimes()) test(id + ': delegated turn survives vi
       const adapter = createRunnerRuntimeAdapter({ runtimeSpec: catalog.runtime(id),
         app: { getPath: () => root },
         modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'fixture' } }) },
-        runnerRuntime: { async rpc() { return { ok: true, data: {} }; } } });
+        runnerRuntime: { async rpc(op) { return { ok: true, data: op === 'runtime.detect' ? { accessControl: catalog.runtime(id).accessControl } : {} }; } } });
       nativeSession = await adapter.createSession({ native: { runner: { openOptions: { cwd: root } } } });
       handle = getRunnerSessionDetails(nativeSession).handle;
     }

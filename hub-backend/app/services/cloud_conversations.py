@@ -17,12 +17,12 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..config import get_settings
 from ..conversation_handoff_models import ConversationHandoff as Handoff
 from ..models import Attachment, Task
-from . import conversation_handoffs as handoffs, storage
-from . import cloud_code_delivery
+from . import cloud_code_delivery, storage
+from . import conversation_handoffs as handoffs
 from .schedule_run_contracts import is_local_model_reference
 
 MAX_FILES = 20

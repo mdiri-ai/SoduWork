@@ -7,5 +7,5 @@ const base = require('../package.json').build;
 // electron-builder writes extraMetadata inside app.asar before code signing.
 module.exports = {
   ...base,
-  extraMetadata: { ...base.extraMetadata, soduworkDefaultHubUrl: buildDefaultHub() },
+  extraMetadata: { ...base.extraMetadata, ...require('../main/planning-index.cjs').buildMetadata(), soduworkDefaultHubUrl: buildDefaultHub() },
 };

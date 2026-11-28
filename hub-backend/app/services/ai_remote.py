@@ -8,7 +8,7 @@ import threading
 import uuid
 from collections import OrderedDict
 
-from ..agent_catalog import AGENTS
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from . import (
     agent_naming,
     artifact_bytes,

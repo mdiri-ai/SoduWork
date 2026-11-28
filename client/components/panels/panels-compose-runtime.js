@@ -65,21 +65,11 @@
   const escapeText = value => String(value || '').replace(/&/g, '&amp;')
     .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-  function brandClass(id) {
-    return global.AgentBrand
-      ? AgentBrand.className(id, 'runtime-brand')
-      : 'runtime-brand agent-brand-custom';
-  }
-
-  function brandGlyph(id) {
-    return global.AgentBrand ? AgentBrand.glyph(id) : runtimeIcon;
-  }
-
   function brandIcon(id, slotId) {
     return global.AgentBrand
       ? AgentBrand.html(id, { className: 'runtime-brand', id: slotId })
-      : "<span class='" + brandClass(String(id || '')) + "'" +
-        (slotId ? " id='" + slotId + "'" : '') + '>' + brandGlyph(id) + '</span>';
+      : "<span class='runtime-brand agent-brand-custom'" +
+        (slotId ? " id='" + slotId + "'" : '') + '>' + runtimeIcon + '</span>';
   }
 
   function normalize(items) {
@@ -220,9 +210,8 @@
       goalButton.title = goalButton.disabled ? _rtText('当前 Agent 暂不支持目标模式') : _rtText('设定持续目标');
     }
     if (name) { name.setAttribute('data-user-content', ''); name.textContent = selected.displayName; }
-    if (icon) {
-      icon.className = brandClass(selected.id);
-      icon.innerHTML = brandGlyph(selected.id);
+    if (icon && (!global.AgentBrand || icon.dataset?.agentBrand !== AgentBrand.canonical(selected.id))) {
+      icon.outerHTML = brandIcon(selected.id, 'cpRuntimeIcon');
     }
     if (button) {
       button.title = (location === 'cloud' ? _rtText('云端 Harness：') : _rtText('执行底座：')) + selected.displayName + ' · ' + _rtText(selected.summary);

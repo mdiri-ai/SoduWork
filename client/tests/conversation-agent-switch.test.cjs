@@ -82,6 +82,7 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
     if (op === 'job.dispatch') {
       const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', input.dispatchId || 'chat:' + input.task.id + ':' + input.cli);
       runs.set(ref, { ref, cli: input.cli, taskId: input.task.id, workDir: input.ctx.workDir, state: 'done', title: input.task.title,
+        accessPolicy: input.ctx.accessPolicy,
         items: [{ seq: 1, kind: 'user', text: input.ctx.conversationUserText },
           { seq: 2, kind: 'say', text: 'Reply ' + input.cli }] });
       return { ok: true, data: { ref } };
@@ -89,7 +90,8 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
     if (op === 'job.comment') { const run = runs.get(input.ref); run.items.push({ seq: run.items.length+1, kind: 'say', text: 'Followup' }); return { ok: true, data: { ok: true } }; }
     if (op === 'job.session') { const run = runs.get(input.ref);
       if (!run && strictMissing) return { ok: true, data: { ok: false, error: 'Native session does not exist' } };
-      return { ok: true, data: { status: 'done', round: 1, items: (run?.items || []).filter(x => x.seq > (input.since || 0)) } }; }
+      return { ok: true, data: { status: 'done', round: 1, accessPolicy: run?.accessPolicy,
+        items: (run?.items || []).filter(x => x.seq > (input.since || 0)) } }; }
     if (op === 'job.has') { if (absence instanceof Error) throw absence; return { ok: true, data: { ...absence } }; }
     if (op === 'runtime.sessions') return { ok: true, data: { runs: [...runs.values()] } };
     if (op === 'runtime.session.forget') { runs.delete(input.ref); return { ok: true, data: { ok: true } }; }
@@ -99,7 +101,8 @@ function fixture(t, { nativeHistory = false, nativeOutputs = false } = {}) {
   function bridge() { return createPiSessionBridge({ app, sessionModule: engine, runnerAdapters: catalog.runnerRuntimes().map(spec => createRunnerRuntimeAdapter({
     app, runtimeSpec: spec, runnerRuntime: runtime,
     modelConfig: { fetchModel: async (_id, name) => name === 'denied' ? { ok: false, reason: 'unauthorized model' } :
-      { ok: true, model: { id: name || 'model-a', name: name || 'model-a', key: 'fixture-secret', baseUrl: 'http://fixture.invalid' } } },
+      { ok: true, model: { id: name || 'model-a', name: name || 'model-a', key: 'fixture-secret',
+        baseUrl: spec.id === 'ai-planning' ? identity('alice').hub : 'http://fixture.invalid' } } },
   })) }); }
   let current = bridge();
   t.after(async () => { await current.dispose(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 3 }); });
@@ -333,6 +336,27 @@ const options = f => ({ app: f.app, ref: 'chat-switch', cwd: f.root, identity: i
   resolvePlugins: async ids => ({ items: ids.map(pluginId => ({ pluginId, name: 'Meeting', context: 'Fixture plugin context' })) }) });
 async function send(handle, text) { const sent = handle.submit(text, [], {}); assert.equal(sent.accepted, true); const done = await sent.completion; assert.equal(done.ok, true, JSON.stringify(done)); }
 
+test('Planning uses its own tool boundary after a Pi switch and restores Pi resolvers when switching back', async t => {
+  const f = fixture(t), original = options(f);
+  t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => original.identity);
+  let connectorCalls = 0, pluginCalls = 0;
+  const resolveConnectors = async () => { connectorCalls++; return { servers: [] }; };
+  const resolvePlugins = async ids => { pluginCalls++; return original.resolvePlugins(ids); };
+  const { session } = await f.bridge.open({ ...original, activePluginIds: [], resolveConnectors, resolvePlugins });
+  assert.equal((await session.selectAgent('ai-planning')).ok, true);
+  const selected = session.submit('Run an explicit plugin', [], { pluginIds: ['meeting'] });
+  const rejected = await selected.completion;
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.reason, /Planning.*插件/);
+  assert.equal(f.requests.some(row => row.op === 'job.dispatch'), false);
+  await send(session, 'An ordinary Planning turn');
+  assert.deepEqual([connectorCalls, pluginCalls], [0, 0]);
+  assert.equal((await session.selectAgent('pi')).ok, true);
+  const pi = f.openings.at(-1);
+  assert.equal(pi.resolveConnectors, resolveConnectors);
+  assert.equal(pi.resolvePlugins, resolvePlugins);
+});
+
 test('switching Runner preserves an indexed image without expanding the new delivery', async t => {
   const f = fixture(t), runtime = require('../main/conversation/artifact-runtime');
   const handle = (await f.bridge.open({ ...options(f), adapterId: 'dsh' })).session;
@@ -454,7 +478,8 @@ async function waitIdle(handle) {
 
 for (const spec of catalog.runnerRuntimes()) test(spec.id + ': controlled receipts survive restart without claiming native admission', async t => {
   const f = fixture(t); f.strictMissing = true;
-  const handle = (await f.bridge.open(options(f))).session;
+  if (spec.id === 'ai-planning') t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => options(f).identity);
+  const handle = (await f.bridge.open({ ...options(f), activePluginIds: [] })).session;
   await send(handle, 'Requirement draft');
   assert.equal((await handle.selectAgent(spec.id)).ok, true);
   const id = handle.sessionId;

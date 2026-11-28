@@ -16,8 +16,8 @@ from app.services.model_defaults import public_defaults
 from test_model_runtime import IsolatedDatabase
 
 
-# All shipped managed runtimes, including Kimi, must satisfy the same gateway contract.
-AGENTS = {"pi", "opencode", "qwen", "codex-harness", "dsh", "kimi"}
+# All shipped managed runtimes must satisfy the same gateway contract.
+AGENTS = {"pi", "ai-planning", "opencode", "qwen", "codex-harness", "dsh", "kimi"}
 
 
 class MetadataTests(unittest.TestCase):
@@ -114,6 +114,7 @@ class ModelDefaultsTests(IsolatedDatabase):
         metadata = await self.get("my-models")
         self.assertEqual(metadata["defaultModel"], metadata["usable"][0]["name"])
         self.assertEqual(metadata["defaultModels"]["pi"], "second")
+        self.assertEqual(metadata["defaultModels"]["ai-planning"], "first")
         self.assertEqual(metadata["defaultModels"]["qwen"], "third")
         self.assertEqual(metadata["defaultModels"]["kimi"], "third")
         self.assertEqual(metadata["defaultModelErrors"], {})

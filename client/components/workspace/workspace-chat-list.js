@@ -2,6 +2,7 @@
 (function (global) {
   'use strict';
   const FALLBACK_HARNESS_NAMES = {
+    'ai-planning':'Planning Harness',
     pi:'Pi', codex:'Codex', 'codex-harness':'Codex Harness', opencode:'OpenCode',
     claude:'Claude Code', kimi:'Kimi Code', qwen:'Qwen Code', dsh:'DeepSeek Harness', harness2:'Google Harness²',
   };

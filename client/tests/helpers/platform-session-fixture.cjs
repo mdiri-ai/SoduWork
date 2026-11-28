@@ -55,4 +55,10 @@ function identity(uid = 'one') {
   if (!session) throw Error('Unknown isolated user');
   return { hub: 'https://fixture.invalid', clientId: 'device', session };
 }
-module.exports = { sessions, identity, backendSessions, backendAvailable };
+function planningIdentity(t, spec, hub) {
+  if (spec.id !== 'ai-planning') return {};
+  const owner = { ...identity(), hub };
+  t.mock.method(require('../../main/conversation/requirement-context'), 'cachedIdentity', () => owner);
+  return owner;
+}
+module.exports = { sessions, identity, planningIdentity, backendSessions, backendAvailable };

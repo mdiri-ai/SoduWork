@@ -31,6 +31,7 @@ function create({ app, read, save, guard, identity, request, view, notify, busy 
         throw Error('请等待本轮和排队消息完成后切换');
       const current = await identity(record), previous = active(record);
       const next = { ...previous, ...input };
+      if (next.agentId === 'ai-planning') throw Error('Planning 仅支持在本机运行');
       if (!catalog.runtime(next.agentId)) throw Error('未知 Agent');
       if (next.agentId !== previous.agentId) {
         const list = await executionRuntimes(handle);

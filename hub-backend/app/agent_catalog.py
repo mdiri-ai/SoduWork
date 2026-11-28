@@ -44,6 +44,10 @@ def validate_catalog(data: dict) -> dict[str, dict]:
             raise ValueError(f'{key}: unsupported conversation transport')
         if row['transport'] == 'direct' and key != 'pi':
             raise ValueError(f'{key}: direct transport requires an implemented desktop adapter')
+        if 'executionLocations' in row and row['executionLocations'] != ['desktop']:
+            raise ValueError(f'{key}: unsupported execution locations')
+        if key == 'ai-planning' and row.get('executionLocations') != ['desktop']:
+            raise ValueError('Planning requires the desktop broker')
         if row.get('goalMode') not in {'native', 'none'}:
             raise ValueError(f'{key}: unsupported goal mode')
         if row.get('modelMode') not in {'account', 'managed'}:
@@ -80,8 +84,10 @@ def validate_catalog(data: dict) -> dict[str, dict]:
             ):
                 raise ValueError(f'{key}: modelEnv may only map environment names to base/key/model')
         install = row.get('install')
-        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual'}:
+        if not isinstance(install, dict) or install.get('installer') not in {'npm', 'managed', 'manual', 'python'}:
             raise ValueError(f'{key}: unsupported installer')
+        if (install['installer'] == 'python') != (key == 'ai-planning'):
+            raise ValueError(f'{key}: unsupported managed Python runtime')
         if install['installer'] == 'managed' and key != 'opencode':
             raise ValueError(f'{key}: no reviewed managed installer is registered')
         if install['installer'] == 'npm' and not re.fullmatch(r'(?:@[a-z0-9._-]+/)?[a-z0-9._-]+', str(install.get('pkg') or '')):
@@ -94,6 +100,13 @@ def validate_catalog(data: dict) -> dict[str, dict]:
 
 
 AGENTS = load_catalog()
+
+
+def desktop_only(key: str) -> bool:
+    return isinstance(key, str) and AGENTS.get(key, {}).get('executionLocations') == ['desktop']
+
+
+HUB_AGENTS = {key: row for key, row in AGENTS.items() if not desktop_only(key)}
 
 
 def install_specs() -> dict[str, dict]:

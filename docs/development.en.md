@@ -87,6 +87,18 @@ An independently started source client defaults to `http://127.0.0.1:18989` when
 
 Run `npm test` and `npm run check:layout` in `client/`. Electron end-to-end checks live in `e2e/`; inspect each script's environment requirements. `dist/`, `.runtime/`, and generated `runner/` files are build outputs. Do not commit them or substitute old release binaries for current source.
 
+### Optional local Planning Harness
+
+Open **Agent management → Planning Harness → Install** on the current desktop. The private Runner uses SoduWork's CPython 3.12 to install the `soduwork-planning-harness` wheel and its hash-locked dependencies in a user-owned environment. The management drawer shows the installed version and supports checking for updates, updating and uninstalling. After installation, select **Planning Harness** in the local conversation’s Agent picker. A fresh draft uses Pi unless the selected directory already has a saved runtime preference. Planning uses ACP over stdio, the model selected for the conversation and the desktop permission broker for workspace writes.
+
+For a managed distribution, set `SODUWORK_PLANNING_INDEX_URL` to the company's HTTPS Nexus PyPI hosted simple index when building the client. Optionally set `SODUWORK_PLANNING_PUBLIC_INDEX_URL` to a mirror for public dependencies (default: PyPI). Only index locations enter the application metadata. A source launch reads these variables from its environment. The user needs read access to both package sources at installation or update time. The Planning team publishes versions independently to Nexus.
+
+To verify the complete flow, prepare a source desktop instance with the project launcher (`--prepare-only --desktop --data-dir`), set the package index variables in the test shell and run the following command from the repository root. Use an interactive desktop or Xvfb on Linux. In one isolated profile, the test installs Planning through Agent management, selects it in the composer, sends the first message, checks the ACP reply, updates the package and uninstalls it. It uses the production composer and Runner. The account, Hub inventory, model response and reply display are test fixtures. The output directory must be new.
+
+```sh
+node client/e2e/planning-online.cjs "<prepared-instance>" "<new-evidence-directory>"
+```
+
 ## Skills and plugins
 
 Bundled skills live at `skills/<name>/SKILL.md`; see the [skill catalog](../skills/README.md) for project-owned guides and reviewed upstream development skills. Generic plugins and workflows live in `hub-backend/plugins/*.json`. Follow the [plugin protocol](plugin-authoring.en.md) for immutable versions, minimal permissions, and import review. Adding a bundled skill also requires explicitly updating the release scope in `tools/distribution/PUBLIC-SOURCE.json` and retaining its original license and provenance.

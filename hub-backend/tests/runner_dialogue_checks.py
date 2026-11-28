@@ -4,9 +4,9 @@ import json
 from pathlib import Path
 
 
-async def exercise(machine, agent, workspace, until, refs):
+async def exercise(job, agent, workspace, until, refs):
     from app.services import local_base
-    started = await machine._job({"op": "job.dispatch", "cli": agent, "dispatchId": "dialogue-" + agent,
+    started = await job({"op": "job.dispatch", "cli": agent, "dispatchId": "dialogue-" + agent,
         "task": {"id": "dialogue-" + agent, "title": "DIALOGUE_QUESTION", "note": "DIALOGUE_QUESTION"},
         "ctx": {"workDir": str(workspace), "workRoot": str(workspace), "conversationMode": "adaptive",
                 "conversationUserText": "DIALOGUE_QUESTION"}, "cfg": {}})
@@ -16,7 +16,7 @@ async def exercise(machine, agent, workspace, until, refs):
 
     async def settled(expected_round):
         async def read():
-            response = await machine._job({"op": "job.session", "ref": ref, "limit": 1000})
+            response = await job({"op": "job.session", "ref": ref, "limit": 1000})
             data = response["data"]
             return data if data.get("status") in {"done", "failed"} and data.get("round", 0) >= expected_round else None
         return await until(read)
@@ -30,7 +30,7 @@ async def exercise(machine, agent, workspace, until, refs):
     outcomes = []
     for marker in ("DIALOGUE_EMPTY", "DIALOGUE_SUCCESS", "DIALOGUE_EMPTY", "DIALOGUE_THINKING", "DIALOGUE_ERROR", "DIALOGUE_EXIT", "DIALOGUE_SUCCESS"):
         before = local_base._RUNS[ref]["round"]
-        reply = await machine._job({"op": "job.comment", "ref": ref, "text": marker,
+        reply = await job({"op": "job.comment", "ref": ref, "text": marker,
             "recordUser": True, "turnId": f"{agent}:{before}:{marker}", "cfg": {}})
         assert reply["ok"], reply
         data = await settled(before + 1)

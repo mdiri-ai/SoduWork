@@ -19,13 +19,15 @@ function harness(t, opts={}) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'soduwork-runner-plugin-'));
   const app={getPath:()=>root};
   const spec=opts.spec || catalog.runtime('opencode'), ref=String(opts.ref || 'chat-plugin-test');
+  const identity=require('./helpers/platform-session-fixture.cjs').planningIdentity(t,spec,'http://model.invalid');
   const id=_uuidV5(NS,'chat:'+ref+':'+spec.id);
   const calls=[], events=[];
-  let hold=null, released=false, count=0;
+  let hold=null, released=false, count=0, accessPolicy;
   const runtime={async rpc(op,payload){
     calls.push({op,payload});
     if(op==='job.dispatch'||op==='job.comment'){
       if(opts.failDispatch)return {ok:false,error:'test-ticket dispatch failed'};
+      if (payload.cfg?.accessPolicy) accessPolicy = payload.cfg.accessPolicy;
       const first=op==='job.dispatch';
       const echo = {kind:'user', text:first?payload.ctx.conversationUserText:payload.text,
         plugins:first?payload.ctx.conversationPlugins:payload.plugins};
@@ -38,7 +40,7 @@ function harness(t, opts={}) {
     if(op==='job.session'){
       if(opts.hold && !released) await new Promise(r=>{hold=r;});
       if(events.at(-1)?.kind==='user')events.push({seq:events.length+1,kind:'say',text:opts.reply||'completed '+count});
-      return {ok:true,data:{ok:true,status:'done',items:events.filter(e=>e.seq>payload.since)}};
+      return {ok:true,data:{ok:true,status:'done',accessPolicy,items:events.filter(e=>e.seq>payload.since)}};
     }
     if(op==='job.stop')return {ok:true,data:{ok:true}};
     if(op==='runtime.detect')return {ok:true,data:{accessControl:{schema:'soduwork.access-policy/v1',supported:true,modes:['standard','readonly','full']}}};
@@ -49,8 +51,8 @@ function harness(t, opts={}) {
   let sessions=[];
   t.after(async()=>{released=true;hold?.();for(const s of sessions)await s.dispose();fs.rmSync(root,{recursive:true,force:true});});
   async function open(extra={}){
-    const session=await adapter.createSession({identity:{},native:{runner:{openOptions:{
-      app,ref,cwd:root,identity:{},capabilityIds:[],...opts.open,...extra}}}});
+    const session=await adapter.createSession({identity,native:{runner:{openOptions:{
+      app,ref,cwd:root,identity,capabilityIds:[],...opts.open,...extra}}}});
     sessions.push(session);return session;
   }
   return {root,app,open,calls,events,id,

@@ -42,3 +42,20 @@ test('Windows PATH aliases and stale Python overrides cannot bypass a missing pr
   assert.equal(env.SODUWORK_MANAGED_PYTHON, undefined);
   assert.deepEqual(require('../main/conversation/office-engine').pythonCandidates(env, 'win32'), []);
 });
+
+test('Planning installs from signed package indexes and uses the product Office helper', () => {
+  const { buildMetadata, applyMetadata } = require('../main/planning-index.cjs');
+  const name = 'SODUWORK_PLANNING_INDEX_URL';
+  const registry = 'https://packages.example.test/repository/python/simple/';
+  const metadata = buildMetadata({ [name]: registry });
+  const env = environment({ [name.toLowerCase()]: 'https://untrusted.example.test/' },
+    { platform: 'linux', resourcesPath: '/product', exists: () => true });
+  applyMetadata(env, metadata.soduworkPlanningIndexes);
+  assert.equal(env[name], registry);
+  assert.equal(env[name.toLowerCase()], undefined);
+  assert.equal(env.SODUWORK_PLANNING_WORKBOOK, '/product/skills/office/scripts/planning_workbook.py');
+  assert.deepEqual(buildMetadata({}), {});
+  for (const invalid of ['http://packages.example.test', 'https://user@packages.example.test', registry + '?token=x']) {
+    assert.throws(() => buildMetadata({ [name]: invalid }));
+  }
+});

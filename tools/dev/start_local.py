@@ -433,6 +433,10 @@ def launch_desktop(state: Path, client: Path, env: dict, base: str, output) -> s
             json.dump({'workDir': str(work)}, stream)
     desktop_env = {key: value for key, value in env.items()
                    if key not in {'ADMIN_USER', 'ADMIN_PASS', 'AUTH_SECRET', 'DATABASE_URL'}}
+    # Source desktops receive the same package source locations as a managed build.
+    for key in ('SODUWORK_PLANNING_INDEX_URL', 'SODUWORK_PLANNING_PUBLIC_INDEX_URL'):
+        if os.environ.get(key):
+            desktop_env[key] = os.environ[key]
     # Explicit diagnostic output is desktop-only; do not broaden the Hub environment allowlist.
     if os.environ.get('SODUWORK_REQUIREMENT_DIAGNOSTICS_DIR'):
         desktop_env['SODUWORK_REQUIREMENT_DIAGNOSTICS_DIR'] = os.environ['SODUWORK_REQUIREMENT_DIAGNOSTICS_DIR']

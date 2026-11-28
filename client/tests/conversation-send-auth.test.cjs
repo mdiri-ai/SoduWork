@@ -118,7 +118,7 @@ async function fixture(t, spec, legacySendIdentity = false, cloudBoundary) {
   const enrollment = await auth.enroll(app, { hub: 'http://127.0.0.1:9' });
   assert.equal(enrollment.ok, true);
   const identityOf = (...args) => auth.authenticatedIdentity(...args);
-  const model = { id: 'fixture-model', key: 'fixture-only', baseUrl: 'http://model.invalid' };
+  const model = { id: 'fixture-model', key: 'fixture-only', baseUrl: spec.id === 'ai-planning' ? auth.identity(app).hub : 'http://model.invalid' };
   const turns = [], piHistory = new Map(), runnerHistory = new Map(), runnerInventory = new Map(), nativeHandles = new Map(), controls = [];
   let openedNumber = 0;
 
@@ -163,13 +163,13 @@ async function fixture(t, spec, legacySendIdentity = false, cloudBoundary) {
     },
   };
   const runtime = { async rpc(op, input) {
-    if (op === 'runtime.detect') return { ok: true, data: { installed: true, state: 'ready' } };
+    if (op === 'runtime.detect') return { ok: true, data: { installed: true, state: 'ready', accessControl: catalog.runtime(input.key).accessControl } };
     if (op === 'job.dispatch') {
       const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + input.task.id + ':' + input.cli);
       turns.push({ adapter: input.cli, text: input.ctx.conversationUserText });
       runnerHistory.set(ref, [{ seq: 1, kind: 'say', text: 'Fixture first reply' }]);
       runnerInventory.set(ref, { ref, cli: input.cli, taskId: input.task.id, workDir: root,
-        state: 'done', started: Date.now() / 1000 });
+        state: 'done', started: Date.now() / 1000, accessPolicy: input.ctx.accessPolicy });
       return { ok: true, data: { ref } };
     }
     if (op === 'job.comment') {
@@ -181,7 +181,7 @@ async function fixture(t, spec, legacySendIdentity = false, cloudBoundary) {
     }
     if (op === 'job.session') {
       const items = runnerHistory.get(input.ref) || [];
-      return { ok: true, data: { status: 'done', round: items.length, items } };
+      return { ok: true, data: { status: 'done', round: items.length, items, accessPolicy: runnerInventory.get(input.ref)?.accessPolicy } };
     }
     if (op === 'job.stop') return { ok: true, data: { ok: true } };
     if (op === 'runtime.sessions') return { ok: true, data: { runs: [...runnerInventory.values()] } };

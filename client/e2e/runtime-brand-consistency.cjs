@@ -89,7 +89,7 @@ if (typeof electron === 'string') {
       const popup = chat ? '.nchat-runtime-pop' : '#cpRuntimePop';
       const footer = chat ? '#nchatRuntimeMissing' : '#cpRuntimeMissing';
       await until(`document.querySelector(${JSON.stringify(trigger)})`);
-      await js(`window.brandRuntimes=['pi','codex-harness','qwen','private-agent'].map((id,index)=>({id,displayName:AgentBrand.LABELS[id]||'Private runtime',
+      await js(`window.brandRuntimes=['pi','ai-planning','codex-harness','qwen','private-agent'].map((id,index)=>({id,displayName:AgentBrand.LABELS[id]||'Private runtime',
         version:'1.0.0',order:index+1,group:index?'more':'recommended',modelMode:'managed',availability:{ok:true}}));
         window.brandMissing=['codex','opencode','kimi','dsh','private-agent'].map(id=>({id,displayName:AgentBrand.LABELS[id]||'Private runtime'}));
         window.brandReply=()=>({ok:true,runtimes:brandRuntimes,availableRuntimes:brandRuntimes,missing:brandMissing});
@@ -101,12 +101,24 @@ if (typeof electron === 'string') {
       for (const [width, zoom] of [[1400, 1], [chat ? 500 : 1000, 1.25]]) {
         win.setSize(width, 950); win.webContents.setZoomFactor(zoom); await sleep(120);
         await click(trigger);
-        await until(`document.querySelector(${JSON.stringify(popup)})?.checkVisibility() && document.querySelector(${JSON.stringify(popup)}).querySelectorAll('[data-runtime]').length===4`);
-        for (const id of ['pi', 'codex-harness', 'qwen', 'private-agent']) await inspect(surface + ':' + width, popup + ' [data-runtime="' + id + '"]', id);
+        await until(`document.querySelector(${JSON.stringify(popup)})?.checkVisibility() && document.querySelector(${JSON.stringify(popup)}).querySelectorAll('[data-runtime]').length===5`);
+        for (const id of ['pi', 'ai-planning', 'codex-harness', 'qwen', 'private-agent']) await inspect(surface + ':' + width, popup + ' [data-runtime="' + id + '"]', id);
         for (const id of ['codex', 'opencode', 'kimi', 'dsh', 'private-agent']) await inspect(surface + ':footer:' + width,
           footer + ' [data-runtime-missing="' + id + '"]', id);
         await screenshot(surface + '-' + width);
         await click(trigger);
+      }
+      if (!chat) {
+        for (const id of ['ai-planning', 'pi']) {
+          await click(trigger);
+          await click(popup + ' [data-runtime="' + id + '"]');
+          await until("document.querySelector('#cpRuntimeIcon img')?.naturalWidth > 0");
+          const identity = await js(`(() => {const icon = document.querySelector('#cpRuntimeIcon');
+            return [icon.dataset.agentBrand, icon.title, icon.getAttribute('aria-label'), icon.querySelector('img').getAttribute('src')];})()`);
+          const label = id === 'pi' ? 'Pi' : 'Planning Harness';
+          const artwork = id === 'pi' ? 'pi.svg' : 'planning.png';
+          assert.deepEqual(identity, [id, label, label, 'assets/agent-brands/' + artwork]);
+        }
       }
       assert.deepEqual(await js(chat ? 'errors' : 'fixtureErrors'), []);
       win.setSize(1400, 950); win.webContents.setZoomFactor(1);

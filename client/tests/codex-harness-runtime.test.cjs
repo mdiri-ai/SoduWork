@@ -766,15 +766,22 @@ test('Codex Harness restores its in-memory model grant after Runner restart', as
 });
 
 for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
-  test(runtimeSpec.displayName + ' dispatches with the correct credential mode', async () => {
+  test(runtimeSpec.displayName + ' dispatches with the correct credential mode', async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runtime-mode-'));
     const alias = 'mode-' + runtimeSpec.id;
     const expectedRef = _uuidV5(NAMESPACE, 'chat:' + alias + ':' + runtimeSpec.id);
+    const planning = runtimeSpec.id === 'ai-planning';
+    const identity = planning ? { clientId: 'test', hub: 'http://model.invalid', session: 'local-session' } : { clientId: 'test' };
+    if (planning) t.mock.method(require('../main/conversation/requirement-context'), 'cachedIdentity', () => identity);
     const calls = [];
     let modelFetches = 0;
     const runtime = {
       async rpc(op, payload) {
         calls.push({ op, payload });
+        if (planning && op === 'runtime.detect') {
+          assert.equal(payload.key, runtimeSpec.id);
+          return { ok: true, data: { accessControl: runtimeSpec.accessControl } };
+        }
         if (op === 'job.dispatch') return { ok: true, data: { ref: expectedRef } };
         if (op === 'job.session') return { ok: true, data: {
           ok: true, status: 'done', round: 1,
@@ -785,7 +792,7 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
       },
     };
     const adapter = createRunnerRuntimeAdapter({
-      runtimeSpec,
+      app: { getPath: () => root }, runtimeSpec,
       runnerRuntime: runtime,
       modelConfig: { fetchModel: async () => {
         modelFetches += 1;
@@ -799,7 +806,7 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
     let session;
     try {
       session = await adapter.createSession({
-        runtimeId: 'test', identity: { clientId: 'test' },
+        runtimeId: 'test', identity,
         native: { runner: { openOptions: { ref: alias, cwd: root } } },
       });
       assert.equal((await timeout(session.send({ text: 'RUN' }).completion)).ok, true);
@@ -809,6 +816,15 @@ for (const runtimeSpec of runtimeCatalog.runnerRuntimes()) {
       if (runtimeSpec.modelMode === 'account') {
         assert.equal(modelFetches, 0);
         assert.equal(Object.hasOwn(dispatched.cfg, 'llm'), false);
+      } else if (planning) {
+        assert.equal(modelFetches, 1);
+        assert.deepEqual(dispatched.cfg.llm, { model: 'enterprise-model' });
+        assert.equal(dispatched.cfg.accessPolicy.workspaceRoot, fs.realpathSync.native(root));
+        assert.equal(dispatched.cfg.accessPolicy.mode, 'standard');
+        assert.ok(dispatched.cfg.planningHostGrant);
+        assert.ok(dispatched.cfg.planningOwnerId);
+        assert.ok(dispatched.cfg.planningExecutionId);
+        assert.doesNotMatch(JSON.stringify(dispatched.cfg), /model\.invalid|secret/);
       } else {
         assert.equal(modelFetches, 1);
         assert.deepEqual(dispatched.cfg.llm, {

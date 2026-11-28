@@ -87,6 +87,18 @@ npm start
 
 在 `client/` 运行 `npm test` 和 `npm run check:layout`。Electron 端到端检查见本目录的 `e2e/`，按脚本选择所需环境。`dist/`、`.runtime/` 和生成的 `runner/` 文件是产物，不要提交或复制旧版二进制替代源码。
 
+### 可选的本机 Planning Harness
+
+在当前桌面的「Agent 管理 → Planning Harness」点击「装上」。本机 Runner 使用客户端自带的 CPython 3.12，将 `soduwork-planning-harness` 及锁定哈希的依赖安装到用户目录。管理抽屉显示已装版本，提供检查新版、更新和卸载操作。安装完成后，在本机会话的「执行底座」选择 Planning Harness 即可发起会话。首次使用目录时新草稿默认选择 Pi，已经保存过底座偏好的目录沿用该选择。Planning 通过 stdio 使用 ACP 协议，调用会话选定的模型，写入工作区前沿用桌面权限审批。
+
+公司发行作业通过 `SODUWORK_PLANNING_INDEX_URL` 指定 Nexus PyPI hosted 仓库的 HTTPS simple 地址。公共依赖默认从 PyPI 下载，也可通过 `SODUWORK_PLANNING_PUBLIC_INDEX_URL` 指定镜像。应用元数据只记录源地址。源码启动时从环境读取这两个变量。用户安装或更新时须能读取两个包源。Planning 团队在 Nexus 独立发布后续版本。
+
+要复验完整流程，先用项目启动器加上 `--prepare-only --desktop --data-dir` 准备源码桌面实例，在测试终端设置包源变量，然后从仓库根目录执行下方命令。Linux 可以使用图形桌面或 Xvfb。用例在同一隔离配置中从 Agent 管理页安装 Planning，在会话输入框选择底座并发送首条消息，核对 ACP 回复，再更新和卸载。输入框、发送按钮和本机 Runner 使用产品代码。账号、Hub 机器列表、模型回复及回复展示使用测试组件。输出路径需为新目录。
+
+```sh
+node client/e2e/planning-online.cjs "<已准备的实例目录>" "<新建的验收结果目录>"
+```
+
 ## 技能和插件
 
 `skills/<name>/SKILL.md` 描述内置技能，包括项目自有指南和已核对来源的上游开发技能，见[技能目录](../skills/README.zh-CN.md)；`hub-backend/plugins/*.json` 提供通用插件与工作流。遵循[插件协议](plugin-authoring.md)保持版本不可变、权限最小化及导入审查。新增内置技能还需要显式更新 `tools/distribution/PUBLIC-SOURCE.json` 的发布范围，并保留原始许可和来源说明。

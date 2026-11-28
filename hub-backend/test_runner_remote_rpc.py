@@ -126,7 +126,9 @@ class RemoteRpcTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(any(packet.get("id") == "setup" for packet in self.machine.ws.messages))
             release.set()
             setup = await self.reply("setup")
-            self.assertEqual({item["key"] for item in setup["data"]["agents"]}, set(agent_setup._SPECS))
+            from app.agent_catalog import desktop_only
+            self.assertEqual({item["key"] for item in setup["data"]["agents"]},
+                             {key for key in agent_setup._SPECS if not desktop_only(key)})
             actual_discovery.assert_called_once_with(has_model=True)
 
     async def test_stop_during_dispatch_capability_probe_prevents_late_admission(self):

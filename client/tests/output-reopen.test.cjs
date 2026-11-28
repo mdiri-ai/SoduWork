@@ -30,11 +30,14 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ': old outputs remai
   put(cwd, 'earlier-report.md', '# Earlier report', old + 2000);
   put(cwd, 'current-report.md', '# Current report', recent + 1000);
   let next = false;
+  const owner = require('./helpers/platform-session-fixture.cjs').planningIdentity(t, spec, 'http://model.invalid');
+  const policy = spec.id === 'ai-planning' ? require('../main/access-control/policy').create('standard', cwd) : null;
   const adapter = createRunnerRuntimeAdapter({ runtimeSpec: spec,
-    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'fixture' } }) },
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'fixture', key: 'fixture', baseUrl: 'http://model.invalid' } }) },
     runnerRuntime: { async rpc(op) {
+      if (op === 'runtime.detect') return { ok: true, data: { installed: true, accessControl: spec.accessControl } };
       if (op === 'job.comment') { next = true; return { ok: true, data: { ok: true } }; }
-      if (op === 'job.session') return { ok: true, data: { status: 'done', started: recent / 1000, ended: (recent + 5000) / 1000, firstStarted: old / 1000,
+      if (op === 'job.session') return { ok: true, data: { status: 'done', accessPolicy: policy, started: recent / 1000, ended: (recent + 5000) / 1000, firstStarted: old / 1000,
         items: [{ seq: 1, kind: 'user', text: 'create a website', at: new Date(old).toISOString() },
           { seq: 2, kind: 'say', text: 'older-result.html earlier-report.md' },
           { seq: 3, kind: 'user', text: 'summarize it', at: new Date(recent).toISOString() },
@@ -42,7 +45,7 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ': old outputs remai
       return { ok: true, data: {} };
     } }
   });
-  let session = await adapter.resumeSession({ native: { runner: { openOptions: { cwd, resumePath: 'archive-' + spec.id } } } });
+  let session = await adapter.resumeSession({ identity: owner, native: { runner: { openOptions: { cwd, resumePath: 'archive-' + spec.id } } } });
   t.after(() => session.dispose());
   const handle = getRunnerSessionDetails(session).handle;
   await until(() => handle.snapshot().status === 'idle');
@@ -56,7 +59,8 @@ for (const spec of catalog.runnerRuntimes()) test(spec.id + ': old outputs remai
   artifacts.closeRef(handle.ref);
   const restarted = await artifacts.preview(handle, handle.ref, site.artifactId);
   assert.equal(restarted.ok, true);
-  await session.send({ text: 'continue with another question' }).completion;
+  const continued = await session.send({ text: 'continue with another question' }).completion;
+  assert.equal(continued.ok, true, continued.reason);
   assert.equal(next, true);
   rows = artifacts.snapshot(handle).items;
   assert.ok(rows.some(x => x.artifactId === site.artifactId));

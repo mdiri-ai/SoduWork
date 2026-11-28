@@ -20,6 +20,35 @@ const localMachine = { runnerId: 'desktop/source', scope: 'current-instance',
 const cloudRunner = { runnerId: 'cloud', scope: 'personal-cloud', online: true, isCurrentDevice: true };
 const cloudMachine = { runnerId: 'cloud', scope: 'personal-cloud', env: { node: 'cloud-node' }, agents: [{ key: 'cloud-agent' }] };
 
+test('the private Planning lifecycle merges into current-device management and preserves other agents', async () => {
+  const h = await fixture(), calls = [];
+  const planning = { key: 'ai-planning', installed: false, modelPick: false, installer: 'python' };
+  h.bridge.planningHarness = async packet => {
+    calls.push(plain(packet));
+    if (packet.action === 'status') return { owner: 'alice-owner', agent: planning };
+    if (packet.action === 'job') return { key: 'ai-planning', state: 'done', ok: true };
+    return { jobId: 'abc123abc123' };
+  };
+  const setup = await h.api.localAgentSetup();
+  assert.deepEqual(plain(setup.agents).map(row => row.key), ['pi', 'ai-planning']);
+  assert.equal(setup.agents.at(-1).installed, false);
+  const network = h.calls.length;
+  await assert.rejects(h.api.agentInstall('ai-planning', 'install', cloudRunner.runnerId), /当前设备/);
+  await assert.rejects(h.api.agentProbe('ai-planning', '', localRunner.runnerId), /会话/);
+  await assert.rejects(h.api.setAgentModel('ai-planning', 'test-model'), /会话/);
+  for (const action of ['install', 'check', 'update', 'uninstall']) {
+    const job = await h.api.agentInstall('ai-planning', action, localRunner.runnerId);
+    assert.deepEqual(calls.at(-1), { action, owner: 'alice-owner' });
+    assert.equal((await h.api.agentJob(job.jobId)).state, 'done');
+    assert.deepEqual(calls.at(-1), { action: 'job', jobId: 'abc123abc123', owner: 'alice-owner' });
+  }
+  assert.equal(h.calls.length, network);
+  h.runners = [];
+  const detached = await h.api.localAgentSetup();
+  assert.deepEqual(plain(detached.agents), [planning]);
+  assert.equal(detached.machines[0].isCurrentDevice, true);
+});
+
 async function fixture(runners = [cloudRunner, localRunner], data = { machines: [cloudMachine, localMachine],
   agents: cloudMachine.agents, env: cloudMachine.env, models: [{ name: 'fixture-model' }], modelCount: 1 }) {
   let user = 'alice';

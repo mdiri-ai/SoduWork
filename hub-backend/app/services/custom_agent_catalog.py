@@ -162,6 +162,7 @@ def apply(agents) -> dict:
             options._CLI_ORDER.update({key: row["order"] for key, row in additions.items()})
             options._CLI_LABELS.update({key: row["displayName"] for key, row in additions.items()})
         agent_catalog.AGENTS.update(additions)
+        agent_catalog.HUB_AGENTS.update(additions)
         _CUSTOM.update(additions)
         revision = hashlib.sha256(json.dumps(
             _CUSTOM, sort_keys=True, ensure_ascii=False, separators=(",", ":")

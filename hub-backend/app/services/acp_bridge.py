@@ -21,27 +21,33 @@ import uuid
 from typing import Any
 
 try:
-    from .acp_access import BridgeAccess, AccessError
+    from . import (
+        codex_acp_outcome,
+        opencode_model_selection,
+        opencode_runtime_config,
+        opencode_session_migration,
+        opencode_turn_outcome,
+        planning_host,
+        planning_workbook,
+        qwen_runtime,
+        runtime_images,
+    )
+    from .acp_access import AccessError, BridgeAccess
+    from .acp_process import OwnedProcessGroup, ProcessCleanupError, close_process
     from .acp_transition import Transition
-    from .acp_process import close_process, ProcessCleanupError, OwnedProcessGroup
-    from . import runtime_images
-    from . import opencode_runtime_config
-    from . import opencode_session_migration
-    from . import opencode_turn_outcome
-    from . import qwen_runtime
-    from . import opencode_model_selection
-    from . import codex_acp_outcome
 except ImportError:  # direct script entry used by source Runner
-    from acp_access import BridgeAccess, AccessError
-    from acp_transition import Transition
-    from acp_process import close_process, ProcessCleanupError, OwnedProcessGroup
-    import runtime_images
+    import codex_acp_outcome
+    import opencode_model_selection
     import opencode_runtime_config
     import opencode_session_migration
     import opencode_turn_outcome
+    import planning_host
+    import planning_workbook
     import qwen_runtime
-    import opencode_model_selection
-    import codex_acp_outcome
+    import runtime_images
+    from acp_access import AccessError, BridgeAccess
+    from acp_process import OwnedProcessGroup, ProcessCleanupError, close_process
+    from acp_transition import Transition
 
 _PROTOCOL = 1
 _MAX_FILE_BYTES = 4 * 1024 * 1024
@@ -204,9 +210,18 @@ class AcpBridge:
             raise BridgeError("Task workspace does not exist")
         self.agent_name = agent_name
         self.access = BridgeAccess(agent_name=agent_name)
+        self.planning = None
+        self.planning_busy = False
+        self.planning_receipt = ""
+        self.planning_write = None
+        self.planning_prompt = False
+        if agent_name == "ai-planning":
+            self.planning = (self.access.channel or {}).get("planning") or {}
+            if not self.planning.get("ownerId") or not self.planning.get("executionId"):
+                raise BridgeError("Planning requires its owning desktop process")
         self.permission = "readonly" if self.access.mode == "readonly" else permission
         self.session_id = session_id
-        self.allow_terminal = bool(allow_terminal and self.permission != "readonly")
+        self.allow_terminal = bool(not self.planning and allow_terminal and self.permission != "readonly")
         self.proc: subprocess.Popen | None = None
         self.readers: list[threading.Thread] = []
         self.process_group: OwnedProcessGroup | None = None
@@ -236,6 +251,8 @@ class AcpBridge:
         flags = ({"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
                  if os.name == "nt" else {"start_new_session": True})
         agent_env = self.access.agent_environment(self.agent_name, os.environ.copy())
+        if self.planning:
+            agent_env = planning_host.child_environment(agent_env)
         agent_env.pop(runtime_images.ENV_KEY, None)
         # This is host control, not provider configuration or a tool environment.
         agent_env.pop(_TASK_OUTPUT_RECOVERY_ENV, None)
@@ -297,6 +314,10 @@ class AcpBridge:
                 self.stderr_tail = [*self.stderr_tail[-19:], line[:500]]
 
     def _exit_detail(self) -> str:
+        if self.agent_name == "ai-planning":
+            # Vendor diagnostics can contain local paths and module names.
+            status = self.proc.poll() if self.proc else None
+            return f" (Planning Harness exit {status})" if status is not None else ""
         # Pipe closure and the stderr reader race with the first request. Drain
         # pending diagnostics, but do not wait forever for inherited open pipes.
         for reader in self.readers:
@@ -335,10 +356,20 @@ class AcpBridge:
                     return self._unwrap(value)
                 if isinstance(value, dict) and "id" in value:
                     self.pending[value["id"]] = value
+            elif kind == "planning-chunk":
+                self.send({"jsonrpc": "2.0", "method": "_" + planning_host.NAMESPACE + "/modelChunk",
+                           "params": value})
+            elif kind == "planning-response":
+                self.planning_busy = False
+                host_method, response = value
+                if host_method == "commit" and "result" in response:
+                    self.planning_receipt = response["result"].get("receiptId") or ""
+                self.send(response)
             elif kind == "noise":
                 _emit({"type": "item.completed", "item": {
                     "type": "error",
-                    "message": "Invalid ACP stdout: " + str(value)}})
+                    "message": "Invalid Planning Harness ACP stdout" if self.agent_name == "ai-planning"
+                    else "Invalid ACP stdout: " + str(value)}})
             elif kind == "eof":
                 code = self.proc.poll() if self.proc else None
                 detail = self._exit_detail()
@@ -443,6 +474,37 @@ class AcpBridge:
         return terminal
 
     def _client_request(self, method: str, params: dict) -> dict | None:
+        if self.planning and method in {"fs/read_text_file", "fs/write_text_file"}:
+            if (not self.planning_prompt or self.planning_busy or self.planning_receipt
+                    or params.get("sessionId") != self.session_id):
+                raise AccessError("Planning file request belongs to a different turn")
+            supplied = str(params.get("path") or "")
+            path = _safe_path(self.cwd, supplied)
+            if os.path.abspath(supplied) != path or path.lower().endswith(".xlsx"):
+                raise AccessError("Planning requires a regular workspace text file")
+            writing = method == "fs/write_text_file"
+            operation = {"path": path, "operation": "write" if writing else "read"}
+            if writing:
+                digest = hashlib.sha256(str(params.get("content") or "").encode()).hexdigest()
+                grant, self.planning_write = self.planning_write, None
+                if grant != ("text", path, digest):
+                    raise AccessError("Planning write does not match the approved file and content")
+                operation["sha256"] = digest
+            result = self.access.call("/planning", {"method": "fs.authorize", "params": {
+                "sessionId": self.session_id, "executionId": self.planning["executionId"],
+                "callId": str(uuid.uuid4()), **operation}})
+            if not result.get("ok") or result.get("data", {}).get("authorized") is not True:
+                raise AccessError(result.get("error") or "Desktop file grant expired")
+            inputs = self.planning.get("inputs") or {}
+            alias = inputs.get("alias")
+            if alias and (path == alias or path.startswith(alias + os.sep)):
+                if writing or os.path.dirname(path) != alias:
+                    raise AccessError("Planning attachments are read-only")
+                try:
+                    content = planning_host.input_text(inputs["root"], os.path.basename(path))
+                except (ValueError, OSError) as exc:
+                    raise AccessError(str(exc)) from exc
+                return {"content": content}
         if method == "fs/read_text_file":
             return self._read_text_file(params)
         if method in {"fs/write_text_file", "terminal/create"} and self.transition.requested:
@@ -474,14 +536,55 @@ class AcpBridge:
     def _incoming(self, message: dict) -> None:
         method = str(message.get("method") or "")
         if method == "session/update":
-            self._update((message.get("params") or {}).get("update") or {})
+            params = message.get("params") or {}
+            if self.planning and params.get("sessionId") != self.session_id:
+                return
+            self._update(params.get("update") or {})
             return
         if "id" not in message:
             return
+        if self.planning and method in {"_" + planning_host.NAMESPACE + "/" + name for name in
+                                         ("model", "commit", "workbook")}:
+            if method.endswith("/workbook") and not self.planning.get("workbook"):
+                self.send({"jsonrpc": "2.0", "id": message["id"],
+                           "error": {"code": -32601, "message": "Workbook capability unavailable"}})
+                return
+            self._planning_request(message, method.rsplit("/", 1)[1])
+            return
         if method == "session/request_permission":
             try:
-                result = self._permission_result(message.get("params") or {})
-            except AccessError:
+                params = message.get("params") or {}
+                if self.planning:
+                    self.planning_write = None
+                    call = params.get("toolCall") or {}
+                    args = call.get("rawInput") or {}
+                    if (not self.planning_prompt or self.planning_busy or self.planning_receipt
+                            or self.permission != "workspace" or params.get("sessionId") != self.session_id
+                            or call.get("kind") != "edit" or not isinstance(args, dict)):
+                        raise AccessError("Invalid Planning write approval")
+                    target = _safe_path(self.cwd, str(args.get("path") or ""))
+                    if "workbookRows" in args:
+                        if not self.planning.get("workbook") or not target.lower().endswith(".xlsx"):
+                            raise AccessError("Workbook capability unavailable")
+                        rows = args["workbookRows"]
+                        digest = planning_workbook.rows_digest(rows)
+                        write_kind = "workbook"
+                        preview = [[str(v)[:100] for v in row[:4]] for row in rows[:3]]
+                        params = {**params, "toolCall": {**call, "rawInput": {
+                            "path": target, "contentDigest": digest, "rows": len(rows), "preview": preview}}}
+                    else:
+                        write_kind = "text"
+                        digest = args.get("contentDigest")
+                        if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
+                            raise AccessError("Invalid Planning write digest")
+                result = self._permission_result(params)
+                if self.planning:
+                    selected = result.get("outcome", {}).get("optionId")
+                    if selected and any(row.get("optionId") == selected and row.get("kind") == "allow_once"
+                                        for row in params.get("options", []) if isinstance(row, dict)):
+                        self.planning_write = ((write_kind, target, digest, call.get("toolCallId"))
+                                               if write_kind == "workbook" else (write_kind, target, digest))
+            except (AccessError, BridgeError, ValueError):
                 result = {"outcome": {"outcome": "cancelled"}}
             self.send({"jsonrpc": "2.0", "id": message["id"], "result": result})
             return
@@ -498,6 +601,46 @@ class AcpBridge:
         self.send({"jsonrpc": "2.0", "id": message["id"], "error": {
             "code": -32601,
             "message": "Unsupported SoduWork Runner client method: " + method}})
+
+    def _planning_request(self, message, method):
+        params = message.get("params")
+        response = {"jsonrpc": "2.0", "id": message["id"]}
+        if (not self.planning_prompt or self.planning_busy or self.planning_receipt or not isinstance(params, dict)
+                or params.get("executionId") != self.planning["executionId"]
+                or params.get("sessionId") != self.session_id):
+            self.send({**response, "error": {"code": -32602, "message": "Invalid Planning turn"}})
+            return
+        if method == "workbook" and params.get("operation") == "write":
+            grant, self.planning_write = self.planning_write, None
+            try:
+                path = _safe_path(self.cwd, os.path.join(self.cwd, params["path"]))
+                digest = planning_workbook.rows_digest(params.get("rows"))
+            except (ValueError, KeyError, TypeError, BridgeError):
+                grant, path, digest = None, "", ""
+            if grant != ("workbook", path, digest, params.get("callId")):
+                self.send({**response, "error": {"code": -32000, "message": "Workbook write was not approved"}})
+                return
+        # Never block the ACP reader on a model request. A concurrent user stop
+        # must send session/cancel before the model's network timeout.
+        self.planning_busy = True
+        def resolve():
+            try:
+                def host(name, arguments):
+                    result = self.access.call("/planning", {"method": name, "params": arguments})
+                    if not result.get("ok") or not isinstance(result.get("data"), dict):
+                        raise AccessError(str(result.get("error") or "Desktop Planning request failed"))
+                    return result["data"]
+                if method == "model" and params.get("stream") is True:
+                    if not self.planning.get("modelStream"):
+                        raise AccessError("Model streaming was not negotiated")
+                    response["result"] = planning_host.stream_model(params, host,
+                        lambda chunk: self.inbox.put(("planning-chunk", chunk)))
+                else:
+                    response["result"] = host(method, params)
+            except (AccessError, ValueError) as exc:
+                response["error"] = {"code": -32000, "message": str(exc)[:400]}
+            self.inbox.put(("planning-response", (method, response)))
+        threading.Thread(target=resolve, name="planning-host", daemon=True).start()
 
     def _permission_result(self, params: dict) -> dict:
         call = params.get("toolCall") or {}
@@ -697,6 +840,8 @@ class AcpBridge:
     def _client_capabilities(self) -> dict:
         return {
             **codex_acp_outcome.capabilities(self.agent_name),
+            **({"_meta": {planning_host.NAMESPACE: {**planning_host.CAPABILITIES,
+                **{name: True for name in ("workbook", "modelStream") if self.planning.get(name)}}}} if self.planning else {}),
             # codex-acp only advertises its custom enterprise gateway when the
             # ACP client explicitly opts in. Other ACP agents safely ignore it.
             "auth": {"_meta": {"gateway": True}},
@@ -739,6 +884,13 @@ class AcpBridge:
         self.transition.resumable = bool(capabilities.get("loadSession") or
             (capabilities.get("sessionCapabilities") or {}).get("resume") is not None)
         session_params = {"cwd": self.cwd, "mcpServers": []}
+        if self.planning:
+            negotiated = (capabilities.get("_meta") or {}).get(planning_host.NAMESPACE) or {}
+            if not all(negotiated.get(k) == v for k, v in planning_host.CAPABILITIES.items()):
+                raise BridgeError("Planning desktop extension negotiation failed")
+            for name in ("workbook", "modelStream"):
+                self.planning[name] = bool(self.planning.get(name) and negotiated.get(name) is True)
+            session_params["_meta"] = {planning_host.NAMESPACE: {"ownerId": self.planning["ownerId"]}}
         session_config = {}
         if self.session_id:
             session_caps = capabilities.get("sessionCapabilities") or {}
@@ -779,10 +931,16 @@ class AcpBridge:
         while True:
             if self.outcome:
                 self.outcome.begin(self.session_id)
+            self.planning_prompt = bool(self.planning)
             result = self.request("session/prompt", {
                 "sessionId": self.session_id,
                 "prompt": content,
+                **({"_meta": {planning_host.NAMESPACE: {"executionId": self.planning["executionId"]}}}
+                   if self.planning else {}),
             })
+            self.planning_prompt = False
+            if self.planning and result.get("stopReason") == "end_turn" and not self.planning_receipt:
+                raise BridgeError("Planning 未取得本轮交付回执")
             self._flush_message()
             failure = codex_acp_outcome.failure(self.agent_name, result)
             if failure:
@@ -825,6 +983,10 @@ class AcpBridge:
             # tools; resume with the trusted continuation, never the user input.
             content = [{"type": "text", "text": continuation}]
         reason = str(result.get("stopReason") or "")
+        if self.planning and not reason:
+            raise BridgeError("Planning 未返回 ACP 停止原因")
+        if self.planning and reason == "cancelled" and self.transition.cancel_sent:
+            return 0
         if reason in ("", "end_turn"):
             return 0
         if self._output_limited(result):

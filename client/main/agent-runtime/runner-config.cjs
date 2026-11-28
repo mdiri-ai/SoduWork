@@ -7,7 +7,7 @@ const capabilityContract = require('../model-capability-contract.cjs');
 
 // Ordinary turns and workflow nodes use the same managed-model contract,
 // including when a running node receives a renewed model ticket.
-function create(model, adapterId, capabilityIds) {
+function create(model, adapterId, capabilityIds, planningAuthorization) {
   const cfg = { local_cli: String(adapterId || 'codex-harness') };
   if (adapterId === 'codex') cfg.codex_model = String(model && model.id || '');
   const requiredCapabilities = Array.from(new Set((Array.isArray(capabilityIds)
@@ -17,6 +17,10 @@ function create(model, adapterId, capabilityIds) {
     ...(adapterId === 'pi' ? ['streaming'] : []),
     ...(requiredCapabilities.length ? ['toolCalling'] : []),
   ]);
+  if (adapterId === 'ai-planning') {
+    if (!planningAuthorization?.planningHostGrant) throw Error('Planning 需要本机受管宿主');
+    return { ...cfg, llm: { model: String(model.id) }, ...planningAuthorization };
+  }
   // Local providers may intentionally have no API key (for example an
   // Ollama-compatible endpoint). Keep the opaque local reference out of the
   // child process and use the provider's wire model id instead.

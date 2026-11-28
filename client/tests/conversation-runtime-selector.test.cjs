@@ -8,7 +8,7 @@ const {
   createRunnerRuntimeAdapter,
   _uuidV5,
 } = require('../main/agent-runtime/runner-adapter');
-const { RUNTIMES } = require('../main/agent-runtime/runtime-catalog');
+const { RUNTIMES, loadCatalog } = require('../main/agent-runtime/runtime-catalog');
 
 const adapter = createRunnerRuntimeAdapter();
 const descriptor = validateAdapter(adapter);
@@ -19,8 +19,11 @@ assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.SESSIO
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.TURN_QUEUE));
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.MODEL_SELECT));
 assert.ok(descriptor.capabilities.some((item) => item.id === CAPABILITIES.GOAL_CONTROL));
+const planning = loadCatalog().runtime('ai-planning');
+assert.equal(planning.displayName, 'Planning Harness');
+assert.equal(planning.transport, 'runner');
 assert.deepEqual(RUNTIMES.map((item) => item.id), [
-  'pi', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
+  'pi', 'ai-planning', 'codex-harness', 'opencode', 'codex', 'qwen', 'dsh', 'kimi',
 ]);
 RUNTIMES.filter((item) => item.transport === 'runner').forEach((runtimeSpec) => {
   const runner = validateAdapter(createRunnerRuntimeAdapter({ runtimeSpec }));

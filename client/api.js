@@ -1293,6 +1293,7 @@
     try { global.dispatchEvent(new CustomEvent('soduwork-domain-changed', {detail: {domain: value.domain}})); } catch (_) {}
   });
 
+  var planningManagement = null;
   var SoduWorkAPI = {
     get online() { return _online; },
     conversationProjects: () => domainRead('conversation-projects', '/conversation-projects'),
@@ -2017,9 +2018,24 @@
         })
         .filter(function (row) { return /^local:model-[a-f0-9]{32}$/.test(row.name); });
       var hasLocalModel = localRows.length > 0;
-      var inventory = await jfetch('/runners', { taskScope: requestScope }) || {};
+      // This harness is managed by the desktop's private Runner, including when missing.
+      var [planning, inventory] = await Promise.all([
+        global.soduWorkAPI?.planningHarness?.({ action: 'status' }).catch(() => null),
+        jfetch('/runners', { taskScope: requestScope }),
+      ]);
+      inventory = inventory || {};
       currentRequest();
+      function bindPlanning(runnerId) {
+        planningManagement = planning ? { owner: planning.owner, scope: requestScope, runnerId: runnerId } : null;
+      }
       async function unavailable() {
+        if (planning) {
+          var machine = { runnerId: 'desktop:planning', scope: 'current-instance', isCurrentDevice: true,
+            online: true, execution: 'runner', agents: [planning.agent] };
+          bindPlanning(machine.runnerId);
+          return { machines: [machine], agents: machine.agents, models: [], modelCount: null, execution: 'runner' };
+        }
+        bindPlanning('');
         var reason = inventory.localRunnerReason || await localRunnerReason();
         currentRequest();
         return { machines: [], agents: [], models: [], modelCount: null, localModelCount: 0, execution: 'runner',
@@ -2046,6 +2062,8 @@
       machine = Object.assign({}, machine, { runnerId: selectedId, scope: 'current-instance', isCurrentDevice: true });
       var agents = (Array.isArray(machine.agents) ? machine.agents : [])
         .filter(function (agent) { return !['claude', 'harness2'].includes(agent.key); });
+      bindPlanning(selectedId);
+      if (planning) agents = agents.filter(agent => agent.key !== 'ai-planning').concat(planning.agent);
       var hubModels = Array.isArray(data.models) ? data.models : [];
       var models = localRows.concat(hubModels);
       var firstModel = models[0];
@@ -2102,6 +2120,12 @@
      * wrong host.
      */
     async agentInstall(key, action, runnerId, options) {
+      if (key === 'ai-planning') {
+        var binding = planningManagement;
+        if (!binding || binding.scope !== taskStorageKey('ops') || binding.runnerId !== runnerId) throw Error('请在当前设备刷新 Planning 管理页后重试');
+        var job = await global.soduWorkAPI.planningHarness({ action: action || 'install', owner: binding.owner });
+        return { ...job, jobId: 'planning:' + job.jobId };
+      }
       var r = await jfetch('/agent-setup/install', { method: 'POST', taskScope: taskStorageKey('ops'),
         body: JSON.stringify({ key: key, action: action || 'install', runnerId: runnerId || '',
           ...(action === 'login-cancel' && options?.jobId ? { jobId: String(options.jobId) } : {}) }) });
@@ -2109,6 +2133,7 @@
     },
     /* Run a minimal real task using the same effective-key resolution as normal dispatch. */
     async agentProbe(key, model, runnerId) {
+      if (key === 'ai-planning') throw Error('请在本机 Planning 会话中验证企业模型连接');
       var scope = domainScope(), defaults = !model || isLocalModelChoice(model) ? await localAgentDefaults(scope) : null;
       var probeAgent = null;
       var preferred = !model && defaults?.selections?.[key];
@@ -2146,11 +2171,17 @@
       mark(true); return { ...r, ...(probeAgent && !r?.fellBackFrom ? { probeAgent } : {}) };
     },
     async agentJob(jid) {
+      if (String(jid).startsWith('planning:')) {
+        var binding = planningManagement;
+        if (!binding || binding.scope !== taskStorageKey('ops')) throw staleTaskScope();
+        return global.soduWorkAPI.planningHarness({ action: 'job', jobId: jid.slice(9), owner: binding.owner });
+      }
       var r = await jfetch('/agent-setup/job/' + encodeURIComponent(jid), { taskScope: taskStorageKey('ops') });
       mark(true); return r;
     },
 
     async setAgentModel(key, model, providerId) {
+      if (key === 'ai-planning') throw Error('Planning 在会话中使用已授权的企业模型');
       var scope = domainScope(), requestScope = taskStorageKey('ops');
       var defaults = await localAgentDefaults(scope);
       if (isLocalModelChoice(model)) {

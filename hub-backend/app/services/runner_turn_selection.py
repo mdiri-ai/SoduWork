@@ -26,7 +26,15 @@ def validate(ref, raw, cfg):
     cfg = dict(cfg or {})
     if cfg.get("local_cli") and cfg["local_cli"] != wanted["agentId"]:
         raise selection.SelectionError("本轮模型授权与所选 Agent 不匹配")
-    if prof.get("needs_llm"):
+    if wanted["agentId"] == "ai-planning":
+        from . import planning_host
+        if not planning_host.authorized(cfg):
+            raise selection.SelectionError("请先在本机授权 Planning 模型")
+        name = str((cfg.get("llm") or {}).get("model") or "")
+        if wanted["modelName"] and wanted["modelName"] != name:
+            raise selection.SelectionError("本轮授权与所选模型不匹配")
+        wanted["modelName"] = name
+    elif prof.get("needs_llm"):
         llm = dict(cfg.get("llm") or {})
         local_only = llm.get("localOnly") is True
         if not (llm.get("base") and llm.get("model") and (llm.get("key") or local_only)):

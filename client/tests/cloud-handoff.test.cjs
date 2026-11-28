@@ -66,6 +66,7 @@ async function fixture(t, adapterId = 'pi') {
   const cwd = path.join(root, 'workspace'); await fs.mkdir(cwd); await fs.writeFile(path.join(cwd, 'report.md'), 'Original progress');
   const target = { id: 'runner:cloud-1:' + adapterId, name: 'Cloud / ' + adapterId, modelMode: 'managed' };
   let remotePage = null;
+  const requestedRoutes = [];
   let current = account(), remote = null, starts = 0, stops = 0, sends = 0, failCommit = false, failSend = false, observations = 0;
   const messages = [{ role: 'user', text: 'Finish report' }, { role: 'assistant', blocks: [{ kind: 'text', text: 'Draft ready' }], done: true }];
   const snapshot = { messages, queue: [], modelSelection: { name: 'test-model' }, status: 'idle' };
@@ -76,6 +77,7 @@ async function fixture(t, adapterId = 'pi') {
     appendTaskMessage(role, text, files, taskId, key) { if (!messages.some(row => row.taskOutputKey === key)) messages.push({ role, text, taskId, taskOutputKey: key }); },
     appendTaskTool() {}, selectModel: () => ({ ok: true }), setAccessPolicy: () => ({ ok: true }) };
   const request = async (identity, route, options = {}) => {
+    requestedRoutes.push(route);
     assert.equal(identity.clientId, 'desktop');
     if (route.split('?')[0].endsWith('/targets')) return { ok: true, targets: [target] };
     if (route.includes('/ai-session?')) { observations++; return remotePage || { ok: true, ref: 'run-1', status: 'running', last: 2,
@@ -107,16 +109,26 @@ async function fixture(t, adapterId = 'pi') {
   const cloud = controller();
   t.after(async () => { handle.close(); await fs.rm(root, { recursive: true, force: true }); });
   const input = async () => { const preview = await cloud.preview(handle); return { previewId: preview.previewId, assigneeId: target.id, instruction: 'Finish and verify', model: 'test-model' }; };
-  return { cloud, controller, handle, snapshot, input, messages, root, request,
+  return { cloud, controller, handle, snapshot, input, messages, root, request, requestedRoutes,
     get starts() { return starts; }, get stops() { return stops; }, get sends() { return sends; },
     get observations() { return observations; }, set account(value) { current = value; },
     set remotePage(value) { remotePage = value; },
     set failCommit(value) { failCommit = value; }, set failSend(value) { failSend = value; } };
 }
 
-test('all seven Agent adapters hand off actual files, stop locally and consume the existing remote stream', async t => {
+test('portable Agent adapters hand off actual files while Planning stays on this device', async t => {
   for (const adapter of catalog.runtimes()) await t.test(adapter.id, async t => {
-    const f = await fixture(t, adapter.id); const input = await f.input(); f.handle.running = true;
+    const f = await fixture(t, adapter.id);
+    if (adapter.id === 'ai-planning') {
+      f.handle.running = true;
+      const preview = await f.cloud.preview(f.handle);
+      assert.deepEqual(preview.targets, []);
+      assert.equal(f.handle.inFlight(), true);
+      assert.deepEqual(f.requestedRoutes, ['/conversation-handoffs/targets?agentId=pi']);
+      assert.equal(f.starts, 0);
+      return;
+    }
+    const input = await f.input(); f.handle.running = true;
     const localInventory = () => assert.fail('cloud artifacts must not scan the old local workspace');
     f.handle.outputSnapshotAsync = localInventory;
     const receipt = await f.cloud.confirm(f.handle, input);

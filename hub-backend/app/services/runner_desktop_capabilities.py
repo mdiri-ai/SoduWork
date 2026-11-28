@@ -8,7 +8,8 @@ PREFIX = "@@SODUWORK_LOCAL_RPC@@"
 
 
 class DesktopCapabilities:
-    def __init__(self, write):
+    def __init__(self, write, kind="desktop-capability"):
+        self.kind = kind
         self.write = write
         self.pending = {}
 
@@ -21,7 +22,7 @@ class DesktopCapabilities:
         future = asyncio.get_running_loop().create_future()
         self.pending[key] = future
         try:
-            self.write(PREFIX + json.dumps({"kind": "desktop-capability", "id": key,
+            self.write(PREFIX + json.dumps({"kind": self.kind, "id": key,
                                            "body": {**body, "expiresAt": time.time() + timeout}}, ensure_ascii=False) + "\n")
             return await asyncio.wait_for(future, timeout)
         finally:

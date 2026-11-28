@@ -140,6 +140,11 @@ class PrivateProbeRoutingTests(unittest.IsolatedAsyncioTestCase):
                     if spec["modelMode"] != "managed":
                         continue
                     result = await machine._local_rpc_dispatch({"op": "agent.probe", "key": key, "llm": LOCAL})
+                    if key == "ai-planning":
+                        self.assertFalse(result["ok"])
+                        self.assertEqual(result["code"], "DESKTOP_MODEL_GRANT_REQUIRED")
+                        self.assertNotIn("data", result)
+                        continue
                     self.assertTrue(result["ok"], result)
                     identity = result["data"]["jobId"]
                     jobs.append(identity)
@@ -156,6 +161,48 @@ class PrivateProbeRoutingTests(unittest.IsolatedAsyncioTestCase):
         finally:
             for identity in jobs:
                 agent_setup._JOBS.pop(identity, None)
+
+    async def test_planning_detects_on_device_without_creating_generic_model_jobs(self):
+        machine = Runner.__new__(Runner)
+        with patch.object(agent_setup, "start_probe") as start, patch.object(agent_setup, "configure") as configure:
+            for op in ("agent.probe", "agent.configure"):
+                denied = await machine._agent({"op": op, "key": "ai-planning", "llm": LOCAL, "_localParent": True})
+                self.assertFalse(denied["ok"])
+                self.assertEqual(denied["code"], "DESKTOP_MODEL_GRANT_REQUIRED")
+            start.assert_not_called()
+            configure.assert_not_called()
+        with patch.object(agent_setup, "detect", return_value={"installed": True, "key": "ai-planning"}) as detect:
+            ready = await machine._local_rpc_dispatch({"op": "runtime.detect", "key": "ai-planning"})
+            self.assertTrue(ready["ok"])
+            self.assertTrue(ready["data"]["accessControl"]["supported"])
+            detect.assert_called_once_with("ai-planning", has_model=True)
+
+    async def test_planning_lifecycle_uses_the_local_settings_pipe(self):
+        machine = Runner.__new__(Runner)
+        machine._send = AsyncMock()
+        machine._report_beat = AsyncMock()
+        with patch.object(agent_setup, "_spawn"), patch.object(agent_setup, "start_install", wraps=agent_setup.start_install) as install:
+            no_owner = await machine._local_rpc_dispatch({"op": "agent.install", "key": "ai-planning", "action": "install"})
+            self.assertFalse(no_owner["ok"])
+            started = await machine._local_rpc_dispatch({"op": "agent.install", "key": "ai-planning", "action": "check",
+                                                         "ownerId": "synthetic-settings-owner"})
+            self.assertTrue(started["ok"], started)
+            jid = started["data"]["jobId"]
+            self.addCleanup(agent_setup._JOBS.pop, jid, None)
+            agent_setup._done(jid, True, "Synthetic installation check passed")
+            local = await machine._local_rpc_dispatch({"op": "agent.job", "jobId": jid, "ownerId": "synthetic-settings-owner"})
+            self.assertEqual((local["data"]["key"], local["data"]["action"], local["data"]["ok"]),
+                             ("ai-planning", "check", True))
+            for msg in ({"op": "agent.install", "key": "ai-planning"},
+                        {"op": "agent.job", "jobId": jid}):
+                await machine._on({**msg, "_localParent": True, "id": "remote"})
+                self.assertFalse(machine._send.await_args.args[0]["ok"])
+            other = await machine._local_rpc_dispatch({"op": "agent.install", "key": "qwen"})
+            self.assertFalse(other["ok"])
+            other_owner = await machine._local_rpc_dispatch({"op": "agent.job", "jobId": jid, "ownerId": "other-owner"})
+            self.assertFalse(other_owner["ok"])
+            install.assert_called_once_with("ai-planning", "check", owner_id="synthetic-settings-owner")
+            machine._report_beat.assert_not_awaited()
 
     async def test_network_marker_cannot_authorize_local_probe_or_configuration(self):
         machine = Runner.__new__(Runner)
@@ -264,9 +311,9 @@ class PrivateProbeProcessTests(unittest.TestCase):
         finally:
             agent_setup._JOBS.pop(identity, None)
 
-    def test_every_managed_runtime_executes_a_real_child_without_persisting_private_results(self):
+    def test_managed_runtimes_with_private_model_support_execute_children_without_persisting_results(self):
         for key, spec in AGENTS.items():
-            if spec["modelMode"] == "managed":
+            if spec["modelMode"] == "managed" and key != "ai-planning":
                 with self.subTest(key=key):
                     self.run_process(key)
 

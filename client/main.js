@@ -183,12 +183,13 @@ const _linuxModelStorage = process.platform === 'linux'
   ? require('./main/linux-model-safe-storage.cjs').create(safeStorage) : null;
 const _modelSafeStorage = _linuxModelStorage || safeStorage;
 require('./main/local-model-ipc.cjs').install({ app, ipcMain, safeStorage: _modelSafeStorage, changed: _catalogChanges.changed });
+function localAgentScope() {
+  const id = _deviceAuth.identity(app), owner = _deviceAuth.localOwner(app);
+  return id && owner ? { hub: id.hub, clientId: id.clientId, owner } : null;
+}
 require('./main/local-agent-model-ipc.cjs').install({ app, ipcMain, safeStorage: _modelSafeStorage, changed: _catalogChanges.changed,
-  probeAgent: options => require('./main/local-agent-probe.cjs').run({ ...options, runner: _runnerRuntime }),
-  scopeOf: () => {
-    const id = _deviceAuth.identity(app), owner = _deviceAuth.localOwner(app);
-    return id && owner ? { hub: id.hub, clientId: id.clientId, owner } : null;
-  } });
+  probeAgent: options => require('./main/local-agent-probe.cjs').run({ ...options, runner: _runnerRuntime }), scopeOf: localAgentScope });
+require('./main/agent-runtime/planning-management.cjs').install({ ipcMain, runner: _runnerRuntime, scopeOf: localAgentScope });
 require('./main/local-automation-model-ipc.cjs').install({ app, ipcMain, safeStorage: _modelSafeStorage, identityOf: _sessionIdentity });
 _attachmentFiles.install({ app, ipcMain, BrowserWindow, dialog, net, shell, identityOf: _deviceAuth.identity,
   authenticatedIdentityOf: _deviceAuth.authenticatedIdentity });

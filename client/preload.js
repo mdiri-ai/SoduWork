@@ -462,6 +462,7 @@ const soduWorkBridge = {
       return () => ipcRenderer.removeListener('local-models-capabilities-progress', handler);
     },
   },
+  planningHarness: input => ipcRenderer.invoke('planning-harness-manage', input),
   localAgentModels: {
     get: input => ipcRenderer.invoke('local-agent-models-get', input || {}),
     set: input => ipcRenderer.invoke('local-agent-models-set', input || {}),

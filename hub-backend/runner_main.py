@@ -207,8 +207,9 @@ def _agents() -> list[dict]:
     out = []
     try:
         from app.services import agent_setup
+        from app.agent_catalog import desktop_only
         for a in agent_setup.detect_all(has_model=True):
-            if a.get("installed"):
+            if a.get("installed") and not desktop_only(a["key"]):
                 item = {"key": a["key"], "name": a["name"], "version": a.get("version", "")}
                 # Include authentication state for runtimes with their own accounts.
                 # This distinguishes installed-but-unauthenticated machines in administration.
@@ -737,10 +738,21 @@ class Runner:
             store = await self._conversation_content_store(message.get("realm"))
             return await runner_local_rpc.to_thread(store.handle, {**message, "op": "content.read"})
         op = str(message.get("op") or "")
-        if op in {"agent.probe", "agent.job"}:
+        if op in {"agent.probe", "agent.job"} or (op == "agent.install" and message.get("key") == "ai-planning"):
+            if op == "agent.install" and not message.get("ownerId"):
+                return {"ok": False, "error": "请从当前账号的本机 Agent 管理中操作"}
             if op == "agent.probe" and dict(message.get("llm") or {}).get("localOnly") is not True:
                 return {"ok": False, "error": "本机测试通道只接受本地模型配置"}
             return await self._agent({**message, "_localParent": True})
+        if op == "planning.host.reply":
+            pipe = getattr(self, "_planning_host", None)
+            return pipe.reply(message) if pipe else {"ok": False}
+        if (op in {"job.dispatch", "job.comment", "job.authorize"} and (message.get("cfg") or {}).get("planningHostGrant")
+                and not hasattr(self, "_planning_host")):
+            from app.services import planning_host
+            from app.services.runner_desktop_capabilities import DesktopCapabilities
+            self._planning_host = DesktopCapabilities(self._write_local_rpc, kind="planning-host")
+            planning_host.configure(asyncio.get_running_loop(), self._planning_host)
         if op == "desktop.capability.reply":
             bridge = getattr(self, "_desktop_capabilities", None)
             return bridge.reply(message) if bridge else {"ok": False}
@@ -1603,6 +1615,18 @@ class Runner:
                     "error": str(result.get("error") or "")}
         from app.services import ai_local, runner_usage_receipts
 
+        if not m.get("_localParent") and op in {"job.dispatch", "job.comment", "job.authorize"}:
+            cfg = m.get("cfg") or {}
+            selection = m.get("executionSelection") or {}
+            cli = selection.get("agentId") if isinstance(selection, dict) else None
+            if op != "job.dispatch" and not cli:
+                with ai_local._LOCK:
+                    cli = (ai_local._RUNS.get(str(m.get("ref") or "")) or {}).get("cli")
+            if ("ai-planning" in (cli, cfg.get("local_cli"), m.get("cli"))
+                    or "planningHostGrant" in cfg):
+                return {"ok": False, "code": "DESKTOP_AGENT_REQUIRED",
+                        "error": "Planning 运行需要本机 SoduWork 授权"}
+
         def remote_snapshot(data, ref):
             if m.get("_localParent"):
                 return data
@@ -2045,16 +2069,24 @@ class Runner:
         from app.services import agent_setup
         op = str(m.get("op") or "")
         key = str(m.get("key") or "")
+        from app.agent_catalog import desktop_only
+        if desktop_only(key) and not m.get("_localParent"):
+            return {"ok": False, "error": "Planning 仅随本机 SoduWork 桌面客户端提供"}
         if op == "agent.setup":
             def discover():
                 return {"env": agent_setup.node_env(),
-                        "agents": agent_setup.detect_all(has_model=bool(m.get("hasModel")))}
+                        "agents": [row for row in agent_setup.detect_all(has_model=bool(m.get("hasModel")))
+                                   if m.get("_localParent") or not desktop_only(row["key"])]}
             return {"ok": True, "data": await runner_local_rpc.to_thread(discover)}
         if op == "agent.job":
             job_id = str(m.get("jobId") or "")
             private = bool(m.get("_localParent"))
             job = await runner_local_rpc.to_thread(agent_setup.job, job_id,
                 owner_id=str(m.get("ownerId") or ""), **({"include_private": True} if private else {}))
+            if job is not None and job.get("key") == "ai-planning":
+                # This installation belongs to the desktop settings panel.
+                return ({"ok": True, "data": job} if private else
+                        {"ok": False, "error": "没有这个作业（runner 可能重启过）"})
             if job is not None and job.get("private"):
                 return {"ok": True, "data": job}
             if (job is not None and job.get("state") == "done"
@@ -2068,6 +2100,9 @@ class Runner:
             return {"ok": False, "error": "没有这个 AI 助手"}
         llm = dict(m.get("llm") or {})
         if op in {"agent.probe", "agent.configure"}:
+            if key == "ai-planning":
+                return {"ok": False, "code": "DESKTOP_MODEL_GRANT_REQUIRED",
+                        "error": "请在本机 Planning 会话中使用企业模型授权"}
             from app.services.model_reference_privacy import is_local_model_reference
             local = llm.get("localOnly") is True or is_local_model_reference(llm.get("model"))
             if local and not m.get("_localParent"):
@@ -2089,8 +2124,9 @@ class Runner:
                 env = await runner_local_rpc.to_thread(agent_setup.node_env, key)
                 if not env.get("ok"):
                     return {"ok": False, "error": env.get("why") or "这台电脑没有 Node.js"}
+            owned = key == "ai-planning" or action.startswith("login")
             jid = await runner_local_rpc.to_thread(agent_setup.start_install, key, action,
-                **({"owner_id": str(m.get("ownerId") or "")} if action.startswith("login") else {}))
+                **({"owner_id": str(m.get("ownerId") or "")} if owned else {}))
             return {"ok": True, "data": {"jobId": jid}}
         if op == "agent.probe":
             private = bool(m.get("_localParent") and llm.get("localOnly") is True)

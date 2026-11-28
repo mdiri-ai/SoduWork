@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import json
+import logging
 import threading
 import time
 import uuid
 
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from . import execution_capabilities
 from .runner_identity_error import RunnerIdentityConflict
-from ..agent_catalog import AGENTS
 
 log = logging.getLogger("uvicorn.error")
 

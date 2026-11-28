@@ -69,13 +69,17 @@ class BridgeAccess:
             raise AccessError("No permission channel")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=910)
         try:
-            connection.request("POST", path, json.dumps(payload).encode(), {
+            connection.request("POST", path, json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(), {
                 "Authorization": "Bearer " + str(self.channel.get("token") or ""),
                 "Content-Type": "application/json"})
             response = connection.getresponse()
             if response.status != 200:
                 raise AccessError("Permission channel rejected this request")
-            value = json.loads(response.read(65536))
+            limit = 512_000 if path == "/planning" else 65536
+            raw = response.read(limit + 1)
+            if len(raw) > limit:
+                raise AccessError("Desktop response is too large")
+            value = json.loads(raw)
             return value if isinstance(value, dict) else {}
         except (OSError, ValueError, http.client.HTTPException) as exc:
             raise AccessError("Permission channel is unavailable; operation was not approved") from exc
@@ -399,7 +403,11 @@ class BridgeAccess:
         # OpenCode uses a concrete deny/ask/allow map injected by the trusted
         # host. Its ACP 'modes' select agents, not permission levels.
         native_mode = "permission-map"
-        if bridge.agent_name == "opencode":
+        if bridge.agent_name == "ai-planning":
+            # Planning exposes only ACP client-mediated file tools. The reviewed
+            # child has no native terminal or direct file-operation tool.
+            native_mode = "host-files-" + self.mode
+        elif bridge.agent_name == "opencode":
             available = {str(item.get("value"))
                          for option in session.get("configOptions", [])
                          if option.get("id") == "mode"

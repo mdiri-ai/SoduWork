@@ -74,9 +74,10 @@ test('ordinary chat stays usable and cannot enable goal controls through the act
 
 test('all existing Runner substrates keep their declared goal capability', () => {
   for (const spec of catalog.runnerRuntimes()) {
-    assert.equal(spec.goalMode, 'native');
+    const supportsGoals = spec.id !== 'ai-planning';
+    assert.equal(spec.goalMode, supportsGoals ? 'native' : 'none', spec.id);
     const adapter = createRunnerRuntimeAdapter({ runtimeSpec: spec });
-    assert.equal(adapter.capabilities.some(row => row.id === 'goal.control'), true, spec.id);
+    assert.equal(adapter.capabilities.some(row => row.id === 'goal.control'), supportsGoals, spec.id);
   }
 });
 

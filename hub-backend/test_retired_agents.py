@@ -11,7 +11,7 @@ from app.services import acp_agents, agent_setup, ai_local, local_base, local_ct
 
 class RetiredAgentTests(unittest.TestCase):
     def test_active_catalog_and_runtime_profiles_agree(self):
-        expected = {"pi", "codex", "codex-harness", "opencode", "qwen", "dsh", "kimi"}
+        expected = {"pi", "ai-planning", "codex", "codex-harness", "opencode", "qwen", "dsh", "kimi"}
         self.assertEqual(set(AGENTS), expected)
         self.assertEqual(set(local_base._PROFILES), expected)
         self.assertEqual(set(agent_setup._SPECS), expected)

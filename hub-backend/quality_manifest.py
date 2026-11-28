@@ -243,6 +243,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_model_discovery.py",
     "test_model_discovery_api.py",
     "test_model_defaults.py",
+    "test_planning_install.py",
     "test_flash_thinking_upgrade.py",
     "test_ai_proxy_usage_passthrough.py",
     "test_local_artifact_contract.py",

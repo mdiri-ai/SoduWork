@@ -28,6 +28,7 @@ async function main(args = process.argv.slice(2), { prepare = prepareRunner } = 
   for (const name of names) await fs.cp(path.join(client, name), path.join(source, name), { recursive: true,
     filter: file => !path.relative(client, file).split(path.sep).includes('node_modules') });
   pkg.version = version;
+  Object.assign(pkg, require('../main/planning-index.cjs').buildMetadata());
   delete pkg.build;delete pkg.devDependencies;delete pkg.scripts;
   await fs.writeFile(path.join(source, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
   await fs.writeFile(path.join(source, 'version.json'), JSON.stringify({ version }) + '\n');

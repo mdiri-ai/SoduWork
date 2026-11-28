@@ -249,7 +249,10 @@ def list_assignees_sync(cfg: dict) -> dict:
     from . import execution_capabilities
     capability_report = execution_capabilities.runtime_report(_workspace_root(cfg or {}))
     agents = []
+    from ..agent_catalog import desktop_only
     for key, prof in list(_PROFILES.items()):
+        if desktop_only(key):
+            continue
         exe = prof["bin"]()
         if not exe or _profile_runtime_issue(prof):
             continue
@@ -558,6 +561,14 @@ def _dispatch_sync_once(cfg: dict, t, files: list | None = None,
                         capability_grants: list[str] | None = None) -> dict:
     ctx = dict(ctx or {})
     key = ((assignee or {}).get("id") or default_assignee(cfg)["id"]).split(":", 1)[-1]
+    if key == "ai-planning":
+        from . import planning_host
+        if ctx.get("taskGoal") or ctx.get("conversationMode") == "goal":
+            return {"ok": False, "error": "Planning 首版支持普通会话"}
+        if (not planning_host.authorized(cfg) or cfg.get("_eventDestination") != "local"
+                or not ctx.get("accessPolicy")):
+            return {"ok": False, "code": "DESKTOP_AGENT_REQUIRED",
+                    "error": "Planning 需要本机 SoduWork 的模型与访问授权"}
     prof = _PROFILES.get(key)
     if not prof:
         return {"ok": False, "code": "AGENT_UNAVAILABLE",
@@ -734,7 +745,10 @@ def _dispatch_sync_once(cfg: dict, t, files: list | None = None,
     except (runtime_images.ImageInputError, OSError) as exc:
         return {"ok": False, "error": str(exc)}
     if staged:
-        ctx["inputFiles"] = staged
+        try:
+            ctx["inputFiles"] = planning_host.input_view(ws, sid, staged) if key == "ai-planning" else staged
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
     from . import local_task_goal
     goal_contract = local_task_goal.normalize(ctx.get("taskGoal")) if key != "pi" else {}
     if key != "pi" and "taskGoal" in ctx and not goal_contract:

@@ -21,6 +21,8 @@ function assertCloudModel(value) {
 function create({ app, root, read, save, identity, request, publicRecord }) {
   const pending = new Map();
   function options(input) {
+    if (input.agentId === 'ai-planning')
+      throw Error('Planning Harness 需要本机桌面授权，请在当前设备运行');
     if (!/^[a-f0-9-]{36}$/i.test(input.requestId || '')) throw Error('云端请求标识无效');
     if (!/^[a-z][a-z0-9._-]{0,47}$/.test(input.agentId || '')) throw Error('请选择执行底座');
     assertCloudModel(input.model);

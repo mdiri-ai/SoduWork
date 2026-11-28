@@ -271,6 +271,7 @@
     '还没做连通验证': 'Connectivity has not been verified', '点任一已安装助手上的「测一下」，会真跑一轮最小的活。': 'Click “Test” on an installed assistant to run a real minimal check.',
     '这台机器上探不到助手': 'No assistants found on this machine', '重新探测': 'Probe again', '装得不干净': 'Installation incomplete',
     '版本由程序自检得出': 'Version detected by the program', '内置': 'Built in', '模型': 'Model',
+    '使用会话中选择的模型': 'Uses the model selected for the conversation',
     '用它自己的账号与模型，这儿不用配': 'Uses its own account and model; no setup needed here',
     '还没有能用的模型，先去「我的模型」配一把 key': 'No usable model yet; configure a key in “My models” first',
     '跟这台 SoduWork 的默认': 'This SoduWork default', '走我的额度': 'Use my quota', '已不可用': 'Unavailable',

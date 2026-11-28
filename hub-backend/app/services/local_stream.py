@@ -167,6 +167,16 @@ def stop_sync(cfg: dict, ref: str) -> dict:
         owner = run.get('_workerIdentity')
         pid, proc = int(run.get('pid') or 0), run.get('proc')
     from . import access_broker
+    if proc and access_broker.cancel_planning(ref):
+        # Let the ACP agent settle its active turn before the normal kill-tree fallback.
+        try:
+            proc.wait(timeout=2)
+            with _LOCK:
+                current = _RUNS.get(ref) or {}
+                if current is run and current.get("state") == "stopped" and not current.get("pid"):
+                    return {"ok": True, "stopped": True, **goal_receipt}
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     access_broker.close(ref)
     if launch_pending:
         # The worker must observe any process returned by an in-flight Popen and
@@ -243,6 +253,9 @@ def _merge_runtime_cfg(current: dict | None, fresh: dict | None) -> dict:
 
 
 def _has_managed_model(cfg: dict | None) -> bool:
+    if (cfg or {}).get("local_cli") == "ai-planning":
+        from . import planning_host
+        return planning_host.authorized(cfg)
     llm = dict((cfg or {}).get("llm") or {})
     return bool(llm.get("base") and llm.get("model") and
                 (llm.get("key") or llm.get("localOnly") is True))

@@ -369,6 +369,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     app, identityOf: sendIdentityOf || identityOf, request: taskInput.request,
   });
   _usage = usageReporter.createUsageReporter({ app, identityOf, onQuotaExceeded });
+  require('../agent-runtime/planning-host.cjs').setUsageListener(_usage.recordPlanning);
   _usage.flush().catch(() => {});
   const pluginDebug = require('../personal-plugin-debug-ipc').install({
     app, ipcMain, session, identityOf: sendIdentityOf || identityOf, skillDirs: () => skillRoots.discover(app),

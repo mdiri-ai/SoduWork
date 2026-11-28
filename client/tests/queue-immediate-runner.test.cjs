@@ -13,7 +13,7 @@ async function harness(t, spec, failStop = false) {
   const push = (kind, text) => rows.push({ seq: rows.length + 1, kind, text });
   const runtime = { async rpc(op, value) {
     calls.push({ op, value });
-    if (op === 'runtime.detect') return { ok: true, data: {} };
+    if (op === 'runtime.detect') return { ok: true, data: { accessControl: spec.accessControl } };
     if (op === 'job.dispatch') {
       status = 'running'; push('user', value.ctx.conversationUserText);
       return { ok: true, data: { ref: _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', value.dispatchId), ok: true } };
@@ -37,7 +37,8 @@ async function harness(t, spec, failStop = false) {
   const makeModel = name => ({ ok: true, model: { id: name || 'default-fixture', input: ['text'], key: 'synthetic', baseUrl: 'http://synthetic.invalid/v1' } });
   const adapter = createRunnerRuntimeAdapter({ app, runtimeSpec: spec, runnerRuntime: runtime,
     modelConfig: { fetchModel: async (_identity, name) => makeModel(name), fetchSelection: async (_identity, name) => makeModel(name) } });
-  session = await adapter.createSession({ identity: {}, native: { runner: { openOptions: { app, cwd: root,
+  const identity = require('./helpers/platform-session-fixture.cjs').planningIdentity(t, spec, 'http://synthetic.invalid');
+  session = await adapter.createSession({ identity, native: { runner: { openOptions: { app, cwd: root,
     ref: 'fixture-immediate-' + spec.id, resolvePlugins: async ids => {
       resolutions.push(ids);
       return { items: ids.map(pluginId => ({ pluginId, name: 'Fixture', version: '1', context: 'Retain plugin context', capabilities: {} })),

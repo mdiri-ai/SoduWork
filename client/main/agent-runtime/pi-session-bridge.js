@@ -209,6 +209,9 @@ function createPiSessionBridge(options) {
 
   async function openNative(legacyOptions) {
     const adapterId = String(legacyOptions.adapterId || 'pi');
+    // Grants belong to the executing segment, including after a switch or history reopen.
+    if (adapterId === 'ai-planning') legacyOptions = { ...legacyOptions, resolveConnectors: undefined,
+      resolvePlugins: async () => { throw Error('此版本的 Planning 暂未接入 SoduWork 会话插件'); } };
     const request = { adapterId, consumer: legacyOptions.intent === 'goal' ? 'goal' : 'chat',
       runtimeId: String(legacyOptions.runtimeId || 'desktop'), runtime: { app: legacyOptions.app || opts.app },
       identity: legacyOptions.identity, native: { pi: { openOptions: legacyOptions }, runner: { openOptions: legacyOptions } } };

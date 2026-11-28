@@ -947,6 +947,13 @@ def _env_for(prof: dict, cfg: dict, runtime_ref: str = "", *, require_model: boo
     That internal exception does not obtain credentials or authorize a managed turn.
     """
     env = dict(os.environ)
+    if prof.get("acp_key") == "ai-planning":
+        from . import planning_host
+        if not planning_host.authorized(cfg) or not cfg.get("accessPolicy"):
+            raise RuntimeError("Planning 需要本机桌面会话的模型与访问授权")
+        env.pop("SODUWORK_APPROVAL_CHANNEL", None)
+        env["PLANNING_STATE_DIR"] = os.path.abspath(os.path.join(runtime_root or _data_root(), "planning-state"))
+        return env
     from . import runtime_images
     env.pop(runtime_images.ENV_KEY, None)
     if cfg.get(runtime_images.CFG_KEY):

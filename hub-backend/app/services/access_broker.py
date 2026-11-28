@@ -25,8 +25,12 @@ _TIMEOUT_S = 15 * 60
 
 
 class Channel:
-    def __init__(self, ref: str, policy: dict, agent: str):
+    def __init__(self, ref: str, policy: dict, agent: str, planning=None):
         self.ref, self.policy, self.agent = ref, dict(policy), agent
+        self.planning = planning
+        self.stopping = False
+        self.host_calls = set()
+        self.office_processes = set()
         self.token = secrets.token_urlsafe(48)
         self.condition = threading.Condition(threading.RLock())
         self.pending: dict[str, dict] = {}
@@ -51,7 +55,9 @@ class Channel:
                     return
                 try:
                     length = int(self.headers.get("Content-Length", "0"))
-                    if length <= 0 or length > _MAX_BODY:
+                    from .planning_host import MAX_BYTES
+                    limit = MAX_BYTES if self.path == "/planning" and channel.planning else _MAX_BODY
+                    if length <= 0 or length > limit:
                         raise ValueError("invalid body length")
                     payload = json.loads(self.rfile.read(length))
                     if not isinstance(payload, dict):
@@ -59,6 +65,8 @@ class Channel:
                     if self.path == "/request":
                         answer = channel.request(payload)
                         result = answer if isinstance(answer, dict) else {"decision": answer}
+                    elif self.path == "/planning" and channel.planning:
+                        result = channel.planning.call(payload, channel)
                     elif self.path == "/applied":
                         result = channel.applied(payload)
                     elif self.path == "/control":
@@ -66,7 +74,7 @@ class Channel:
                     else:
                         self.send_error(404)
                         return
-                    body = json.dumps(result).encode()
+                    body = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
@@ -113,6 +121,12 @@ class Channel:
     def control(self, payload: dict) -> dict:
         from . import access_transition
         with self.condition:
+            if self.stopping and self.planning:
+                if payload.get("stage") == "planning-cancel-sent":
+                    self.planning.close_stream()
+                    for future in self.host_calls:
+                        future.cancel()
+                return {"requested": False, "stopPlanning": True}
             if self.closed:
                 return {"requested": False}
             result = access_transition.control(self.ref, self.policy, payload)
@@ -225,7 +239,7 @@ class Channel:
                 while request_id not in self.decisions and not self.closed:
                     from .local_base import _RUNS
                     run = _RUNS.get(self.ref) or {}
-                    if run.get("state") != "running" or run.get("stopping") or access_transition.active(run):
+                    if self.stopping or run.get("state") != "running" or run.get("stopping") or access_transition.active(run):
                         break
                     remaining = row["expiresAt"] - time.time()
                     if remaining <= 0:
@@ -301,6 +315,13 @@ class Channel:
     def close(self):
         with self.condition:
             self.closed = True
+            if self.planning:
+                self.planning.close_stream()
+            for process in self.office_processes:
+                if process.poll() is None:
+                    process.terminate()
+            for future in self.host_calls:
+                future.cancel()
             self.condition.notify_all()
             self.pending.clear()
             self._publish()
@@ -319,13 +340,19 @@ def attach(ref: str, cfg: dict, env: dict) -> Channel | None:
         # Follow-ups must keep grants scoped to that same Agent, not an empty
         # cfg field or a caller-supplied replacement identity.
         agent = str((_RUNS.get(ref) or {}).get("cli") or cfg.get("local_cli") or "")
-    channel = Channel(ref, policy, agent)
+        run = dict(_RUNS.get(ref) or {})
+    from . import planning_host
+    turn = planning_host.Turn(ref, cfg, run) if agent == "ai-planning" else None
+    channel = Channel(ref, policy, agent, turn)
     with _CHANNEL_LOCK:
         _CHANNELS[ref] = channel
     from .skill_read_scope import channel_scope
     with _LOCK:
         read_scope = channel_scope(_RUNS.get(ref) or {}).payload()
     env["SODUWORK_APPROVAL_CHANNEL"] = json.dumps({"url": channel.url,
+                                              **({"planning": {"ownerId": turn.owner_id, "inputs": turn.input_view,
+                                                  "workbook": bool(turn.workbook), "modelStream": turn.model_stream,
+                                                  "executionId": turn.execution_id}} if turn else {}),
                                               "readScope": read_scope,
                                               "token": channel.token,
                                               "policy": policy})
@@ -347,6 +374,20 @@ def wake(ref: str):
     if channel:
         with channel.condition:
             channel.condition.notify_all()
+
+
+def cancel_planning(ref):
+    with _CHANNEL_LOCK:
+        channel = _CHANNELS.get(ref)
+    if channel and channel.planning:
+        with channel.condition:
+            channel.stopping = True
+            for process in channel.office_processes:
+                if process.poll() is None:
+                    process.terminate()
+            channel.condition.notify_all()
+        return True
+    return False
 
 
 def close(ref: str):

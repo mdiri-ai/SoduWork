@@ -12,7 +12,7 @@ const until = async check => { for (let i = 0; i < 300; i++) {
 } throw Error('Runner fixture timeout'); };
 
 for (const agent of catalog.runnerRuntimes().filter(row => row.modelMode === 'managed').map(row => row.id)) {
-  test(agent + ': local wire IDs, signed Hub funding and deleted selections stay isolated', async t => {
+  test(agent + ': enforces its local and Hub-funded model policy', async t => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-runner-local-'));
     const app = { getPath: () => root }, calls = [], fetches = [], receipts = [];
     const identity = { hub: 'https://fixture.invalid', clientId: 'fixture' };
@@ -30,6 +30,7 @@ for (const agent of catalog.runnerRuntimes().filter(row => row.modelMode === 'ma
           quotaVersion: 2, quotaProvider: 'hub-provider', quotaUsageToken: 'signed-' + agent } };
       } }, runnerRuntime: { async rpc(op, input) {
         calls.push({ op, input });
+        if (op === 'runtime.detect') return { ok: true, data: { accessControl: catalog.runtime(agent).accessControl } };
         if (op === 'job.dispatch' || op === 'job.comment') {
           turn++;
           accepted = { agentId: agent, modelName: input.cfg.llm.model };
@@ -47,6 +48,12 @@ for (const agent of catalog.runnerRuntimes().filter(row => row.modelMode === 'ma
         return { ok: true, data: { ok: true } };
       } } });
     const request = { identity, native: { runner: { openOptions: { app, cwd: root, ref: alias, modelName: reference } } } };
+    if (agent === 'ai-planning') {
+      await assert.rejects(adapter.createSession(request), /本地模型/);
+      assert.deepEqual(fetches, [reference]);
+      assert.equal(calls.some(row => row.op === 'job.dispatch'), false);
+      return;
+    }
     let session = await adapter.createSession(request);
     t.after(() => session?.dispose());
     let handle = getRunnerSessionDetails(session).handle;

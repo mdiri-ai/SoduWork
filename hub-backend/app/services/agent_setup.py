@@ -64,6 +64,7 @@ _JOBS: dict[str, dict] = {}
 _JOB_LOCK = threading.Lock()
 _JOB_THREADS: set = set()
 _LOG_CAP = 400                      # Bound log history, including verbose npm output.
+_LOG_LINE_LIMIT = 400
 
 
 # Shared helpers.
@@ -223,6 +224,10 @@ def _version_of(key: str) -> tuple[str, str, str]:
     """
     binp = _bin_of(key)
     spec = _SPECS.get(key) or {}
+    if key == "ai-planning":
+        from .planning_install import installation
+        _, version = installation()
+        return version, "managed" if version else "", ""
     if spec.get("installer") == "managed":
         if key == "opencode" and (issue := managed_agents._cpu_compatibility_issue()):
             return managed_agents._read_active(), "managed-record", issue
@@ -407,6 +412,18 @@ def detect(key: str, *, has_model: bool = True, probes: dict | None = None) -> d
     if key == "dsh" and setup_state == "missing":
         from .agent_installation import dsh_desktop_detected
         agent["desktopAppDetected"] = dsh_desktop_detected()
+    if key == "ai-planning":
+        from .planning_release import index_url
+        try:
+            index_url()
+            issue = ""
+        except ValueError as exc:
+            issue = str(exc)
+        agent.update(installer="python", canProbe=False, canConfigure=False, modelPick=False,
+                      probeReason="请在本机 Planning 会话中使用企业模型授权", installSourceConfigured=not issue,
+                      installSourceIssue=issue)
+        if issue and not installed:
+            agent["why"] = issue
     return _decorate_agent(agent)
 
 
@@ -448,7 +465,7 @@ def _say(jid: str, line: str) -> None:
         j = _JOBS.get(jid)
         if j is None or j.get("_private"):
             return
-        j["lines"].append(line[:400])
+        j["lines"].append(line[:_LOG_LINE_LIMIT])
         if len(j["lines"]) > _LOG_CAP:
             del j["lines"][:len(j["lines"]) - _LOG_CAP]
 
@@ -466,6 +483,8 @@ def _done(jid: str, ok: bool, detail: str, code: int | None = None) -> None:
 def job(jid: str, *, owner_id: str | None = None, include_private: bool = False) -> dict | None:
     with _JOB_LOCK:
         j = _JOBS.get(jid)
+        if j and j.get("key") == "ai-planning" and (not include_private or not owner_id or owner_id != j.get("_owner")):
+            return None
         if j and j.get("_private"):
             if not include_private:
                 return None
@@ -597,6 +616,14 @@ def start_install(key: str, action: str, *, owner_id: str = "") -> str:
             return jid
         _spawn(jid, _run_codex_login)
         return jid
+    if key == "ai-planning":
+        if not owner_id:
+            _done(jid, False, "请从当前登录账号的本机 Agent 管理中操作")
+            return jid
+        with _JOB_LOCK:
+            _JOBS[jid]["_owner"] = owner_id
+        _spawn(jid, _run_planning, action)
+        return jid
     if is_bundled(key):
         version = _version_of(key)[0]
         name = str((_PROFILES.get(key) or {}).get("name") or key)
@@ -646,6 +673,30 @@ def cancel_login(jid: str, *, owner_id: str = "") -> dict:
             return {"jobId": jid, "cancelled": False, "state": "done"}
     cancelled = codex_login_flow.cancel(jid, _data_root())
     return {"jobId": jid, "cancelled": cancelled, "state": "cancelling"}
+
+
+def _run_planning(jid, action):
+    from . import planning_install
+    from .planning_diagnostics import safe_exception_chain, safe_text
+
+    try:
+        detail = planning_install.install(action, lambda line: _say(jid, safe_text(line)))
+    except Exception as exc:  # noqa: BLE001
+        # Raw exception tracebacks can contain pip argv, credentialed URLs or child output.
+        diagnostic = safe_exception_chain(exc)
+        log.warning("Planning %s failed (job %s): %s", action, jid, diagnostic)
+        for line in diagnostic.splitlines():
+            for offset in range(0, len(line), _LOG_LINE_LIMIT):
+                _say(jid, line[offset:offset + _LOG_LINE_LIMIT])
+        if isinstance(exc, ValueError):
+            summary = safe_text(exc, limit=240).partition("\n")[0]
+        elif isinstance(exc, OSError):
+            summary = "Planning 安装操作未完成，请查看任务日志" + planning_install.system_error_code(exc)
+        else:
+            summary = "Planning 安装操作未完成，请查看任务日志"
+        _done(jid, False, summary)
+    else:
+        _done(jid, True, detail)
 
 
 def _run_managed(jid: str, key: str, action: str) -> None:

@@ -112,6 +112,18 @@ async def comment(machine, m, read_local_files, read_packet=None, drop_transfer=
             text += "\n\n\u3010\u672c\u8f6e\u8865\u5145\u6587\u4ef6\u3011\n" + "\n".join(
                 "- %s\uff1a%s" % (item.get("name") or "\u9644\u4ef6", item.get("path") or "")
                 for item in staged)
+    if staged and (m.get("cfg") or {}).get("local_cli") == "ai-planning":
+        from . import planning_host
+        with ai_local._LOCK:
+            workspace = (ai_local._RUNS.get(ref) or {}).get("ws")
+        if not workspace:
+            return {"ok": False, "error": "Planning 会话工作区不可用"}
+        try:
+            views = await runner_local_rpc.to_thread(planning_host.input_view, workspace, ref, staged)
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "error": str(exc)}
+        for item, view in zip(staged, views):
+            text = text.replace(item["path"], view["path"])
     if m.get("recordUser"):
         await runner_local_rpc.to_thread(local_stream.record_user_sync, ref, user_text, staged,
                                 m.get("plugins"), m.get("sentAt"))

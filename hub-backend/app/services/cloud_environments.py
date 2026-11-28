@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..automation_models import RunnerNode
 from ..config import get_settings
 from . import audit, conversation_handoffs, runner_enroll, runner_hub, runner_registry

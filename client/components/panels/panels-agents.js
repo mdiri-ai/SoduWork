@@ -317,7 +317,7 @@ function _agPresentation(a, ak) {
   const unknownAccount = state === 'unknown' && a.key === 'codex' && a.authStatus === 'unknown';
   const installed = (!['missing', 'setup', 'disabled', 'broken', 'unknown'].includes(state)
     || (unknownAccount && a.installed === true)) && a.installed !== false;
-  const canProbe = installed && ['ready', 'ok', 'bad'].includes(state);
+  const canProbe = a.canProbe !== false && installed && ['ready', 'ok', 'bad'].includes(state);
   let probe = a.probe || {};
   const activeJob = _agJobs[ak || a.key];
   const job = activeJob?.action === 'probe' ? activeJob : _agProbeResults.get(ak || a.key);
@@ -562,7 +562,8 @@ function _agChoiceValue(row) {
 function _agModelHtml(a) {
   if (!a.modelPick) {
     return '<div class="ag-model is-own"><span class="ag-model-cap">模型</span>' +
-      '<span class="ag-model-own">用它自己的账号与模型，这儿不用配</span></div>';
+      '<span class="ag-model-own">' + (a.key === 'ai-planning'
+        ? '使用会话中选择的模型' : '用它自己的账号与模型，这儿不用配') + '</span></div>';
   }
   const availableModels = (_agData && _agData.models) || [];
   // This panel manages the current device. Local defaults never enter Hub settings.
@@ -655,8 +656,8 @@ function _agBodyHtml(a, s, ak) {
     (bundled ? '' : '<div class="ag-ops">' +
       (status.installed || s === 'broken'
         ? '<button class="btn-mini" data-acheck="' + esc(ak) + '"' + dis + '>看看有没有新版</button>' +
-          '<button class="btn-mini" data-ainstall="' + esc(ak) + '"' + dis + '>' +
-            (status.installed ? '重装 / 升到最新' : status.primaryLabel) + '</button>' +
+          '<button class="btn-mini" ' + (a.key === 'ai-planning' && status.installed ? 'data-aupdate' : 'data-ainstall') +
+            '="' + esc(ak) + '"' + dis + '>' + (status.installed ? '重装 / 升到最新' : status.primaryLabel) + '</button>' +
           (_agCanUninstall(a) ? '<span class="ag-spacer"></span>' +
           '<button class="btn-mini danger" data-aunin="' + esc(ak) + '"' + dis + '>卸载</button>' : '')
         : '<button class="btn-mini primary" data-ainstall="' + esc(ak) + '"' + dis + '>' + status.primaryLabel + '</button>' +
@@ -777,6 +778,8 @@ function _agBind(box) {
   }));
   box.querySelectorAll('[data-ainstall]').forEach(el => el.addEventListener('click',
     () => _agRun(el.getAttribute('data-ainstall'), 'install')));
+  box.querySelectorAll('[data-aupdate]').forEach(el => el.addEventListener('click',
+    () => _agRun(el.getAttribute('data-aupdate'), 'update')));
   box.querySelectorAll('[data-acheck]').forEach(el => el.addEventListener('click',
     () => _agRun(el.getAttribute('data-acheck'), 'check')));
   box.querySelectorAll('[data-aprobe]').forEach(el => el.addEventListener('click',

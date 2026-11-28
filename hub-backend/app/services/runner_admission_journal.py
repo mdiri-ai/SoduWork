@@ -140,7 +140,11 @@ class Journal:
         return value
 
     def _encode(self, item):
-        data = json.dumps({"schema": 1, "item": asdict(item)}, ensure_ascii=False,
+        record = asdict(item)
+        cfg = (record.get("payload") or {}).get("cfg")
+        if isinstance(cfg, dict):
+            cfg.pop("planningHostGrant", None)
+        data = json.dumps({"schema": 1, "item": record}, ensure_ascii=False,
                           separators=(",", ":")).encode()
         return b"DPAPI\n" + _protect(data) if os.name == "nt" else b"JSON\n" + data
 

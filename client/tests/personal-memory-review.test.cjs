@@ -5,7 +5,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const memory = require('../main/conversation/session-memory');
 const local = require('../main/conversation/local-memory');
 const { scope } = require('../main/platform-connections/runtime.cjs');
-const { identity } = require('./helpers/platform-session-fixture.cjs');
+const { identity, planningIdentity } = require('./helpers/platform-session-fixture.cjs');
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'soduwork-memory-review-'));
@@ -123,9 +123,11 @@ const catalog = require('../main/agent-runtime/runtime-catalog');
 async function actualRunner(t, spec, mode = 'complete') {
   const f = fixture(t), alias = 'actual-memory-' + spec.id;
   const ref = _uuidV5('9af442c8-cd1d-4b91-a668-22da2b2635bf', 'chat:' + alias + ':' + spec.id);
+  const owner = identity('one');
+  planningIdentity(t, spec, owner.hub);
   let round = 0;
   const runtime = { async rpc(op) {
-    if (op === 'runtime.detect') return { ok: true, data: { installed: true, state: 'ready' } };
+    if (op === 'runtime.detect') return { ok: true, data: { installed: true, state: 'ready', accessControl: spec.accessControl } };
     if (op === 'job.dispatch') { round++; return { ok: true, data: { ref } }; }
     if (op === 'job.comment') { round++; return { ok: true, data: { ok: true } }; }
     if (op === 'job.stop') return { ok: true, data: { ok: true } };
@@ -137,10 +139,10 @@ async function actualRunner(t, spec, mode = 'complete') {
     throw Error('Unexpected isolated RPC: ' + op);
   } };
   const adapter = createRunnerRuntimeAdapter({ app: f.app, runtimeSpec: spec, runnerRuntime: runtime,
-    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'isolated', key: 'fixture-only', baseUrl: 'http://model.invalid' } }) } });
+    modelConfig: { fetchModel: async () => ({ ok: true, model: { id: 'isolated', key: 'fixture-only', baseUrl: spec.id === 'ai-planning' ? owner.hub : 'http://model.invalid' } }) } });
   const bridge = createPiSessionBridge({ app: f.app,
     sessionModule: { probe() { return { ok: false }; }, open() { throw Error('Pi is outside this isolated runner fixture'); } }, runnerAdapters: [adapter] });
-  const opened = await bridge.open({ app: f.app, identity: identity('one'), adapterId: spec.id, cwd: f.directory, ref: alias,
+  const opened = await bridge.open({ app: f.app, identity: owner, adapterId: spec.id, cwd: f.directory, ref: alias,
     ...(mode === 'paused' ? { intent: 'goal', goal: 'Paused isolated work' } : {}) });
   assert.equal(opened.ok, true, opened.reason);
   const handle = opened.session, events = [];

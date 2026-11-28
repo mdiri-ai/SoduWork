@@ -144,7 +144,7 @@ function createUsageReporter(options) {
     try {
       const identity = handle && handle.usageIdentity;
       const sessionId = String(handle && handle.sessionId || '');
-      if (!identity || !identity.hub || !identity.clientId || !sessionId) return;
+      if (handle.adapterId === 'ai-planning' || !identity || !identity.hub || !identity.clientId || !sessionId) return;
       // Cloud execution is already recorded by the Hub's execution ledger.
       // Replaying its display projection as a local chat would charge twice.
       if (snapshot?.cloudHandoff?.phase === 'committed') return;
@@ -221,10 +221,22 @@ function createUsageReporter(options) {
     } catch (_) { /* accounting cannot block the user's session */ }
   }
 
+  function recordPlanning({ identity, accountScope, sessionId, receiptId, model, usage: raw }) {
+    const usage = empty();
+    add(usage, raw);
+    const payload = { idempotencyKey: receiptId, sourceType: 'chat', sourceId: sessionId, conversationId: sessionId,
+      agent: 'ai-planning', provider: model.quotaProvider || '', model: model.id, usage, occurredAt: new Date().toISOString(),
+      credentialScope: model.quotaScope === 'personal' ? 'personal' : 'platform', billingMode: 'managed',
+      ...(model.quotaUsageToken ? { quotaUsageToken: model.quotaUsageToken } : {}) };
+    const scope = JSON.stringify([identity.hub, identity.clientId, accountScope, receiptId]);
+    if (outbox.enqueue({ ownershipVersion: 1, hub: identity.hub, clientId: identity.clientId, accountScope,
+      scope, bucket: receiptId, payload })) schedule();
+  }
+
   if (outbox.pending()) schedule();
   // A migration may leave no deliverable rows; still preserve its quarantine.
   else void outbox.persist().catch(() => {});
-  return { observe, flush, persist: outbox.persist };
+  return { observe, recordPlanning, flush, persist: outbox.persist };
 }
 
 module.exports = { usageFromSnapshot, createUsageReporter };

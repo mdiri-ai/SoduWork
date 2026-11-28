@@ -429,3 +429,15 @@ test('probe records use the Runner clock and bind only records from their own jo
   assert.equal(f.context._agState({...base,probe:{ok:false,at:(runnerNow+2000)/1000,
     detail:'Newer failure',historical:true}},'computer~opencode'),'ready');
 });
+
+test('Planning management offers package actions and uses the conversation model', () => {
+  const f = fixture();
+  const agent = { key: 'ai-planning', name: 'Planning Harness', installed: false, canProbe: false, modelPick: false };
+  const key = 'computer~ai-planning';
+  assert.match(f.context._agBodyHtml(agent, 'missing', key), /data-ainstall="computer~ai-planning"/);
+  Object.assign(agent, { installed: true, version: '0.2.0', state: 'ready' });
+  const html = f.context._agBodyHtml(agent, 'ready', key);
+  for (const action of ['acheck', 'aupdate', 'aunin']) assert.ok(html.includes('data-' + action + '="' + key + '"'));
+  assert.match(html, /使用会话中选择的模型/);
+  assert.doesNotMatch(html, /data-aprobe|自己的账号与模型/);
+});

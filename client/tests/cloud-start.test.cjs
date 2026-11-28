@@ -52,10 +52,19 @@ async function fixture(t) {
     lose: () => { lost = true; }, switchUser: () => { current = account('bob'); }, finish: () => { status = 'completed'; },
     holdStatus: () => { let release; statusWait = new Promise(resolve => { release = resolve; }); return () => { release(); statusWait = null; }; } };
 }
-for (const runtime of catalog.runtimes()) test(runtime.id + ': starts in cloud without local execution and reopens exactly once', async t => {
+for (const runtime of catalog.runtimes()) test(runtime.id + (runtime.id === 'ai-planning'
+  ? ': cloud creation is denied on this device'
+  : ': starts in cloud without local execution and reopens exactly once'), async t => {
   const f = await fixture(t), cloud = f.controller();
   const input = { requestId: crypto.randomUUID(), agentId: runtime.id, text: 'Calculate 17 + 25', model: runtime.modelMode === 'account' ? '' : 'model1',
     attachments: [{ name: 'input.md', type: 'text/markdown', data: Buffer.from('17 + 25') }] };
+  if (runtime.id === 'ai-planning') {
+    await assert.rejects(cloud.start(input), /Planning Harness 需要本机桌面授权/);
+    assert.equal(f.starts(), 0);
+    assert.deepEqual(f.requests, []);
+    assert.deepEqual(await fs.readdir(f.root), []);
+    return;
+  }
   const reply = await cloud.start(input);
   assert.equal(reply.ok, true); assert.equal(reply.handoff.entryKind, 'cloud');
   assert.equal(f.remote().files[0].text, '17 + 25');

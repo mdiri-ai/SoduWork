@@ -356,7 +356,7 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(again.json()["pending"], again.text)
         self.assertEqual(self.peer.calls.count("job.comment"), before + 1)
         await self.complete(cloud["ref"])
-        # Every shipped adapter crosses the same real restore/admission/process
+        # Cloud-capable adapters cross the same real restore/admission/process
         # path. Substitute model credentials/catalog only at the vendor boundary.
         from app.services import model_catalog
         self.runner.agents = [{"key": key, "name": value["displayName"], "auth": "authed"}
@@ -369,6 +369,9 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
                 selected_model = "fixture-model" if declaration["modelMode"] == "managed" else ""
                 prepared_agent = await self.prepare("agent-" + agent, assigneeId="runner:cloud:" + agent,
                     snapshot=archive(agent=agent), model=selected_model, instruction="Continue the report")
+                if declaration.get("executionLocations") == ["desktop"]:
+                    self.assertIn(prepared_agent.status_code, (409, 422))
+                    continue
                 self.assertEqual(prepared_agent.status_code, 200, prepared_agent.text)
                 launch = await self.http.post("/api/v1/conversation-handoffs/agent-" + agent + "/commit",
                                                json={"sha256": prepared_agent.json()["sha256"]})
@@ -461,7 +464,9 @@ class HandoffTests(unittest.IsolatedAsyncioTestCase):
         print(json.dumps({"ok": True, "workspace": str(WORK), "oneDispatch": True,
                           "survivesDeviceDisconnect": True, "runnerRestart": True, "longFollowup": len(long_text),
                           "uncertainDispatchRecovered": True, "uncertainMessageNotReplayed": True,
-                          "agents": list(AGENTS), "historyCharacters": len(long_history),
+                          "agents": [key for key, spec in AGENTS.items()
+                                     if spec.get("executionLocations") != ["desktop"]],
+                          "historyCharacters": len(long_history),
                           "inflightAbortFenced": True, "concurrentCommit": True,
                           "queuedCrashRecovered": True, "liveCrashNoDuplicate": True,
                           "ambiguousStartFenced": True}))

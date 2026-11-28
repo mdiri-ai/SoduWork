@@ -52,9 +52,10 @@ test('same Agent is preferred without querying Pi and preserves the reviewed mod
   assert.equal(f.stops, 1); assert.equal(f.starts, 1);
 });
 
-test('Pi fallback never stops or uploads until the exact reviewed fallback is accepted', async t => {
-  const f = await fixture(t); const p = await f.cloud.preview(f.handle);
-  assert.deepEqual(p.fallback, { fromAgentId: 'opencode', toAgentId: 'pi' }); assert.equal(p.model, '');
+for (const origin of ['opencode', 'ai-planning']) test(origin + ': Pi fallback never stops or uploads until the exact reviewed fallback is accepted', async t => {
+  const f = await fixture(t, origin); const p = await f.cloud.preview(f.handle);
+  assert.deepEqual(f.queries, origin === 'ai-planning' ? ['pi'] : [origin, 'pi']);
+  assert.deepEqual(p.fallback, { fromAgentId: origin, toAgentId: 'pi' }); assert.equal(p.model, '');
   for (const agentFallback of [undefined, { ...p.fallback, accepted: false }, { ...p.fallback, accepted: 'true' },
     { fromAgentId: 'qwen', toAgentId: 'pi', accepted: true }, { ...p.fallback, toAgentId: 'qwen', accepted: true }]) {
     await assert.rejects(f.cloud.confirm(f.handle, { ...input(p), agentFallback }), /确认是否改用 Pi/);
@@ -62,7 +63,7 @@ test('Pi fallback never stops or uploads until the exact reviewed fallback is ac
   }
   await f.cloud.confirm(f.handle, { ...input(p), agentFallback: consent(p) });
   assert.equal(f.sent.agentId, 'pi'); assert.deepEqual(f.sent.agentFallback, consent(p));
-  assert.equal(f.manifest.source.adapterId, 'opencode'); assert.equal(f.manifest.source.sessionId, 'local-id');
+  assert.equal(f.manifest.source.adapterId, origin); assert.equal(f.manifest.source.sessionId, 'local-id');
   assert.equal(f.manifest.source.messages.length, 2); assert.equal(f.manifest.files[0].path, '进度.md');
   assert.equal(f.stops, 1); assert.equal(f.starts, 1); assert.equal(f.handle.snapshot().adapterId, 'pi');
   assert.equal(f.handle.selectAgent('qwen').ok, false, 'handoff must fence local runtime switching');

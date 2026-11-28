@@ -38,6 +38,37 @@ class OfficeSkillTests(unittest.TestCase):
         self.assertIs(data["rendered"], False)
         return data
 
+    def planning(self, operation, target, **extra):
+        return subprocess.run([sys.executable, "-I", "-B", str(SCRIPT.with_name("planning_workbook.py"))],
+                              input=json.dumps({"operation": operation, "path": str(target), **extra}).encode(),
+                              cwd=self.work, capture_output=True, timeout=15)
+
+    def test_planning_single_table_roundtrip_and_exclusive_creation(self):
+        rows = [["Description", "Amount"], ["A", 120], ["B", 80], ["Total", 200]]
+        target = self.work / "月报.xlsx"
+        saved = self.planning("write", target, rows=rows)
+        self.assertEqual(saved.returncode, 0, saved.stderr)
+        ref = json.loads(saved.stdout)
+        self.assertEqual(ref["rows"], rows)
+        self.assertEqual(ref["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
+        self.assertNotEqual(self.planning("write", target, rows=[["replacement"]]).returncode, 0)
+        self.assertEqual(json.loads(self.planning("read", target).stdout), ref)
+
+    def test_planning_rejects_formulas_non_table_parts_and_limits(self):
+        target = self.work / "active.xlsx"
+        for rows in ([["=SUM(1,2)"]], [[True]], [[1], [2,3]], [["x"]]*1001):
+            with self.subTest(rows=str(rows)[:50]):
+                self.assertNotEqual(self.planning("write", target, rows=rows).returncode, 0)
+                self.assertFalse(target.exists())
+        book = Workbook()
+        book.active["A1"] = "=SUM(1,2)"
+        book.save(target)
+        self.assertNotEqual(self.planning("read", target).returncode, 0)
+        book.active["A1"] = 120
+        book.active["A1"].hyperlink = "https://example.invalid/reference"
+        book.save(target)
+        self.assertNotEqual(self.planning("read", target).returncode, 0)
+
     def test_document_counts_body_including_cells_and_reused_images(self):
         path = self.work / "季度报告.docx"
         picture = self.work / "picture.png"

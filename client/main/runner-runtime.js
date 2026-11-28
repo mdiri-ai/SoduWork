@@ -117,7 +117,7 @@ function _runnerEnv(base, deviceSecret, app, resourceRoot) {
   env.SODUWORK_SKILL_ROOTS = _skillRoots(app, resourceRoot).join(path.delimiter);
   const managed = require('./managed-runtime.cjs');
   const root = managed.runtimeRoot(app, resourceRoot || process.resourcesPath);
-  return root ? managed.environment(env, { resourcesPath: root }) : env;
+  return managed.environment(env, { resourcesPath: root });
 }
 const INSTALLABLE_COMPONENTS = Object.freeze({
   office: {
@@ -356,14 +356,17 @@ function _consumeRunnerLines(lines, logPath, child) {
     }
     try {
       const packet = JSON.parse(line.slice(LOCAL_RPC_PREFIX.length));
-      if (packet.kind === 'desktop-capability') {
+      if (packet.kind === 'desktop-capability' || packet.kind === 'planning-host') {
+        const planning = packet.kind === 'planning-host';
         const reply = result => {
           if (child !== _proc || child.killed || !child.stdin?.writable) return;
           child.stdin.write(LOCAL_RPC_PREFIX + JSON.stringify({ id: 'desktop-' + packet.id,
-            message: { op: 'desktop.capability.reply', requestId: packet.id, result } }) + '\n');
+            message: { op: planning ? 'planning.host.reply' : 'desktop.capability.reply', requestId: packet.id, result } }) + '\n');
         };
         Promise.resolve().then(() => {
-          if (child !== _proc || !_mobileCapabilities) throw Error('电脑能力尚未准备好，请稍后刷新');
+          if (child !== _proc) throw Error('执行机已关闭');
+          if (planning) return require('./agent-runtime/planning-host.cjs').request(packet.body);
+          if (!_mobileCapabilities) throw Error('电脑能力尚未准备好，请稍后刷新');
           return _mobileCapabilities(packet.body);
         }).then(data => reply({ ok: true, data }), error => reply({ ok: false, error: String(error.message || error) }));
         return;

@@ -7,6 +7,9 @@ const path = require('node:path');
 // Electron's Node is retained for the Pi worker; native tools use this runtime.
 function environment(base, { resourcesPath, platform = process.platform, exists = fs.existsSync } = {}) {
   const env = { ...base };
+  for (const key of Object.keys(env)) {
+    if (/^SODUWORK_PLANNING_WORKBOOK$/i.test(key)) delete env[key];
+  }
   if (!resourcesPath) return env;
   env.SODUWORK_RUNTIME_MANAGED = '1';
   const p = platform === 'win32' ? path.win32 : path.posix;
@@ -15,12 +18,18 @@ function environment(base, { resourcesPath, platform = process.platform, exists 
   const dirs = [];
   if (exists(p.join(nodeDir, platform === 'win32' ? 'node.exe' : 'node'))) dirs.push(nodeDir);
   const python = p.join(pythonDir, platform === 'win32' ? 'python.exe' : 'python3');
-  delete env.SODUWORK_MANAGED_PYTHON;
-  delete env.SODUWORK_OFFICE_PYTHON;
+  for (const key of Object.keys(env)) {
+    if (/^SODUWORK_(MANAGED|OFFICE)_PYTHON$/i.test(key)) delete env[key];
+  }
   if (exists(python)) {
     dirs.push(pythonDir);
     env.SODUWORK_MANAGED_PYTHON = python;
     env.SODUWORK_OFFICE_PYTHON = python;
+    const scripts = p.join(resourcesPath, 'skills', 'office', 'scripts');
+    const workbook = p.join(scripts, 'planning_workbook.py');
+    if (exists(workbook) && exists(p.join(scripts, 'inspect_office.py'))) {
+      env.SODUWORK_PLANNING_WORKBOOK = workbook;
+    }
   }
   if (platform === 'win32' && exists(p.join(resourcesPath, 'shell', 'bin', 'bash.exe'))) {
     dirs.push(p.join(resourcesPath, 'shell', 'cmd'), p.join(resourcesPath, 'shell', 'bin'), p.join(resourcesPath, 'shell', 'usr', 'bin'));
@@ -51,8 +60,10 @@ function runtimeRoot(app, resourcesPath = process.resourcesPath) {
 
 function initialize(app, env = process.env, resourcesPath = process.resourcesPath) {
   const root = runtimeRoot(app, resourcesPath);
-  if (!root) return;
   const prepared = environment(env, { resourcesPath: root });
+  if (app?.isPackaged) {
+    require('./planning-index.cjs').applyMetadata(prepared, require('../package.json').soduworkPlanningIndexes);
+  }
   for (const key of Object.keys(env)) if (!(key in prepared)) delete env[key];
   Object.assign(env, prepared);
 }

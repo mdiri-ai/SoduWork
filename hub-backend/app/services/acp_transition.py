@@ -80,6 +80,13 @@ class Transition:
             return
         self.next_poll = time.monotonic() + .15
         response = self.report("query")
+        if (response.get("stopPlanning") and self.bridge.agent_name == "ai-planning"
+                and method == "session/prompt" and not self.cancel_sent):
+            self.cancel_sent = True
+            self.bridge.send({"jsonrpc": "2.0", "method": "session/cancel",
+                              "params": {"sessionId": self.bridge.session_id}})
+            self.report("planning-cancel-sent")
+            return
         self.requested = str(response.get("id") or "") if response.get("requested") else ""
         self.in_process = bool(response.get("inProcess"))
         if not self.requested or method != "session/prompt" or self.cancel_sent:

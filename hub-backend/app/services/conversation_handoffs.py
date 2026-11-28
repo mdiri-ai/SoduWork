@@ -16,15 +16,23 @@ from fastapi import HTTPException
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 
-from ..agent_catalog import AGENTS
+from ..agent_catalog import HUB_AGENTS as AGENTS
 from ..automation_models import RunnerNode
 from ..conversation_handoff_models import ConversationHandoff as Handoff
 from ..models import Attachment, Client, OrgUnit, Task, User
-from . import ai_exec, ai_remote, dispatch_identity, portable_workspace, rbac, runner_hub, storage
+from ..timestamps import iso_utc
+from . import (
+    ai_exec,
+    ai_remote,
+    dispatch_identity,
+    handoff_agent_policy,
+    portable_workspace,
+    rbac,
+    runner_hub,
+    storage,
+)
 from .execution_host_policy import cloud_runner_allowed
 from .schedule_run_contracts import is_local_model_reference
-from . import handoff_agent_policy
-from ..timestamps import iso_utc
 
 CAPABILITY = "handoff1"
 ARCHIVE_NAME = "soduwork-workspace-handoff.zip"
@@ -509,7 +517,7 @@ async def refresh(session, row):
     event = await ai_exec.last_dispatch_event(session, row.task_id)
     if not event:
         from ..models import TaskEvent
-        from . import dispatch_reconcile, task_events, execution_sessions
+        from . import dispatch_reconcile, execution_sessions, task_events
         latest = await session.scalar(select(TaskEvent).where(
             TaskEvent.task_id == row.task_id, TaskEvent.kind.in_(ai_exec.KINDS_DISPATCH_STATE))
             .order_by(TaskEvent.at.desc(), TaskEvent.id.desc()).limit(1))

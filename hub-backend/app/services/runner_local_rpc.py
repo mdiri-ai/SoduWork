@@ -18,7 +18,7 @@ _LIMITS = {"work": 8, "query": 8, "probe": 2, "control": 4}
 _QUERIES = {"job.has", "job.status", "job.info", "job.session", "agent.job",
             "runtime.sessions", "runtime.content.read"}
 _CONTROLS = {"job.stop", "job.permission", "runtime.ping", "runtime.shutdown",
-             "desktop.capability.reply"}
+             "desktop.capability.reply", "planning.host.reply"}
 
 
 @dataclass

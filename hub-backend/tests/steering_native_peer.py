@@ -24,7 +24,23 @@ def record(value):
         stream.write(json.dumps(value, ensure_ascii=False) + "\n")
 
 
-def prompt(text, sid, emit_text):
+def planning_request(method, params):
+    emit({"jsonrpc": "2.0", "id": "fixture-request", "method": method, "params": params})
+    response = json.loads(sys.stdin.readline())
+    assert response["id"] == "fixture-request", response
+    return response["result"]
+
+
+def wait_for_stop(agent, sid):
+    if agent == "ai-planning":
+        cancel = json.loads(sys.stdin.readline())
+        assert cancel["method"] == "session/cancel" and cancel["params"]["sessionId"] == sid
+        return "cancelled"
+    while True:
+        time.sleep(1)
+
+
+def prompt(agent, text, sid, emit_text):
     dialogue = next((name for name in ("DIALOGUE_QUESTION", "DIALOGUE_EMPTY", "DIALOGUE_SUCCESS",
         "DIALOGUE_ERROR", "DIALOGUE_EXIT", "DIALOGUE_THINKING") if name in text), "")
     if dialogue:
@@ -44,34 +60,39 @@ def prompt(text, sid, emit_text):
             out.write("one operation\n")
         emit_text("Waiting for steering")
         publish_pid(Path("first-ready"), os.getpid())
-        while True:
-            time.sleep(1)
+        return wait_for_stop(agent, sid)
     assert label != "UNKNOWN", text
     assert Path("once.txt").read_text(encoding="utf-8") == "one operation\n"
     if label == "STEER_NOW":
         assert "note.txt" in text and "【本轮补充文件】" in text, text
         staged = text.rsplit("【本轮补充文件】", 1)[1].strip().split("：", 1)[1]
-        assert Path(staged).read_text(encoding="utf-8") == "attached evidence"
+        if agent == "ai-planning":
+            assert not Path(staged).exists(), "Planning receives a read-only attachment view"
+            data = planning_request("fs/read_text_file", {"sessionId": sid, "path": staged})["content"]
+        else:
+            data = Path(staged).read_text(encoding="utf-8")
+        assert data == "attached evidence"
     emit_text("Completed " + label)
-    if label == "STEER_NOW" and os.environ.get("SODUWORK_STEER_STOP_FOLLOWUP") == "1":
+    if label == "STEER_NOW" and ("--stop-followup" in sys.argv or os.environ.get("SODUWORK_STEER_STOP_FOLLOWUP") == "1"):
         publish_pid(Path("followup-ready"), os.getpid())
-        while True:
-            time.sleep(1)
+        return wait_for_stop(agent, sid)
 
 
 def acp(agent):
     native_outcome = NativeOutcome()
     sid = "native-" + agent
     resumed = False
+    load_only = agent in {"dsh", "ai-planning"}
     for raw in sys.stdin:
         message = json.loads(raw)
         method = message.get("method")
         params = message.get("params") or {}
         record({"event": "acp", "method": method, "sid": params.get("sessionId")})
         if method == "initialize":
-            # DSH 0.4.26 advertises only loadSession. Exercise both supported
-            # wire contracts rather than giving every fixture session/resume.
-            caps = {"loadSession": True, "sessionCapabilities": {} if agent == "dsh" else {"resume": {}}}
+            # DSH and Planning advertise loadSession for continuation.
+            caps = {"loadSession": True, "sessionCapabilities": {} if load_only else {"resume": {}}}
+            if agent == "ai-planning":
+                caps["_meta"] = params["clientCapabilities"]["_meta"]
             result = {"protocolVersion": 1, "agentCapabilities": caps}
         elif method == "session/new":
             assert not Path("native-session").exists(), "must not create another native session"
@@ -82,7 +103,7 @@ def acp(agent):
             result = {"sessionId": sid}
         elif method in {"session/load", "session/resume"}:
             assert params["sessionId"] == Path("native-session").read_text(encoding="utf-8")
-            assert method == ("session/load" if agent == "dsh" else "session/resume")
+            assert method == ("session/load" if load_only else "session/resume")
             if agent == "opencode":
                 from opencode_peer_session import require_session
                 require_session(os.environ, params["sessionId"], params["cwd"])
@@ -96,7 +117,7 @@ def acp(agent):
                 emit({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": sid, "update": {"sessionUpdate": "agent_message_chunk",
                     "content": {"type": "text", "text": value}}}})
-            outcome = prompt(text, sid, say)
+            outcome = prompt(agent, text, sid, say)
             if outcome == "DIALOGUE_THINKING":
                 emit({"jsonrpc": "2.0", "method": "session/update", "params": {
                     "sessionId": sid, "update": {"sessionUpdate": "agent_thought_chunk",
@@ -105,7 +126,13 @@ def acp(agent):
                 emit({"jsonrpc": "2.0", "id": message["id"], "error": {
                     "code": -32000, "message": "fixture provider failure"}})
                 continue
-            result = {"stopReason": "end_turn"}
+            if agent == "ai-planning" and outcome != "cancelled":
+                ns = "com.allintechinc/planning"
+                turn = params["_meta"][ns]["executionId"]
+                receipt = planning_request("_" + ns + "/commit", {"sessionId": sid, "executionId": turn,
+                    "callId": "publish", "artifacts": []})
+                assert receipt["receiptId"] == turn
+            result = {"stopReason": "cancelled" if outcome == "cancelled" else "end_turn"}
             native_outcome.end(sid)
         else:
             raise AssertionError(method)
@@ -135,7 +162,7 @@ def native(agent, args):
     else:
         emit({"type": "system", "subtype": "init", "session_id": sid})
         say = lambda value: emit({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": value}]}})
-    outcome = prompt(text, sid, say)
+    outcome = prompt(agent, text, sid, say)
     empty = outcome == "DIALOGUE_EMPTY"
     thinking = outcome == "DIALOGUE_THINKING"
     if thinking:

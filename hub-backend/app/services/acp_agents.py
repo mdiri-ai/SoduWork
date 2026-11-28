@@ -12,15 +12,16 @@ import sys
 from pathlib import Path
 
 from ..agent_catalog import acp_specs
-from . import dsh_runtime
-from . import agent_npm_runtime
-
+from . import agent_npm_runtime, dsh_runtime
 
 CATALOG: dict[str, dict] = acp_specs()
 
 
 def find_bin(key: str) -> str | None:
     """Find an installed ACP agent without mistaking SoduWork itself for one."""
+    if key == "ai-planning":
+        from .planning_install import installation
+        return installation()[0] or None
     spec = CATALOG.get(key) or {}
     override = os.environ.get("SODUWORK_AGENT_%s_BIN" % key.upper().replace("-", "_"))
     if override:
@@ -96,6 +97,9 @@ def _agent_args(key: str, cfg: dict) -> list[str]:
 
 def executable_command(key: str, executable: str) -> list[str]:
     """Use one validated Node/entry pair for npm probes and actual ACP launches."""
+    if key == "ai-planning":
+        from .planning_install import command
+        return command(executable)
     from .agent_installation import selected_node_entry
     spec = CATALOG.get(key) or {}
     entry, engine = selected_node_entry(spec.get('pkg', ''), executable)

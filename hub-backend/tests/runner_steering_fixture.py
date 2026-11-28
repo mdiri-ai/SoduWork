@@ -54,7 +54,10 @@ async def run():
         commands.append(actual)
         if agent == "opencode" or agent in acp_agents.CATALOG:
             split = actual.index("--")
-            return [*actual[:split + 1], sys.executable, peer, agent, "--acp-fixture"]
+            command = [*actual[:split + 1], sys.executable, peer, agent, "--acp-fixture"]
+            if agent == "ai-planning" and "--stop-followup" in sys.argv:
+                command.append("--stop-followup")  # Planning isolates its child environment.
+            return command
         return [sys.executable, peer, agent, *args]
 
     local_process._command_argv = argv
@@ -66,9 +69,14 @@ async def run():
             return environment(work / "data")
         return dict(os.environ)
 
-    local_process._env_for = peer_environment
-    local_stream._llm_gate_check = lambda *_args: ""
     machine = runner_main.Runner("http://127.0.0.1:1", "fixture", "fixture", "fixture", str(workspace))
+    if agent == "ai-planning":
+        from planning_steering_host import desktop_jobs
+        job = desktop_jobs(machine, workspace)
+    else:
+        local_process._env_for = peer_environment
+        local_stream._llm_gate_check = lambda *_args: ""
+        job = machine._job
     # Exercise steering through real admission without depending on host load.
     # Keep the production budget calculation; only machine facts are synthetic.
     machine._resource_budget.sampler = lambda: {
@@ -89,14 +97,14 @@ async def run():
         raise AssertionError(f"Runner timed out: {states}")
 
     async def session(ref):
-        return (await machine._job({"op": "job.session", "ref": ref, "limit": 1000}))["data"]
+        return (await job({"op": "job.session", "ref": ref, "limit": 1000}))["data"]
 
     try:
         if "--dialogue" in sys.argv:
             from runner_dialogue_checks import exercise
-            await exercise(machine, agent, workspace, until, refs)
+            await exercise(job, agent, workspace, until, refs)
             return
-        started = await machine._job({"op": "job.dispatch", "cli": agent, "dispatchId": "fixture-" + agent,
+        started = await job({"op": "job.dispatch", "cli": agent, "dispatchId": "fixture-" + agent,
             "task": {"id": "fixture-" + agent, "title": "STEER_FIRST", "note": "STEER_FIRST"},
             "ctx": {"workDir": str(workspace), "workRoot": str(workspace), "conversationMode": "adaptive",
                     "conversationUserText": "STEER_FIRST"}, "cfg": {}})
@@ -110,7 +118,7 @@ async def run():
             return (data, pid) if pid and data.get("cliSid") else None
         first, original_pid = await until(ready)
         sid = first["cliSid"]
-        stopped = await machine._job({"op": "job.stop", "ref": ref})
+        stopped = await job({"op": "job.stop", "ref": ref})
         assert stopped["ok"] and stopped["data"]["ok"], stopped
 
         async def terminal():
@@ -125,7 +133,7 @@ async def run():
                        "turnId": marker + agent, "cfg": {}, "_localParent": True}
             if marker == "STEER_NOW":
                 message["localFiles"] = [{"path": str(attachment), "filename": "note.txt", "contentType": "text/plain"}]
-            replied = await machine._job(message)
+            replied = await job(message)
             assert replied["ok"], replied
             if marker == "STEER_NOW" and "--stop-followup" in sys.argv:
                 async def followup_ready():
@@ -133,7 +141,7 @@ async def run():
                     pid = read_pid(workspace / "followup-ready")
                     return (data, pid) if pid and data.get("status") == "running" else None
                 _, followup_pid = await until(followup_ready)
-                assert (await machine._job({"op": "job.stop", "ref": ref}))["data"]["ok"]
+                assert (await job({"op": "job.stop", "ref": ref}))["data"]["ok"]
                 observed = await session(ref)
                 assert observed.get("cliSid") == sid, ("admission cancellation must not hide native session/events", observed)
                 assert not (observed["status"] in {"stopped", "cancelled"} and local_base._RUNS[ref]["state"] == "running"), "stop ACK is not a process terminal"
@@ -156,7 +164,7 @@ async def run():
         assert len(commands) == 3, commands
         # A later admission failure must still win over the previous native
         # turn's done state. This fails before comment_sync/launch, for real.
-        refused = await machine._job({"op": "job.comment", "ref": ref,
+        refused = await job({"op": "job.comment", "ref": ref,
             "text": "SHOULD_NOT_START", "turnId": "failed-preflight-" + agent,
             "_localParent": True, "localFiles": [{"path": str(work / "absent.txt"), "filename": "absent.txt"}]})
         assert refused["ok"], refused  # admitted first; then actual preflight fails

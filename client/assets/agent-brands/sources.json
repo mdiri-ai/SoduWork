@@ -10,6 +10,16 @@
     "fallbacks": "Unknown runtimes retain the generic shield. Codex and Codex Harness use the local reference-based knot mark recorded below; it is not presented as an official OpenAI asset.",
     "reviewEvidence": "Sources were checked against the recorded official source or brand-guideline URL before inclusion. SHA-256 values pin the exact local files."
   },
+  "ai-planning": {
+    "file": "planning.png",
+    "product": "Planning Harness",
+    "source": "client/icon.png",
+    "collection": "SoduWork local artwork",
+    "artworkOrigin": "soduwork-designed-reference",
+    "colorNote": "The full-color SoduWork shell frames a blue P with two aqua waypoints.",
+    "rightsNote": "Project artwork derived from the SoduWork desktop icon for the Planning Harness.",
+    "sha256": "1a7f528d18580b5e91e06e824ef921a1c68eb9ba1b2452868a9348c86033b2ca"
+  },
   "pi": {
     "file": "pi.svg",
     "product": "Pi",

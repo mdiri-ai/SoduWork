@@ -29,6 +29,10 @@ assert.equal(brand.version({ key: 'pi', version: '0.84.4' }), '0.84.4');
 
 [
   ['runner:pc-01:pi', 'pi'],
+  ['runner:pc-01:ai-planning', 'ai-planning'],
+  [{ displayName: 'Planning Harness' }, 'ai-planning'],
+  ['普通业务 · Planning Harness', 'ai-planning'],
+  ['custom-planning-helper', 'custom'],
   [{ key: 'codex-harness', name: 'Codex Harness' }, 'codex-harness'],
   [{ cli: 'Codex', key: 'runner:pc-01:codex' }, 'codex'],
   ['OpenCode', 'opencode'],

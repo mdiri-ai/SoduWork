@@ -58,7 +58,8 @@ async function fixture(t, spec, overrides = {}) {
   const model = { id: 'fixture', baseUrl: 'http://fixture.invalid', key: 'synthetic' };
   const adapter = createRunnerRuntimeAdapter({ app, runtimeSpec: spec, runnerRuntime: runtime,
     modelConfig: { fetchModel: async () => ({ ok: true, model }) } });
-  const session = await adapter.createSession({ identity: {}, native: { runner: { openOptions: {
+  const identity = require('./helpers/platform-session-fixture.cjs').planningIdentity(t, spec, model.baseUrl);
+  const session = await adapter.createSession({ identity, native: { runner: { openOptions: {
     app, cwd, ref, skillDirs: [base.path], capabilityIds: [], accessPolicy: rules.create('standard', cwd),
     resolveSkills: async names => { resolutions.push(names.slice());
       if (overrides.holdPrepare) await new Promise(resolve => { preparing = resolve; });

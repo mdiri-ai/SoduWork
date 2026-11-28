@@ -423,3 +423,15 @@ test('directory runtime restore checks its caller scope again after asynchronous
     assert.notEqual(f.runtime.value(), 'qwen', changed);
   }
 });
+
+test('Planning installation adds a choice and leaves the new draft default at Pi', async () => {
+  const planning = { id: 'ai-planning', displayName: 'Planning Harness' };
+  const rows = [fullCatalog[0], planning, ...fullCatalog.slice(1)];
+  const f = fixture(() => ({ ok: true, runtimes: rows, availableRuntimes: rows }));
+  await f.runtime.ready();
+  assert.equal(f.runtime.value(), 'pi');
+  await f.select(planning.id);
+  assert.equal(f.runtime.value(), planning.id);
+  await f.runtime.resetNewDraft();
+  assert.equal(f.runtime.value(), 'pi');
+});

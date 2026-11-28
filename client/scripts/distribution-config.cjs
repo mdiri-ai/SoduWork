@@ -27,7 +27,7 @@ function configuration({ env = process.env, profile = selected(env), base = requ
     directories: { ...base.directories, output: 'dist/' + profile.distributionId },
     // Stage candidates must carry their beta number into the signed installer
     // identity. Formal release jobs resolve to the committed stable version.
-    extraMetadata: { ...base.extraMetadata, version: candidateVersion(env),
+    extraMetadata: { ...base.extraMetadata, ...require('../main/planning-index.cjs').buildMetadata(env), version: candidateVersion(env),
       name: internal ? 'soduwork' : profile.linuxPackageName,
       productName: profile.productName, homepage: profile.websiteUrl,
       desktopName: profile.linuxExecutableName + '.desktop', soduworkDefaultHubUrl: profile.hubOrigin,
