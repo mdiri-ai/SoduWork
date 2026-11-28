@@ -51,13 +51,41 @@ function templateErrors(value, items = []) {
   return errors
 }
 
+function applyChangedFields(previous = {}, draft = {}, latest = {}) {
+  const result = { ...latest }
+  for (const key of Object.keys({ ...previous, ...draft })) {
+    if (previous[key] === draft[key]) continue
+    if (Object.hasOwn(draft, key)) result[key] = draft[key]
+    else delete result[key]
+  }
+  return result
+}
+
+function rebaseTemplateDraft(previous, draft, latest) {
+  const result = applyChangedFields(previous, draft, latest)
+  // Each translation and capability checkbox is an independent editor control.
+  for (const key of ['nameLocales', 'descriptionLocales', 'titleLocales', 'noteLocales']) {
+    if (previous[key] !== draft[key]) result[key] = applyChangedFields(previous[key] || {}, draft[key] || {}, latest[key])
+  }
+  const before = previous.requiredCapabilities || [], selected = draft.requiredCapabilities || []
+  const retained = (latest.requiredCapabilities || []).filter(cap => !before.includes(cap) || selected.includes(cap))
+  const added = selected.filter(cap => !before.includes(cap))
+  result.requiredCapabilities = [...new Set([...retained, ...added])]
+  if ((previous.startDate || previous.endDate) && !draft.startDate && !draft.endDate) {
+    result.startDate = ''
+    result.endDate = ''
+  }
+  return result
+}
+
 function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict, onReload }) {
   const formId = useId()
   const idRef = useRef(null), nameRef = useRef(null)
   const noteRef = useRef(null), rhythmChosen = useRef(false)
   const startRef = useRef(null), endRef = useRef(null)
   const [touched, setTouched] = useState({})
-  const [limitedDates, setLimitedDates] = useState(Boolean(value.startDate || value.endDate))
+  const [choosingDates, setChoosingDates] = useState(false)
+  const limitedDates = Boolean(value.startDate || value.endDate || choosingDates)
   const errors = templateErrors(value, items)
   if (limitedDates && !value.startDate && !value.endDate) errors.startDate = tx("请选择开始或结束日期，或选择长期有效")
   useEffect(() => {
@@ -149,13 +177,18 @@ function Editor({ value, items = [], onChange, onCancel, onSave, busy, conflict,
     <div className="at-section"><b>{tx("默认生效日期")}</b><div className="at-dates">
       <label className="at-unlimited"><input type="checkbox" name="unlimitedDates" checked={!limitedDates}
         onChange={(event) => {
-          setLimitedDates(!event.target.checked)
+          setChoosingDates(!event.target.checked)
           if (event.target.checked) onChange({ ...value, startDate: '', endDate: '' })
         }} />{tx("长期有效")}</label>
       {[['startDate', '开始日期', startRef], ['endDate', '结束日期', endRef]].map(([key, label, ref]) =>
         <label key={key}><span>{tx(label)}</span><input ref={ref} type="date" name={key} disabled={!limitedDates}
           min="0001-01-01" max="9999-12-31" value={value[key] || ''}
-          onChange={(event) => { set(key, event.target.value); touch(key) }} onBlur={() => touch(key)}
+          onChange={(event) => {
+            const date = event.target.value
+            setChoosingDates(!date && !(key === 'startDate' ? value.endDate : value.startDate))
+            set(key, date)
+            touch(key)
+          }} onBlur={() => touch(key)}
           aria-invalid={Boolean(touched[key] && errors[key])}
           aria-describedby={formId + '-dates-hint' + (touched[key] && errors[key] ? ' ' + formId + '-' + key + '-error' : '')} />
           {touched[key] && errors[key] && <small className="at-field-error" id={formId + '-' + key + '-error'} role="status">{errors[key]}</small>}
@@ -186,7 +219,25 @@ export default function AutomationTemplates() {
   const [busy, setBusy] = useState(false)
   const [toggling, setToggling] = useState(null)
   const [error, setError] = useState('')
-  const load = () => api.automationTemplates().then((data) => { setItems(data.items || []); setRevision(data.revision); setConflict(false); setError('') }).catch((e) => setError(e.message || tx("模板暂时加载失败")))
+  const pendingLoad = useRef(null)
+  function load() {
+    if (pendingLoad.current) return pendingLoad.current
+    pendingLoad.current = api.automationTemplates().then(data => {
+      const latest = data.items || []
+      setEditing(draft => {
+        if (!draft?.updatedAt) return draft
+        const previous = items?.find(item => item.id === draft.id)
+        const current = latest.find(item => item.id === draft.id)
+        return previous && current ? rebaseTemplateDraft(previous, draft, current) : draft
+      })
+      setItems(latest)
+      setRevision(data.revision)
+      setConflict(false)
+      setError('')
+    }).catch(e => setError(e.message || tx("模板暂时加载失败")))
+      .finally(() => { pendingLoad.current = null })
+    return pendingLoad.current
+  }
   useEffect(() => { load() }, [])
   const enabled = useMemo(() => (items || []).filter((x) => x.enabled).length, [items, uiLocale])
   async function save() {

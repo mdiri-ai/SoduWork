@@ -125,15 +125,20 @@ test('date editor defaults to unlimited, validates ranges and clears limits expl
   } finally { page.unmount() }
 })
 
-test('existing template dates are editable and keep date inputs enabled', async () => {
+test('the date controls reflect the effective bounds after reloading an existing draft', async () => {
+  const props = { value: { ...valid, updatedAt: '2030-01-01', endDate: '2030-12-31' }, onChange() {}, onCancel() {}, onSave() {} }
   const page = await createComponentHarness(new URL('../src/screens/AutomationTemplates.jsx', import.meta.url), {
-    exportName: 'Editor', privateExports: ['Editor'], dependencies,
-    props: { value: { ...valid, updatedAt: '2030-01-01', endDate: '2030-12-31' }, onChange() {}, onCancel() {}, onSave() {} },
+    exportName: 'Editor', privateExports: ['Editor'], dependencies, props,
   })
   try {
     assert.equal(page.nodes(n => n.props.name === 'unlimitedDates')[0].props.checked, false)
     assert.equal(page.nodes(n => n.props.name === 'endDate')[0].props.disabled, false)
     assert.equal(page.nodes(n => n.props.name === 'endDate')[0].props.value, '2030-12-31')
+    page.render({ ...props, value: { ...props.value, endDate: '' } })
+    assert.equal(page.nodes(n => n.props.name === 'unlimitedDates')[0].props.checked, true)
+    assert.equal(page.nodes(n => n.props.name === 'endDate')[0].props.disabled, true)
+    page.render(props)
+    assert.equal(page.nodes(n => n.props.name === 'endDate')[0].props.disabled, false)
   } finally { page.unmount() }
 })
 
