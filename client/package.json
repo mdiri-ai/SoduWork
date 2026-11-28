@@ -51,7 +51,8 @@
   },
   "devDependencies": {
     "electron": "^44.9.1",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "typescript": "6.0.3"
   },
   "build": {
     "appId": "com.soduwork.app",

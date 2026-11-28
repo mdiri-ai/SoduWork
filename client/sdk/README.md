@@ -8,6 +8,45 @@ SDK 1.6 adds read-only access to the current user, organization members, convers
 
 SDK 1.4 adds `data.get/list/batch/assetPut/assetGet` and public `mcp.connect`. Read the packaged `references/developer/references/host-sdk.md` for host settings, SQLite, assets, MCP binding, and authentication. Pages and background tools share host data. Closing a window does not delete its data or schedules.
 
+## TypeScript consumers (SDK 1.7)
+
+Copy [soduwork-app.d.ts](soduwork-app.d.ts) beside the matching JavaScript file.
+Load `soduwork-app.js` in the page as before, and include the declaration in your
+TypeScript compiler inputs or reference it from the application source:
+
+```ts
+/// <reference path="./soduwork-app.d.ts" />
+
+async function submit(text: string) {
+  const receipt = await window.soduWorkApp.chat.send({
+    text, requestId: soduWorkApp.createRequestId()
+  });
+  if (!receipt.ok) {
+    // An uncertain result needs inspection before any resubmission.
+    throw new Error(receipt.reason);
+  }
+  // receipt.accepted === true means conversation admission, not completion.
+}
+```
+
+The declaration supplies browser globals in scripts and ES modules, with a
+type-only `SoduWorkApp` namespace. It does not provide an npm/CommonJS runtime
+export; do not import the declaration as executable code. It covers public H5
+methods, request parameters, receipts and subscriptions, including the low-level
+transfer requests. Native-only methods remain outside this public surface.
+
+`attachments.importFile` resolves to one attachment and reports progress with
+`(loaded, total)`. `files.importFile` returns a persistent-file receipt and reports
+`{loaded, total}`. Query results narrow by `ok`, content/history `format`, and
+segment selection. Turn-settled events are refresh hints; automation `created`
+means saved. Transport/import errors may reject their promises, so retain error
+handling as well as failure and uncertain receipt handling.
+
+Existing JavaScript, optional locale fields, first-page cursors and settings
+revisions remain compatible. Types do not validate size limits, origins,
+permissions or business results; the same runtime checks still apply. The
+built-in App Developer also distributes the declaration with its SDK resources.
+
 ## Read the shell interface language
 
 After declaring `context.read`, call `await soduWorkApp.context.get()` to read `locale`

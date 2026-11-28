@@ -11,7 +11,7 @@ function body(app) {
   const root = app.isPackaged ? path.join(process.resourcesPath, 'skills/app-developer') : path.resolve(__dirname, '../../skills/app-developer');
   const resource = (name, bytes, kind = 'reference') => ({ path: 'references/developer/' + name, kind, encoding: 'base64', content: Buffer.from(bytes).toString('base64') });
   return {
-    template: 'method', key: 'app-developer', name: '即用开发', version: '1.7.3',
+    template: 'method', key: 'app-developer', name: '即用开发', version: '1.7.4',
     locales: {
       'zh-CN': { name: '即用开发', description: '基于插件开发规范，制作带独立窗口、页面与 SoduWork 对话桥的即用，完成预检、安装和交互验证。' },
       'en-US': { name: 'App Developer', description: 'Build apps with dedicated windows, pages and the SoduWork conversation bridge; verify, install and test interactions.' },
@@ -46,6 +46,7 @@ function body(app) {
         fs.readFileSync(path.resolve(__dirname, '..', name)))),
       resource('plugin-development.md', base.body().instructions),
       resource('sdk/soduwork-app.js', fs.readFileSync(path.resolve(__dirname, '../sdk/soduwork-app.js'))),
+      resource('sdk/soduwork-app.d.ts', fs.readFileSync(path.resolve(__dirname, '../sdk/soduwork-app.d.ts'))),
       resource('sdk/README.md', fs.readFileSync(path.resolve(__dirname, '../sdk/README.md'))),
     ],
   };

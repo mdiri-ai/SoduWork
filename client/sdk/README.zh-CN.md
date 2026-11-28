@@ -32,6 +32,42 @@ if (!receipt.ok) throw new Error(receipt.reason);
 
 `soduwork-app.js` 是可直接复制到业务站点的公共 JS。即用壳负责当前即用的原生对话、权限和刷新；H5 不访问 Electron、设备凭据或原生会话 ref。
 
+## TypeScript 接入（SDK 1.7）
+
+将 [soduwork-app.d.ts](soduwork-app.d.ts) 与对应版本的 JavaScript 一起复制。
+页面仍照常加载 `soduwork-app.js`；把声明文件加入 TypeScript 编译输入，
+或在应用源码中引用：
+
+```ts
+/// <reference path="./soduwork-app.d.ts" />
+
+async function submit(text: string) {
+  const receipt = await window.soduWorkApp.chat.send({
+    text, requestId: soduWorkApp.createRequestId()
+  });
+  if (!receipt.ok) {
+    // 结果未确认时，先核对已有记录，再决定是否重新提交。
+    throw new Error(receipt.reason);
+  }
+  // receipt.accepted === true 表示会话已接受，不表示业务执行完成。
+}
+```
+
+声明可用于普通脚本和 ES 模块，提供浏览器全局变量与仅用于类型的
+`SoduWorkApp` 命名空间，不提供 npm/CommonJS 运行时导出；不要把声明文件
+当作可执行模块导入。覆盖公共 H5 方法、请求参数、回执和订阅，也包括
+底层文件传输请求；原生桥内部方法不属于这套公共接口。
+
+`attachments.importFile` 直接返回单个附件，进度回调为 `(loaded, total)`；
+`files.importFile` 返回持久文件回执，进度回调为 `{loaded, total}`。
+查询回执按 `ok`、正文/历史的 `format` 与分段选择区分；轮次结束事件仅为
+刷新提示，自动化 `created` 仅表示已保存。传输和导入错误可能使 Promise
+拒绝，必须同时处理异常、失败回执和结果未确认的情况。
+
+原有 JavaScript、可省略的语言字段、第一页游标和设置版本继续兼容。
+类型不能验证大小限制、来源、权限或业务成果，运行时仍执行原有校验。
+内置即用开发插件也会将声明文件与 SDK 资源一起分发。
+
 ## 直接发送
 
 插件基础信息中，外部页面的 `source.bridge.capabilities` 声明 `conversation.send` 与 `composer.control`。安装后从 SoduWork 的即用入口打开页面：
