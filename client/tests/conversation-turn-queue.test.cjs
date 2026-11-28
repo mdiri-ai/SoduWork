@@ -182,3 +182,19 @@ test('a follow-up submitted after the terminal stall settles clears only its aut
   assert.equal(queue.state().paused, true);
   assert.match(queue.state().reason, /用户明确暂停/);
 });
+
+test('synchronous cancellation receipt errors cannot strand completion or interrupt clearing', async () => {
+  const queue = createTurnQueue(); let receipts = 0;
+  const first = queue.add({ text: 'first', options: { taskId: 'one', afterTurn() {
+    receipts++; throw Error('receipt unavailable');
+  } } });
+  const second = queue.add({ text: 'second', options: { taskId: 'two' } });
+  assert.equal(queue.clear(), 2);
+  assert.equal(queue.size(), 0);
+  assert.deepEqual(await first.completion, { ok: false, reason: '会话已关闭' });
+  assert.deepEqual(await second.completion, { ok: false, reason: '会话已关闭' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(receipts, 1);
+  assert.equal(queue.state().paused, true);
+  assert.equal(queue.state().tasks.filter(row => row.status === 'cancelled').length, 2);
+});
