@@ -25,10 +25,12 @@
     woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf', otf: 'font/otf', ico: 'image/x-icon', avif: 'image/avif'
   };
 
-  function safeMarkdown(value) {
+  function safeMarkdown(value, options = {}) {
     if (!global.marked || !global.DOMPurify) return null;
+    const forbid = ['iframe', 'object', 'embed', 'form', 'input', 'button', 'script', 'style'];
+    if (!options.allowImages) forbid.push('img');
     return global.DOMPurify.sanitize(global.marked.parse(text(value)), {
-      FORBID_TAGS: ['img', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'script', 'style'],
+      FORBID_TAGS: forbid,
       FORBID_ATTR: ['style', 'onerror', 'onclick', 'onload']
     });
   }
@@ -237,6 +239,51 @@
       throw new Error('HTML 预览处理失败，请下载原文件查看');
     }
   }
+  async function resolveMarkdownAssets(html, files, current, readFile) {
+    const manifest = new Map(); let total = 0, reads = 0;
+    const perAsset = 2 * 1024 * 1024, aggregate = 8 * 1024 * 1024;
+    for (const file of files || []) {
+      const path = normalizeAssetPath(file?.path);
+      if (path && !file.isDirectory && !manifest.has(path)) manifest.set(path, file);
+    }
+    const owner = current?.path || '';
+    const urls = new Map();
+    async function asset(reference) {
+      const resolved = resolveAssetPath(reference, owner);
+      if (!resolved || 'literal' in resolved) return '';
+      const { path, fragment } = resolved;
+      if (!urls.has(path)) urls.set(path, (async () => {
+        const file = manifest.get(path), declared = Number(file?.size) || 0;
+        if (!file || reads >= 128 || declared > perAsset || total + declared > aggregate) return '';
+        reads++;
+        try {
+          const blob = await readFile(file.path);
+          if (blob.size > perAsset || total + blob.size > aggregate) return '';
+          total += blob.size;
+          return dataUrl(blob, mimeByExtension[extension(path)] || contentType(file) || blob.type || 'application/octet-stream');
+        } catch (error) {
+          if (error?.code === 'STALE_TASK_SCOPE' || error?.code === 'STALE_PREVIEW' || error?.name === 'AbortError') throw error;
+          return '';
+        }
+      })());
+      const url = await urls.get(path);
+      return url ? url + fragment : '';
+    }
+    const doc = new DOMParser().parseFromString(String(html || ''), 'text/html');
+    for (const img of [...doc.querySelectorAll('img[src]')]) {
+      const url = await asset(img.getAttribute('src').trim());
+      if (url) img.setAttribute('src', url); else img.remove();
+    }
+    for (const anchor of [...doc.querySelectorAll('a[href]')]) {
+      anchor.removeAttribute('target');
+      const reference = anchor.getAttribute('href').trim();
+      if (reference.startsWith('#')) continue;
+      const url = await asset(reference);
+      if (url) { anchor.setAttribute('href', url); anchor.setAttribute('download', basename(reference)); }
+      else anchor.replaceWith(...anchor.childNodes);
+    }
+    return doc.body.innerHTML;
+  }
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -348,8 +395,8 @@
           return;
         }
         if (ext === 'md' || ext === 'markdown') {
-          const html = safeMarkdown(source);
-          if (html) { body.innerHTML = html; body.querySelectorAll('a').forEach(anchor => { const span = document.createElement('span'); span.textContent = anchor.textContent; anchor.replaceWith(span); }); }
+          const html = safeMarkdown(source, { allowImages: true });
+          if (html) { const resolved = await resolveMarkdownAssets(html, files || [], file, path => provider.readFile(path)); if (!valid() || request !== version) return; body.innerHTML = resolved; }
           else { const pre = document.createElement('pre'); pre.textContent = source; body.replaceChildren(pre); }
         } else { const pre = document.createElement('pre'); pre.textContent = source; body.replaceChildren(pre); }
       } catch (error) {
