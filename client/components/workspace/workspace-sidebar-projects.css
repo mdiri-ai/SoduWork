@@ -101,3 +101,10 @@
 @media(max-width:460px){.ws-project-dialog{padding:20px}.ws-project-dialog footer{gap:4px}.ws-project-dialog footer button{padding:8px 11px}}
 
 :root[lang="en-US"] .workspace-shell.is-chat-dragging #wsPinnedBox.is-empty .ws-list-body:empty::after{content:"Drop here to pin"}
+
+/* Project folder drag: the dragged section dims; a bar highlights the drop edge (release inserts at that position). */
+.ws-project.is-project-dragging{opacity:.45}
+.ws-project.is-drop-before>.ws-project-heading{box-shadow:0 -3px 0 0 var(--accent)}
+.ws-project.is-drop-after>.ws-project-heading{box-shadow:0 3px 0 0 var(--accent)}
+.ws-project.is-drop-before{border-top:3px solid var(--accent);margin-top:-3px}
+.ws-project.is-drop-after{border-bottom:3px solid var(--accent);margin-bottom:-3px}

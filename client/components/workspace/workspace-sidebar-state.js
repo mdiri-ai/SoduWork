@@ -157,6 +157,8 @@
       recent: source.recent === true,
       projects: Object.fromEntries(Object.entries(projects).filter(([id, enabled]) =>
         /^project-[\w-]+$/.test(id) && enabled === true)),
+      projectOrder: unique((Array.isArray(source.projectOrder) ? source.projectOrder : [])
+        .filter(id => /^project-[\w-]+$/.test(id))),
     };
   }
   function normalized(value) {
@@ -226,6 +228,17 @@
     return { id: project.id, name: project.name, folders: project.folders, chatIds,
       collapsed: project.collapsed, createdAt: project.createdAt,
       ...(project.archivedAt ? { archivedAt: project.archivedAt } : {}) };
+  }
+  function orderedProjects(projects, order) {
+    // Manual ordering (drag) wins over rebuild heuristics: known IDs keep the
+    // saved sequence, IDs absent from it keep their current relative order.
+    const wanted = unique(order);
+    if (!wanted.length || !Array.isArray(projects)) return projects;
+    const positions = new Map(wanted.map((id, index) => [id, index]));
+    const ordered = projects.filter(project => positions.has(project.id))
+      .sort((a, b) => positions.get(a.id) - positions.get(b.id));
+    const rest = projects.filter(project => !positions.has(project.id));
+    return [...ordered, ...rest];
   }
   function createDevicePartition(storage, key) {
     let shared = null, sharedKey = '', sharedRaw = null;
@@ -344,7 +357,9 @@
       const merged = { ...account, rows: [...visibleRows, ...account.rows.filter(row => !canonical(row.id))],
         pins: orderedIds(shared.pins, account.pins), recent: orderedIds(shared.recent, account.recent),
         manualOrder: { recent: shared.manualOrder.recent || account.manualOrder.recent,
-          projects: { ...account.manualOrder.projects, ...shared.manualOrder.projects } }, collapsed: shared.collapsed };
+          projects: { ...account.manualOrder.projects, ...shared.manualOrder.projects },
+          projectOrder: unique([...shared.manualOrder.projectOrder, ...account.manualOrder.projectOrder]) },
+        collapsed: shared.collapsed };
       for (const section of ['projects', 'archivedProjects']) {
         const locals = new Map(shared[section].map(project => [project.id, project]));
         const allShared = new Set([...shared.projects, ...shared.archivedProjects].map(project => project.id));
@@ -356,6 +371,7 @@
         for (const project of account[section]) if (!allShared.has(project.id) && !shared.projectOwners[project.id])
           merged[section].push({ ...project, chatIds: remoteIds(project.chatIds) });
       }
+      merged.projects = orderedProjects(merged.projects, merged.manualOrder.projectOrder);
       return normalized(merged);
     }
     function accountState(account) {
@@ -393,8 +409,13 @@
         }
       }
       const projectIds = new Set([...local.projects, ...local.archivedProjects].map(project => project.id));
+      const knownIds = new Set([...projectIds, ...privateState.projects.map(project => project.id),
+        ...privateState.archivedProjects.map(project => project.id)]);
+      const projectOrder = local.manualOrder.projectOrder.filter(id => knownIds.has(id));
       local.manualOrder = { ...local.manualOrder,
-        projects: Object.fromEntries(Object.entries(local.manualOrder.projects).filter(([id]) => projectIds.has(id))) };
+        projects: Object.fromEntries(Object.entries(local.manualOrder.projects).filter(([id]) => projectIds.has(id))),
+        projectOrder };
+      privateState.manualOrder = { ...privateState.manualOrder, projectOrder };
       const localValue = JSON.stringify({ ...normalized(local), migratedIds: local.migratedIds, projectOwners: local.projectOwners });
       const accountValue = JSON.stringify(normalized(privateState));
       const priorAccount = storage.getItem(key);
@@ -588,10 +609,12 @@
             return;
           }
           commit(next => {
-          const old = next.projects.find(p => p.id === project.id);
-          next.projects = next.projects.filter(p => p.id !== project.id);
-          if (!project.deleted) next.projects.push({...old, ...project});
-        }); } finally { onChange = callback; }
+            const old = next.projects.find(p => p.id === project.id);
+            next.projects = next.projects.filter(p => p.id !== project.id);
+            if (!project.deleted) next.projects.push({...old, ...project});
+            // The re-push must not drop a dragged position: restore the persisted order.
+            next.projects = orderedProjects(next.projects, next.manualOrder.projectOrder);
+          }); } finally { onChange = callback; }
       },
       view, get: () => { refresh(); return copy(state); },
       getAccount: () => { refresh(); return copy(device.accountState(accountState)); },
@@ -711,6 +734,19 @@
         });
         return filed;
       },
+      /* Manual project ordering (drag): projects absent from the list keep their relative order. */
+      reorderProjects(dragOrder) { commit(next => {
+        const wanted = unique((dragOrder || []).map(String));
+        if (!wanted.length) return;
+        const map = new Map(next.projects.map(p => [p.id, p]));
+        const ordered = wanted.map(id => map.get(id)).filter(Boolean);
+        const rest = next.projects.filter(p => !wanted.includes(p.id));
+        next.projects = [...ordered, ...rest];
+        // The full sequence is persisted so rebuilds (restart, sync, another
+        // window) restore the dragged order instead of re-applying heuristics.
+        next.manualOrder = normalizedManualOrder({ ...next.manualOrder,
+          projectOrder: [...ordered.map(p => p.id), ...rest.map(p => p.id)] });
+      }); },
       move(item, target, beforeId, items) {
         if (!item?.id || item.pending) throw Error('会话建立后即可移动');
         const id = String(item.id);

@@ -291,3 +291,15 @@ test('storage failure rolls back the account half and retains local organization
   assert.deepEqual([...f.values.entries()], before);
   f.block(''); assert.equal(f.open('b').get().pins.includes('native-a'), true);
 });
+
+test('merged project rebuild keeps the dragged order across accounts and restarts', () => {
+  const f = fixture({ [key('a')]: JSON.stringify(saved({ remote: '' })) });
+  const rows = [{ id: 'native-a', title: 'A', createdAt: 10 }];
+  f.catalog(['native-a'], rows);
+  const a = f.open('a'), b = f.open('b');
+  const second = a.saveProject({ name: 'Second' });
+  assert.deepEqual(plain(a.get().projects.map(p => p.id)), ['project-a', second]);
+  a.reorderProjects([second, 'project-a']);
+  assert.deepEqual(plain(a.get().projects.map(p => p.id)), [second, 'project-a']);
+  assert.deepEqual(plain(f.open('a').get().projects.map(p => p.id)), [second, 'project-a']);
+});
