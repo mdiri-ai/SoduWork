@@ -140,7 +140,7 @@
     if (!global.PluginUIHost) return false;
     const element = context.mount();
     const input = element && element.querySelector('#nchatInput');
-    context.dismissProposal(true);
+    if (!options?.proposal) context.dismissProposal(true);
     try {
       const invocation = PluginUIHost.invoke(action.id, {
         cardId: options?.cardId, cardState: options?.cardState,

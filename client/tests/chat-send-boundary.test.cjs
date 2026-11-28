@@ -75,6 +75,15 @@ function fixture({ fresh = false, attachments, send, files: initialFiles } = {})
   return { ctx, input, bridge, requests, notices, added, plugins, switchTo, paints: () => paints };
 }
 
+test('sending a chat message clears a pending suggestion without muting future proposals', async () => {
+  const f = fixture();
+  const dismissals = [];
+  f.ctx._dismissProposal = mute => dismissals.push(mute);
+  f.input.value = 'Consider the next task';
+  assert.equal(await f.ctx._sendCore(), true);
+  assert.deepEqual(dismissals, [false]);
+});
+
 test('automation timing uses the send click before asynchronous access checks', async () => {
   const f = fixture(), check = deferred(); let clock = Date.parse('2099-11-16T12:13:00Z'), routed;
   f.ctx.Date = class extends Date { static now() { return clock; } };
