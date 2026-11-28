@@ -7,7 +7,7 @@ import ast
 import errno
 import io
 import json
-from contextlib import closing, nullcontext, redirect_stderr, redirect_stdout
+from contextlib import ExitStack, closing, nullcontext, redirect_stderr, redirect_stdout
 import os
 from pathlib import Path
 import secrets
@@ -1513,6 +1513,7 @@ class LocalStartupTests(unittest.TestCase):
                 patch.object(build, 'source_files', return_value=[]), \
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value=None), \
+                patch.object(build, 'venv_pip_ready', return_value=True), \
                 patch.object(build, 'run', side_effect=self.fake_venv_run(state)) as run:
             cache_env = build.prepare_environment(state)
             build.prepare(state, state / 'startup.log')
@@ -1546,6 +1547,7 @@ class LocalStartupTests(unittest.TestCase):
                 patch.object(build, 'digest_files', return_value='digest'), \
                 patch.object(build, 'read_stamp', return_value='digest'), \
                 patch.object(build, 'verify_runner_environment', side_effect=build.DiskFullError('Disk full')), \
+                patch.object(build, 'venv_pip_ready', return_value=True), \
                 patch.object(build, 'run', side_effect=self.fake_venv_run(self.state)) as run:
             with self.assertRaises(build.DiskFullError):
                 build.prepare(self.state, self.state / 'startup.log')
@@ -1616,6 +1618,113 @@ class LocalStartupTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn('MSYS2/Cygwin', message)
         self.assertIn(str(posix), message)
+
+    def half_created_venv_patches(self, state, run):
+        """Shared isolation for retrying a venv whose ensurepip step failed."""
+        return (patch.object(build, 'check_dependencies', return_value=('node', 'npm')),
+                patch.object(build, 'sync_source'), patch.object(build, 'shutil'),
+                patch.object(build, 'source_copy_targets', return_value=()),
+                patch.object(build, 'checkout_files', return_value=None),
+                patch.object(build, 'digest_files', return_value='digest'),
+                patch.object(build, 'read_stamp', return_value=None),
+                patch.object(build, 'verify_runner_environment'),
+                patch.object(build, 'run', side_effect=run))
+
+    def test_half_created_venv_repairs_pip_instead_of_failing_at_install(self):
+        """ensurepip 失败后重试：解释器还在但 pip 缺失，必须先修复而不是直接装依赖。"""
+        state = Path(self.temp.name) / 'half-created'
+        state.mkdir()
+        interpreter = state / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text('', encoding='utf-8')
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+
+        with ExitStack() as stack:
+            for patcher in self.half_created_venv_patches(state, run):
+                stack.enter_context(patcher)
+            stack.enter_context(patch.object(build, 'venv_pip_ready', side_effect=[False, True]))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            build.prepare(state, state / 'startup.log')
+        self.assertFalse(any('-m' in command and 'venv' in command for command in commands),
+                         'The existing interpreter must be reused, not recreated')
+        repair = next(command for command in commands if 'ensurepip' in command)
+        self.assertEqual(repair[:4], [str(interpreter), '-m', 'ensurepip', '--upgrade'])
+        self.assertTrue(any('pip' in command and 'install' in command for command in commands),
+                        'Dependency installation proceeds after the repair')
+
+    def test_unrepairable_pip_bootstrap_reports_interpreter_advice_and_logs_it(self):
+        """解释器不带 ensurepip（如 uv 独立构建）：给出可操作的诊断，而不是让用户删数据。"""
+        state = Path(self.temp.name) / 'no-ensurepip'
+        state.mkdir()
+        log = state / 'startup.log'
+        interpreter = state / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text('', encoding='utf-8')
+
+        def run(command, **kwargs):
+            if 'ensurepip' in command:
+                raise build.StartupError('ensurepip fixture failure')
+
+        with ExitStack() as stack:
+            for patcher in self.half_created_venv_patches(state, run):
+                stack.enter_context(patcher)
+            stack.enter_context(patch.object(build, 'venv_pip_ready', return_value=False))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            with self.assertRaises(build.StartupError) as raised:
+                build.prepare(state, log)
+        message = str(raised.exception)
+        self.assertIn('ensurepip', message)
+        self.assertIn('uv venv --seed', message)
+        self.assertIn(str(interpreter), message)
+        self.assertIn('不需要删除', message)
+        logged = log.read_text(encoding='utf-8')
+        self.assertIn('--- 独立环境诊断 / private environment diagnosis ---', logged)
+        self.assertIn('uv venv --seed', logged)
+
+    def test_pip_repair_disk_full_is_not_replaced_with_interpreter_advice(self):
+        state = Path(self.temp.name) / 'repair-disk-full'
+        state.mkdir()
+        interpreter = state / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text('', encoding='utf-8')
+
+        def run(command, **kwargs):
+            if 'ensurepip' in command:
+                raise build.DiskFullError('Disk full')
+
+        with ExitStack() as stack:
+            for patcher in self.half_created_venv_patches(state, run):
+                stack.enter_context(patcher)
+            stack.enter_context(patch.object(build, 'venv_pip_ready', return_value=False))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            with self.assertRaises(build.DiskFullError):
+                build.prepare(state, state / 'startup.log')
+
+    def test_healthy_cached_venv_skips_the_pip_repair(self):
+        state = Path(self.temp.name) / 'healthy-cache'
+        state.mkdir()
+        interpreter = state / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        interpreter.parent.mkdir(parents=True)
+        interpreter.write_text('', encoding='utf-8')
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append(command)
+
+        with ExitStack() as stack:
+            for patcher in self.half_created_venv_patches(state, run):
+                stack.enter_context(patcher)
+            stack.enter_context(patch.object(build, 'venv_pip_ready', return_value=True))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            build.prepare(state, state / 'startup.log')
+        self.assertFalse(any('ensurepip' in command for command in commands))
+
+    def test_pip_probe_tolerates_missing_interpreter_and_reports_real_pip(self):
+        self.assertFalse(build.venv_pip_ready(Path(self.temp.name) / 'absent-python'))
+        self.assertTrue(build.venv_pip_ready(Path(sys.executable)))
 
     def test_cached_nonwindows_desktop_does_not_prepare_windows_shell(self):
         with patch.object(sys, 'platform', 'darwin'):
@@ -1905,6 +2014,7 @@ class LocalStartupTests(unittest.TestCase):
         self.state.mkdir()
         with patch.object(build, "ROOT", source), patch.object(build, "check_dependencies", return_value=("node", "npm")), \
                 patch.object(build, 'checkout_files', return_value=None), \
+                patch.object(build, 'venv_pip_ready', return_value=True), \
                 patch.object(build, "run", side_effect=run):
             build.prepare(self.state, self.state / "startup.log")
             install = next(command for command in commands if 'pip' in command)
