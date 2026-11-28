@@ -249,5 +249,57 @@
     try { const value = await api.preview(ref); if (!value?.ok) throw Error(value?.reason || '无法检查交接条件'); if (current()) display(value); }
     catch (problem) { if (current()) fail(problem.message); }
   }
-  global.ChatCloudHandoff = { ICON, open, sync, select };
+  const BRANCH_DEFAULT = '请根据本会话已有记录和工作文件继续完成原任务，验证最终成果并说明尚未解决的问题。';
+  let branchActive = null;
+  async function branch(ref) {
+    if (!ref || branchActive || !sameSession(ref)) return;
+    const owner = ownerScope();
+    const api = global.soduWorkAPI?.conversationSession || global.soduWorkAPI?.piSession;
+    if (!api?.branch) { global.petSay?.('请更新客户端后再使用会话分支'); return; }
+    const info = global.NativeChat?.sessionInfo?.();
+    const agentId = info?.selectedAgentId || info?.adapterId || 'pi';
+    const dialog = dialogShell('ncloudBranchTitle', '<form class="nchat-rename-form"><header><div><h2 id="ncloudBranchTitle">在新对话中创建分支</h2>' +
+      '<p>原会话保持不变。分支沿用当前会话的上下文，在新的云端会话里继续推进。</p></div>' +
+      '<button type="button" class="nchat-rename-close" data-branch-close aria-label="关闭">×</button></header>' +
+      '<textarea data-branch-instruction rows="4" maxlength="200000" required>' + esc(BRANCH_DEFAULT) + '</textarea>' +
+      '<p class="nchat-rename-error" role="alert" hidden></p>' +
+      '<footer><button type="button" data-branch-close>关闭</button>' +
+      '<button type="submit" class="nchat-rename-save">创建分支</button></footer></form>');
+    const area = dialog.querySelector('[data-branch-instruction]');
+    const submit = dialog.querySelector('[type=submit]');
+    const error = dialog.querySelector('[role=alert]');
+    const dispose = () => { dialog.close(); dialog.remove(); if (branchActive === dialog) branchActive = null; };
+    const close = () => dispose();
+    const current = () => branchActive === dialog && owner === ownerScope() && sameSession(ref);
+    dialog.querySelectorAll('[data-branch-close]').forEach(button => button.addEventListener('click', close));
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    dialog.querySelector('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!current()) { close(); return; }
+      if (global.NativeChat?.isBusy?.()) { close(); global.petSay?.('请等待本轮执行结束，再创建分支'); return; }
+      const instruction = String(area.value || '').trim();
+      if (!instruction) { error.textContent = '请填写继续执行的指令'; error.hidden = false; area.focus(); return; }
+      submit.disabled = true; submit.textContent = '正在创建分支…'; error.hidden = true;
+      try {
+        const result = await api.branch(ref, { instruction, agentId });
+        if (!current()) return;
+        if (!result?.ok) throw Error(result?.reason || '分支创建未完成，请稍后重试');
+        close();
+        // A branch continues in a NEW conversation, like the handoff confirm
+        // flow; opening the task detail would surface the requirement pool
+        // drawer instead of the branched session.
+        if (result.sessionId && global.NativeChat) {
+          global.NativeChat.reset();
+          if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) return;
+        }
+        global.petSay?.('分支已创建：' + (result.sessionId || '新的云端会话'));
+      } catch (problem) {
+        if (!current()) return;
+        submit.disabled = false; submit.textContent = '创建分支';
+        error.textContent = problem.message || '分支创建未完成，请稍后重试'; error.hidden = false;
+      }
+    });
+    branchActive = dialog; document.body.append(dialog); dialog.showModal(); area.focus();
+  }
+  global.ChatCloudHandoff = { ICON, open, sync, select, branch };
 })(window);

@@ -997,6 +997,54 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
     finally { for (const key of locks) lifecycleMutations.delete(key); }
   }
 
+  const branchLocks = new Map();
+  async function branch(id, { instruction, agentId } = {}) {
+    const text = String(instruction || '').trim();
+    if (!text) return { ok: false, reason: '请填写继续执行的指令后再创建分支' };
+    if (text.length > 200000) return { ok: false, reason: '继续指令过长，请精简后再创建分支' };
+    let lockedId = '';
+    try {
+      const identity = await (localIdentityOf || identityOf)?.(app);
+      if (closed || !identity?.session || !identityKey(identity)) throw Error('请先登录 SoduWork 后操作会话');
+      const captured = directoryScope(identity), generation = historyGeneration;
+      const resolved = await lifecycleTarget(id, identity, true);
+      const check = async () => {
+        if (closed || generation !== historyGeneration || captured !== directoryScope(await (localIdentityOf || identityOf)?.(app)))
+          throw Error('账号或服务已切换，请重新打开会话');
+      };
+      if (!resolved.found) return { ok: false, reason: '该会话尚未同步到账号，暂时无法创建分支' };
+      if (resolved.pending) return { ok: false, reason: '本地会话同步尚未确认，本次操作未完成，请稍后重试' };
+      const target = accountRows.get(resolved.conversation.id) || resolved.conversation;
+      if (!target?.id || target.deleted === true) return { ok: false, reason: '该会话已关闭，无法创建分支' };
+      lockedId = captured + ':' + target.id;
+      if (branchLocks.has(lockedId)) throw Error('这条会话正在创建分支，请稍后重试');
+      branchLocks.set(lockedId, true);
+      await check();
+      const agent = String(agentId || '').trim() || 'pi';
+      const request = require('node:crypto').randomUUID();
+      const response = await fetch(identity, endpoint(identity, '/account-conversations/branches/' +
+        encodeURIComponent(request)), {
+        method: 'POST', redirect: 'error', signal: AbortSignal.any([lifetime.signal, AbortSignal.timeout(30000)]),
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ accountConversationId: target.id, expectedRevision: Number(target.revision || 0),
+          instruction: text, agentId: agent }),
+      });
+      const data = await response.json().catch(() => ({}));
+      await check();
+      if (!response.ok) {
+        const detail = typeof data.detail === 'string' && data.detail ? data.detail : '';
+        if (response.status === 409) return { ok: false, reason: detail || '会话记录已更新，请刷新会话后重新创建分支', changed: true };
+        if (response.status === 410) return { ok: false, reason: '该会话已关闭，无法创建分支' };
+        if (response.status === 413) return { ok: false, reason: '该会话记录过长，无法创建分支' };
+        return { ok: false, reason: detail || '分支创建未完成，请稍后重试' };
+      }
+      if (data.ok !== true || !data.sessionId || !data.taskId) throw Error('分支创建未确认，请刷新后重试');
+      return { ok: true, sessionId: data.sessionId, taskId: data.taskId, transferId: data.transferId || request,
+        accountConversationId: target.id, expectedRevision: Number(target.revision || 0) };
+    } catch (error) { return { ok: false, reason: String(error.message || error) }; }
+    finally { if (lockedId) branchLocks.delete(lockedId); }
+  }
+
   async function row(id) {
     const wanted = safeText(id, 180);
     if (!wanted) return null;
@@ -1147,7 +1195,7 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
   }
 
   Promise.resolve(store.jobs(1)).then(jobs => { if (jobs.length) schedule(); }).catch(() => {});
-  return { bind, flush, close, history, row, openProjection, resolveLifecycle, setLifecycle,
+  return { bind, flush, close, history, row, openProjection, resolveLifecycle, setLifecycle, branch,
     sourceProjection(id, identity) {
       if (directoryScope(identity) !== historyScope) return null;
       const row = sourceRows.get(JSON.stringify([identity.clientId, id]));

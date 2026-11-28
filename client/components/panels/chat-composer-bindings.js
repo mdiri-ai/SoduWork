@@ -653,6 +653,11 @@ function _bind(el) {
         })();
         return;
       }
+      const branchButton = e.target.closest('[data-branch-conversation]');
+      if (branchButton) {
+        if (ctx._ref) void global.ChatCloudHandoff?.branch?.(ctx._ref);
+        return;
+      }
       const older = e.target.closest('[data-load-older]');
       if (older) {
         if (ctx._loadingOlder || !ctx._ref) return;

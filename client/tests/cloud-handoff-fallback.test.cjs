@@ -123,3 +123,20 @@ test('a closed dialog late preview cannot invalidate the newly opened dialog con
   assert.equal(f.stops, 0); assert.equal(f.uploads, 0);
   await f.cloud.confirm(f.handle, input(latest)); assert.equal(f.starts, 1);
 });
+
+test('isRemoteKnown falls through to the cloud directory for Hub-side conversations', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'soduwork-handoff-isremote-'));
+  try {
+    const identityOf = async () => ({ hub: 'http://127.0.0.1:9', clientId: 'test-device', session:
+      Buffer.from(JSON.stringify({ typ: 'device', cid: 'test-device', uid: 'alice', iat: 1, exp: 9999999999 })).toString('base64url') + '.' + 'a'.repeat(64) });
+    const cloud = create({ app: { getPath: () => root }, identityOf, remoteDirectory: true,
+      request: async (_identity, route) => {
+        if (route.startsWith('/cloud-conversations')) {
+          return { chats: [{ taskId: 'cloud-task-1', sessionId: 'cloud-branch-uuid', title: 'Branched work' }], hasMore: false, nextCursor: '' };
+        }
+        return {};
+      } });
+    assert.equal(await cloud.isRemoteKnown('cloud-branch-uuid'), true, 'cloud directory hit passes');
+    assert.equal(await cloud.isRemoteKnown('cloud-unknown'), false, 'directory miss fails closed');
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});

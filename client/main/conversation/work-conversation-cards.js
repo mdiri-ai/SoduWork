@@ -279,7 +279,7 @@ function removeReservedSelection(app, created, owner, selection) {
   } catch (_) { /* Keep a later writer's card or selection record. */ }
 }
 
-function create({ app, identityOf, session, accountHistory, sharedHistory, newCwd, loadStorageSdk: load, replace = fsp.rename, notify = () => {} }) {
+function create({ app, identityOf, session, accountHistory, sharedHistory, cloudHistory, newCwd, loadStorageSdk: load, replace = fsp.rename, notify = () => {} }) {
   async function auth() {
     const identity = await identityOf(app);
     if (!identity) throw Error('请先登录 SoduWork');
@@ -432,6 +432,15 @@ function create({ app, identityOf, session, accountHistory, sharedHistory, newCw
           workOnly: false, draftSelection: null, draftSelectionRevision: 0 };
       }
       let row = await resolve(id, captured, { allowMissing: true });
+      if (!row && await (cloudHistory?.isRemoteKnown?.(id) ?? false)) {
+        // Card restoration runs before Agent opening. Cloud handoff and
+        // Hub-side branch conversations have no local work-card store; the
+        // ordinary opener still authorizes their readonly contents through
+        // the remote runtime once its handle reopens the handoff.
+        await guard(captured);
+        return { ok: true, sessionId: id, cards: [], workOnly: false,
+          draftSelection: null, draftSelectionRevision: 0 };
+      }
       if (accountHistory && (!row || row.accountProjection || row.adapterId === 'account-sync')) {
         // Card restoration runs before Agent opening. Resolve a trusted account
         // alias here as well, without starting a runtime or trusting renderer flags.
