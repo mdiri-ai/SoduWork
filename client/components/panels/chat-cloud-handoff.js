@@ -249,5 +249,58 @@
     try { const value = await api.preview(ref); if (!value?.ok) throw Error(value?.reason || '无法检查交接条件'); if (current()) display(value); }
     catch (problem) { if (current()) fail(problem.message); }
   }
-  global.ChatCloudHandoff = { ICON, open, sync, select };
+  let branchActive = null;
+  async function branch(ref) {
+    if (!ref || branchActive || !sameSession(ref)) return;
+    const owner = ownerScope();
+    const api = global.soduWorkAPI?.conversationSession || global.soduWorkAPI?.piSession;
+    if (!api?.branch) { global.petSay?.('请更新客户端后再使用会话分支'); return; }
+    const dialog = dialogShell('ncloudBranchTitle', '<form class="nchat-rename-form"><header><div><h2 id="ncloudBranchTitle">复制会话</h2>' +
+      '<p>将创建当前会话的完整副本，全部对话记录一并复制，原会话保持不变。副本会出现在同一项目目录下，点开即可继续对话。</p></div>' +
+      '<button type="button" class="nchat-rename-close" data-branch-close aria-label="关闭">×</button></header>' +
+      '<p class="nchat-rename-error" role="alert" hidden></p>' +
+      '<footer><button type="button" data-branch-close>关闭</button>' +
+      '<button type="submit" class="nchat-rename-save">复制会话</button></footer></form>');
+    const submit = dialog.querySelector('[type=submit]');
+    const error = dialog.querySelector('[role=alert]');
+    const dispose = () => { dialog.close(); dialog.remove(); if (branchActive === dialog) branchActive = null; };
+    const close = () => dispose();
+    const current = () => branchActive === dialog && owner === ownerScope() && sameSession(ref);
+    dialog.querySelectorAll('[data-branch-close]').forEach(button => button.addEventListener('click', close));
+    dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    dialog.querySelector('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      if (!current()) { close(); return; }
+      if (global.NativeChat?.isBusy?.()) { close(); global.petSay?.('请等待本轮执行结束，再复制会话'); return; }
+      submit.disabled = true; submit.textContent = '正在复制会话…'; error.hidden = true;
+      try {
+        const result = await api.branch(ref, { agentId: 'pi' });
+        if (!current()) return;
+        if (!result?.ok) throw Error(result?.reason || '复制未完成，请稍后重试');
+        close();
+        // #1398 复制会话：新分支与原会话同目录出现在侧边栏，点开显示一模一样的
+        // 完整历史，无需发送任何消息即可继续对话。
+        if (result.sessionId && global.NativeChat) {
+          global.NativeChat.reset();
+          if (await global.NativeChat.enter('', result.sessionId).catch(() => false)) {
+            // #1398 复制会话：放进原会话所属的项目目录（项目按 chatIds 显式归组）。
+            try {
+              const sourceId = String(result.sourceSessionId || '');
+              const project = sourceId ? global.WorkspaceShell?.projectForChat?.(sourceId) : null;
+              if (project?.id) global.WorkspaceShell?.fileChatInProject?.(result.sessionId, project.id, { id: result.sessionId });
+            } catch (_) { /* 归组失败不阻止分支 */ }
+            global.ChatCloudHandoff?.sync?.();
+            return;
+          }
+        }
+        global.petSay?.('会话已复制');
+      } catch (problem) {
+        if (!current()) return;
+        submit.disabled = false; submit.textContent = '复制会话';
+        error.textContent = problem.message || '复制未完成，请稍后重试'; error.hidden = false;
+      }
+    });
+    branchActive = dialog; document.body.append(dialog); dialog.showModal(); submit.focus();
+  }
+  global.ChatCloudHandoff = { ICON, open, sync, select, branch };
 })(window);

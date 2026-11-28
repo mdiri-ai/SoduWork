@@ -997,6 +997,21 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
     finally { for (const key of locks) lifecycleMutations.delete(key); }
   }
 
+  const branchLocks = new Map();
+  async function branch(id, { instruction, agentId } = {}) {
+    const text = String(instruction || '').trim();
+    if (!text) return { ok: false, reason: '请填写继续执行的指令后再创建分支' };
+    if (text.length > 200000) return { ok: false, reason: '继续指令过长，请精简后再创建分支' };
+    // #1398: a branch is simply a new local session - the client opens it as
+    // an ordinary new chat with the injected instruction. No hub task,
+    // directory row, ownership assertion or restore chain, whatever the
+    // source is. Cross-device continuation keeps using the relay mechanism.
+    const localSessionId = require('node:crypto').randomUUID();
+    return { ok: true, sessionId: localSessionId, taskId: localSessionId,
+      transferId: localSessionId, localCopy: true,
+      accountConversationId: null, expectedRevision: 0 };
+  }
+
   async function row(id) {
     const wanted = safeText(id, 180);
     if (!wanted) return null;
@@ -1147,7 +1162,7 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
   }
 
   Promise.resolve(store.jobs(1)).then(jobs => { if (jobs.length) schedule(); }).catch(() => {});
-  return { bind, flush, close, history, row, openProjection, resolveLifecycle, setLifecycle,
+  return { bind, flush, close, history, row, openProjection, resolveLifecycle, setLifecycle, branch,
     sourceProjection(id, identity) {
       if (directoryScope(identity) !== historyScope) return null;
       const row = sourceRows.get(JSON.stringify([identity.clientId, id]));

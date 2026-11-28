@@ -308,6 +308,46 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
       return { ok: false, code: 'APP_AI_UNAVAILABLE', reason: '本地需求解析只允许工作台调用' };
     return localRequirementParse(raw);
   });
+  // Conversation branching is an account mutation like lifecycle changes; the
+  // branch request resolves the source conversation through account sync and
+  // posts to the Hub on the caller's behalf.
+  ipcMain.handle('pi-session-conversation-branch', async (event, sessionId, input) => {
+    const frame = event?.senderFrame, sender = event?.sender;
+    const url = frame?.url || sender?.getURL?.() || '';
+    if ((frame && frame !== sender?.mainFrame) || (url && !String(url).startsWith('file:')))
+      return { ok: false, reason: '会话分支只允许工作台调用' };
+    // #1398 复制会话：把原会话的本地 JSONL 归档复制为新会话（header id 替换），
+    // 新会话与原会话同目录出现在侧边栏，点开显示一模一样的完整历史，
+    // AI 上下文完整；归属绑定同样写入，直接可继续对话。不碰云端链路。
+    const handle = session.get(String(sessionId || ''));
+    const id = String(handle?.sessionId || sessionId || '');
+    if (!id) return { ok: false, reason: '会话标识无效' };
+    try {
+      const fs = require('node:fs');
+      const path = require('path');
+      const crypto = require('node:crypto');
+      const sessionModule = require('./session');
+      const memories = require('../conversation/session-memory');
+      const identity = await (sendIdentityOf || identityOf)?.(app);
+      const found = await sessionModule.historyEntry(app, id, { strict: true });
+      if (!found?.ok || !found.entry?.path) return { ok: false, reason: '找不到原会话的本地记录，无法复制' };
+      const srcPath = found.entry.path;
+      const newId = crypto.randomUUID();
+      const dstPath = path.join(path.dirname(srcPath), newId + '.jsonl');
+      if (fs.existsSync(dstPath)) return { ok: false, reason: '会话标识已被占用，请重试' };
+      const raw = fs.readFileSync(srcPath, 'utf8').split(/\r?\n/);
+      const header = raw.length && raw[0] ? JSON.parse(raw[0]) : null;
+      if (!header || header.type !== 'session' || typeof header.id !== 'string')
+        return { ok: false, reason: '原会话记录格式无效，无法复制' };
+      header.id = newId;
+      raw[0] = JSON.stringify(header);
+      const fd = fs.openSync(dstPath, 'wx', 0o600);
+      try { fs.writeFileSync(fd, raw.join('\n')); } finally { fs.closeSync(fd); }
+      try { memories.bind(app, newId, identity, [], true); } catch (_) { /* 归属绑定失败则不阻止复制 */ }
+      return { ok: true, sessionId: newId, taskId: newId, transferId: newId, localCopy: true,
+        sourceSessionId: id, title: String(found.entry.name || '') };
+    } catch (error) { return { ok: false, reason: String(error?.message || error) }; }
+  });
   // Account-conversation WebSocket messages are invalidation hints, but they
   // still need to reach the renderer.  Without this bridge the sync service
   // refreshed its private cache while an already-open desktop projection and
@@ -383,6 +423,7 @@ function install({ app, ipcMain, BrowserWindow, identityOf, sendIdentityOf, capa
     cloudHistory: _cloudHandoff, accountHistory: _accountSync, sharedHistory: _sharedHistory });
   require('../conversation/work-conversation-cards').install({ app, ipcMain, session, BrowserWindow,
     identityOf: sendIdentityOf || identityOf, accountHistory: _accountSync, sharedHistory: _sharedHistory,
+    cloudHistory: _cloudHandoff,
     newCwd: options => _newSessionCwd(app, 'chat-' + require('node:crypto').randomUUID(), options) });
   /*
    * Read fixed-name plugin drafts only from outputs of active registered sessions; never

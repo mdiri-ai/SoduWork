@@ -59,6 +59,9 @@ const conversationSession = {
   restoreHistory: (id) => ipcRenderer.invoke('pi-session-history-restore', String(id || '')),
   deleteHistory: (id, options) => ipcRenderer.invoke('pi-session-history-delete', String(id || ''), options || null),
   permanentDeleteHistory: (id) => ipcRenderer.invoke('pi-session-history-permanent-delete', String(id || '')),
+  // Conversation branching reuses the account conversation on the Hub; the
+  // branch request id is generated in the main process, never by the page.
+  branch: (sessionId, options) => ipcRenderer.invoke('pi-session-conversation-branch', String(sessionId || ''), options || null),
   memory: Object.assign(
     Object.fromEntries(['preview', 'cancel', 'confirm', 'list', 'get', 'options', 'update', 'archive', 'restore', 'delete']
       .map(name => [name, (...args) => ipcRenderer.invoke('session-memory-' + name, ...args)])),
