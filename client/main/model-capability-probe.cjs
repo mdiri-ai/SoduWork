@@ -3,7 +3,8 @@ const crypto = require('node:crypto');
 const { CHECKS, API_FAMILY, compatibility } = require('./model-capability-contract.cjs');
 const request = require('./model-capability-request.cjs');
 const image = require('./model-capability-image.cjs');
-const { collect, meaningful, ProbeIssue } = require('./model-capability-wire.cjs');
+const { collect, meaningful, ProbeIssue, TRUNCATED_REASONS } = require('./model-capability-wire.cjs');
+const MAX_REQUESTS = 7;
 const stamp = () => new Date().toISOString();
 const nonce = () => crypto.randomBytes(8).toString('hex');
 const tools = [{ type: 'function', function: { name: 'soduwork_capability_echo',
@@ -39,18 +40,32 @@ async function run(conf, requested = CHECKS, options = {}) {
   const signal = AbortSignal.any([total, options.signal].filter(Boolean));
   let calls = 0, negotiations = 0, reasoningStreamReported = false, blocked = false;
   let client, activeSignal = signal;
-  async function execute(messages, stream = false, withTools = false, continuation = false) {
+  async function execute(messages, stream = false, withTools = false, continuation = false, retryReasoningBudget = false) {
+    let raisedBudget;
     while (true) {
-      if (calls >= 7) throw Object.assign(Error('Request budget exhausted'), { code: 'REQUEST_BUDGET' });
+      if (calls >= MAX_REQUESTS) throw Object.assign(Error('Request budget exhausted'), { code: 'REQUEST_BUDGET' });
       signal.throwIfAborted(); calls++;
       const operationSignal = AbortSignal.any([signal, AbortSignal.timeout(options.timeoutMs || 30000)]);
       activeSignal = operationSignal;
       const body = request.payload(conf, state, messages, stream, withTools ? tools : undefined);
+      if (raisedBudget !== undefined) body[state.compatibility.maxTokensField] = raisedBudget;
       if (continuation) delete body.tool_choice;
       try {
         const data = await client.chat.completions.create(body, { signal: operationSignal }).asResponse();
-        const response = await collect(data, stream, withTools, operationSignal);
+        const response = await collect(data, stream, withTools, operationSignal, retryReasoningBudget && !stream);
         operationSignal.throwIfAborted();
+        if (TRUNCATED_REASONS.includes(response.finish)) {
+          const current = body[state.compatibility.maxTokensField];
+          const larger = Math.min(state.outputLimit, Math.max(current * 4, 4096));
+          if (!retryReasoningBudget || !response.reasoning || larger <= current || calls >= MAX_REQUESTS) {
+            throw new ProbeIssue('response_truncated');
+          }
+          // Only this completed non-stream exchange can grow once; later
+          // checks retain their small initial budget and the shared deadline.
+          raisedBudget = larger;
+          retryReasoningBudget = false;
+          continue;
+        }
         // Publish only parameters accepted by a completed exchange. A cold
         // timeout must not replace a working runtime with probe defaults.
         confirmedCompatibility.maxTokensField = state.compatibility.maxTokensField;
@@ -88,7 +103,8 @@ async function run(conf, requested = CHECKS, options = {}) {
             { type: 'image_url', image_url: { url: challenge.url } }];
         } else if (check === 'toolCalling') content = 'Call soduwork_capability_echo with value ' + expected + '. This is a capability check. After the tool responds, reply only with the tool result value.';
         const messages = [{ role: 'user', content }];
-        const response = await execute(messages, check === 'streaming' || check === 'toolCalling', check === 'toolCalling');
+        const response = await execute(messages, check === 'streaming' || check === 'toolCalling', check === 'toolCalling',
+          false, check === 'connection' || check === 'imageInput');
         let passed = check === 'imageInput' ? typeof response.message.content === 'string' && response.message.content.trim() === expected
           : meaningful(response.message.content) || response.reasoning;
         if (check === 'toolCalling') {

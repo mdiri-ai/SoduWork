@@ -2,6 +2,7 @@
 
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const meaningful = value => typeof value === 'string' && Boolean(value.trim());
+const TRUNCATED_REASONS = Object.freeze(['length', 'max_tokens', 'max_output_tokens']);
 class ProbeIssue extends Error {
   constructor(code, detailCode) { super(code); this.code = code; this.detailCode = detailCode; }
 }
@@ -19,8 +20,11 @@ function envelope(value, usageOnly = false) {
   return Object.entries(value.usage).every(([key, item]) => key.endsWith('_tokens_details')
     ? item === null || object(item) && Object.values(item).every(part => part === null || count(part)) : count(item));
 }
-function finishReason(reason) {
-  if (['length', 'max_tokens', 'max_output_tokens'].includes(reason)) throw new ProbeIssue('response_truncated');
+function finishReason(reason, allowTruncated = false) {
+  if (TRUNCATED_REASONS.includes(reason)) {
+    if (!allowTruncated) throw new ProbeIssue('response_truncated');
+    return;
+  }
   if (reason === 'content_filter') throw new ProbeIssue('content_filtered');
   if (reason != null && !['stop', 'tool_calls', 'function_call'].includes(reason)) invalid();
 }
@@ -159,7 +163,7 @@ async function* chunks(response, signal) {
     reader.releaseLock();
   }
 }
-async function collect(response, stream, tools = false, signal) {
+async function collect(response, stream, tools = false, signal, allowTruncated = false) {
   try {
     if (!response.body) invalid();
     if (stream) {
@@ -178,7 +182,7 @@ async function collect(response, stream, tools = false, signal) {
     const choice = data.choices[0];
     if (!object(choice) || choice.index !== undefined && choice.index !== 0) invalid();
     if (choice.logprobs != null && !object(choice.logprobs)) invalid();
-    messageFields(choice.message, true); finishReason(choice.finish_reason);
+    messageFields(choice.message, true); finishReason(choice.finish_reason, allowTruncated);
     return { message: choice.message, finish: choice.finish_reason,
       reasoning: ['reasoning_content', 'reasoning', 'thinking'].some(key => meaningful(choice.message[key])) };
   } catch (error) {
@@ -189,4 +193,4 @@ async function collect(response, stream, tools = false, signal) {
     if (response.body && !response.body.locked) response.body.cancel().catch(() => {});
   }
 }
-module.exports = { collect, meaningful, ProbeIssue };
+module.exports = { collect, meaningful, ProbeIssue, TRUNCATED_REASONS };

@@ -7,11 +7,40 @@ const path = require('node:path');
 const probePath = path.join(__dirname, '../main/model-capability-probe.cjs');
 function probe() { assert.equal(fs.existsSync(probePath), true, 'the real local probe must exist'); return require(probePath); }
 
-async function fixture(t, mode = '') {
+async function fixture(t, mode = '', reasoningOptions = {}) {
   const requests = [];
   const server = http.createServer(async (req, res) => {
     const parts = []; for await (const part of req) parts.push(part);
     const body = JSON.parse(Buffer.concat(parts).toString()); requests.push({ body, headers: req.headers });
+    if (mode === 'reasoning-limit' && reasoningOptions.completionOnly && Object.hasOwn(body, 'max_tokens')) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'unsupported max_tokens',
+        param: 'max_tokens', code: 'unsupported_parameter' } }));
+    }
+    const budget = body.max_completion_tokens ?? body.max_tokens;
+    const contextLimit = reasoningOptions.contextLimit;
+    if (contextLimit && budget > contextLimit) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ error: { message: 'Output exceeds model context', code: 'invalid_value' } }));
+    }
+    if (mode === 'reasoning-limit' && (!body.stream || !reasoningOptions.onlyNonstream) &&
+        (reasoningOptions.alwaysTruncated || budget < (contextLimit ?? 4096))) {
+      const message = { role: 'assistant', content: '',
+        [reasoningOptions.reasoningKey || 'reasoning_content']: 'synthetic reasoning before the final answer',
+        ...reasoningOptions.message };
+      const choice = { index: 0, message, finish_reason: reasoningOptions.finish || 'length',
+        ...reasoningOptions.choice };
+      if (body.stream) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        return res.end('data: ' + JSON.stringify({ choices: [{ index: 0, delta: message, finish_reason: null }] }) +
+          '\n\ndata: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }] }) +
+          '\n\ndata: [DONE]\n\n');
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const reply = JSON.stringify({ choices: reasoningOptions.extraChoice ? [choice, choice] : [choice] });
+      if (reasoningOptions.hangBody) return res.write(reply);
+      return res.end(reply);
+    }
     if (mode === 'hang-before-headers') return;
     if (mode === 'invalid-value') {
       res.writeHead(400, { 'content-type': 'application/json' });
@@ -273,3 +302,106 @@ for (const [level, effort] of [['minimal', 'low'], ['medium', 'high'], ['xhigh',
     assert.equal(body.thinking.type, 'enabled');
   });
 }
+
+test('truncated reasoning in local connection and image probes retries once for the final answer', async t => {
+  for (const check of ['connection', 'imageInput']) await t.test(check, async t => {
+    const f = await fixture(t, 'reasoning-limit');
+    f.conf.contextWindow = 8192; f.conf.config.maxOutputTokens = 8192;
+    const report = await probe().run(f.conf, [check], { challenge });
+    assert.equal(report.checks[check].status, 'passed');
+    assert.deepEqual(f.requests.map(({ body }) => body.max_tokens), [512, 4096]);
+    assert.deepEqual(f.requests[1].body.messages, f.requests[0].body.messages);
+    assert.equal(report.requestCount, 2);
+    assert.doesNotMatch(JSON.stringify(report), /synthetic reasoning/);
+  });
+});
+
+test('reasoning retries honor saved output and context limits and stop after one retry', async t => {
+  for (const [finish, output, context, budgets] of [
+    ['length', 1024, 4096, [512, 1024]],
+    ['max_tokens', 4096, 768, [512, 768]],
+    ['max_output_tokens', 4096, 8192, [512, 4096]],
+    ['length', 512, 4096, [512]],
+  ]) await t.test(`${finish}, output ${output}, context ${context}`, async t => {
+    const f = await fixture(t, 'reasoning-limit', { finish, alwaysTruncated: true, reasoningKey: 'thinking' });
+    // Older saved configurations can predate today's output/context validation.
+    f.conf.ctxWindow = context; f.conf.config.maxOutputTokens = output;
+    f.conf.compatibility = { maxTokensField: 'max_completion_tokens' };
+    const report = await probe().run(f.conf, ['connection']);
+    assert.equal(report.checks.connection.code, 'response_truncated');
+    assert.deepEqual(f.requests.map(({ body }) => body.max_completion_tokens), budgets);
+    assert.equal(report.requestCount, budgets.length);
+  });
+});
+
+test('reasoning retries preserve default limits and mandatory thinking settings', async t => {
+  for (const [config, budgets] of [[{}, [512, 4096]],
+    [{ thinkingMode: 'always', thinkingFormat: 'zai', supportsReasoningEffort: true }, [2048, 8192]]]) {
+    await t.test(JSON.stringify(config), async t => {
+      const f = await fixture(t, 'reasoning-limit', { reasoningKey: 'reasoning' }); f.conf.config = config;
+      const report = await probe().run(f.conf, ['connection']);
+      assert.equal(report.checks.connection.status, 'passed');
+      assert.deepEqual(f.requests.map(({ body }) => body.max_tokens), budgets);
+      assert.deepEqual(f.requests[1].body.thinking, f.requests[0].body.thinking);
+      assert.equal(f.requests[1].body.reasoning_effort, f.requests[0].body.reasoning_effort);
+    });
+  }
+});
+
+test('reasoning retry uses the advertised context when the user leaves the window automatic', async t => {
+  for (const [label, configured, limit] of [['automatic', undefined, 2048], ['override', 3072, 3072]]) {
+    await t.test(label, async t => {
+      const f = await fixture(t, 'reasoning-limit', { contextLimit: limit });
+      Object.assign(f.conf, { advertisedContextWindow: 2048, ctxWindow: configured,
+        config: { maxOutputTokens: 8192 } });
+      const report = await probe().run(f.conf, ['imageInput'], { challenge });
+      assert.deepEqual(f.requests.map(({ body }) => body.max_tokens), [512, limit]);
+      assert.equal(report.checks.imageInput.status, 'passed');
+    });
+  }
+});
+
+test('malformed, non-reasoning and streaming truncations never qualify for reasoning retries', async t => {
+  for (const [check, options, code] of [
+    ['connection', { message: { role: 'user' } }, 'invalid_response'],
+    ['connection', { message: { reasoning_content: [] } }, 'invalid_response'],
+    ['connection', { choice: { index: false } }, 'invalid_response'],
+    ['connection', { extraChoice: true }, 'invalid_response'],
+    ['connection', { message: { reasoning_content: undefined, content: 'partial answer' } }, 'response_truncated'],
+    ['streaming', {}, 'response_truncated'],
+    ['toolCalling', {}, 'response_truncated'],
+  ]) await t.test(`${check}: ${JSON.stringify(options)}`, async t => {
+    const f = await fixture(t, 'reasoning-limit', options);
+    const report = await probe().run(f.conf, [check]);
+    assert.equal(report.checks[check].status, 'inconclusive');
+    assert.equal(report.checks[check].code, code);
+    assert.equal(f.requests.length, 1);
+  });
+});
+
+test('an unfinished reasoning response times out without attempting a retry', async t => {
+  const f = await fixture(t, 'reasoning-limit', { hangBody: true });
+  const report = await probe().run(f.conf, ['connection'], { timeoutMs: 200, totalMs: 2000 });
+  assert.equal(report.checks.connection.code, 'timeout');
+  assert.equal(f.requests.length, 1);
+});
+
+test('reasoning retries retain negotiated token fields within the shared seven-request limit', async t => {
+  const f = await fixture(t, 'reasoning-limit', { completionOnly: true, onlyNonstream: true });
+  const report = await probe().run(f.conf, ['connection', 'imageInput', 'toolCalling', 'streaming'], { challenge });
+  assert.equal(report.checks.connection.status, 'passed');
+  assert.equal(report.checks.imageInput.status, 'passed');
+  assert.equal(report.checks.toolCalling.status, 'passed');
+  assert.equal(report.checks.streaming.code, 'budget_exhausted');
+  assert.equal(report.requestCount, 7);
+  assert.equal(f.requests.length, 7);
+  assert.deepEqual(f.requests.slice(0, 3).map(({ body }) => body.max_completion_tokens ?? body.max_tokens), [512, 512, 4096]);
+  assert.ok(f.requests.slice(1).every(({ body }) => Object.hasOwn(body, 'max_completion_tokens') && !Object.hasOwn(body, 'max_tokens')));
+});
+
+test('a reasoning retry leaves later tool and streaming probe budgets unchanged', async t => {
+  const f = await fixture(t, 'reasoning-limit', { onlyNonstream: true });
+  const report = await probe().run(f.conf, ['connection', 'toolCalling', 'streaming']);
+  assert.ok(Object.values(report.checks).every(check => check.status === 'passed'));
+  assert.deepEqual(f.requests.map(({ body }) => body.max_tokens), [512, 4096, 512, 512, 512]);
+});

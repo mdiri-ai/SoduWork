@@ -111,6 +111,8 @@ Closing a conversation automation form preserves a draft card at its original po
 
 Model capability report v3 verifies the complete streaming tool round trip: the synthetic tool result is the last message, tool definitions remain present, and the model must return that result without another forced tool call. Older v2 tool successes require a new check; independent image and streaming evidence remains available. A passed check verifies this small request, not every production prompt or provider policy. Update both desktop and Hub, then rerun the tool capability check for existing models.
 
+Desktop-local connection and image checks retry a complete response once when its reasoning output was truncated and the saved token limits allow a larger budget. The same challenge and thinking settings are retained. Malformed responses, interrupted bodies and streaming truncations remain inconclusive.
+
 The receipt continuation omits `tool_choice`, matching the native Pi request. A generic 403 leaves that capability inconclusive and does not skip independent checks or diagnose missing credential permissions. Explicit authentication and billing failures retain their separate handling.
 
 Hub model refusals carry an opaque `soduwork-trace` marker through JSON, SSE and native conversation summaries. Use it to correlate the Hub transport log with a validated upstream request identifier. Generic HTTP 403 means the request was rejected; it does not prove a credential-permission defect. Completed tools and files remain available, and a 403 does not trigger an automatic retry.
