@@ -124,3 +124,24 @@ The following screenshots show Firefox proxy settings for browser downloads; the
 ![Firefox proxy configuration entry](assets/desktop-quickstart/en-14.png)
 
 ![Firefox connection settings](assets/desktop-quickstart/en-15.png)
+
+
+## 6. Local Skills: Put Them in the Right Place So Upgrades Keep Them
+
+A skill is a folder of instructions: one folder per skill, with a `SKILL.md` inside that the client uses to discover it. The client ships with a set of bundled skills and also lets you add your own, but the two locations must not be mixed up:
+
+- **Bundled skills directory (do not put your own skills here)**: `resources/skills/` inside the installation directory. It is published together with each client version, and an upgrade replaces the whole version directory; skills you added there are not carried over and will appear to be lost after an upgrade.
+- **User skills directory (put your own skills here)**: the `skills/` folder inside the client's user data directory. It is not replaced by upgrades and is kept permanently:
+    - **Windows**: `%APPDATA%\SoduWork\skills\`
+    - **macOS**: `~/Library/Application Support/SoduWork/skills/`
+    - **Linux**: `~/.config/SoduWork/skills/`
+
+To add your own skill, create a folder named after the skill inside the user skills directory and place its `SKILL.md` in it, for example `my-skill/SKILL.md`. Restart the client afterwards and the skill will be discovered.
+
+**Already put a skill in the wrong place?** If your skill currently sits in a version directory's `resources/skills/` (for example under `.soduwork-versions\<version>\resources\skills\` inside the Windows installation directory), migrate it as follows:
+
+1. In the old version directory's `resources/skills/`, find the skill folders you added yourself (leave the bundled ones untouched).
+2. Copy each whole skill folder into the `skills/` folder of the user skills directory above.
+3. Restart the client, confirm the skill is discovered and works, and only then delete the copy in the old location.
+
+**Name collision warning**: Do not give your skill the same name as a bundled skill. Directories are scanned in order and the first skill found with a given name wins; the bundled directory comes before the user directory, so a same-named skill of yours would be shadowed by the bundled one.
