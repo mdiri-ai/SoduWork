@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -10,12 +11,13 @@ from sqlalchemy.orm import aliased
 
 from .. import models
 from ..config import get_settings
-from . import ai_exec, ai_prompts, task_requirements
+from . import ai_exec, ai_prompts, repository_catalog, task_requirements
 
 log = logging.getLogger("uvicorn.error")
 
 _MAX_PER_BATCH = 20
 _KINDS_DISPATCHED = ("ai.dispatched", "multica.dispatched")
+_REPO_BUSY_REASON = "这个工程上还有没干完的批次（同工程不许并行）"
 
 
 def _cfg() -> tuple[bool, int, int]:
@@ -65,27 +67,19 @@ async def _dispatched_ids(session: AsyncSession) -> set[str]:
 
 
 async def _busy_repos(session: AsyncSession) -> set[str]:
-    """Find repositories with unfinished automatic batches. Resolve each batch shell's repository
-    through its source-task milestones.
-    """
-    busy: set[str] = set()
-    batches = (await session.execute(
-        select(models.Task).where(models.Task.status.in_(("todo", "doing")),
-                                  models.Task.origin == "local"))).scalars().all()
-    if not batches:
-        return busy
-    bids = [b.id for b in batches]
-    ms = (await session.execute(
-        select(models.Milestone).where(models.Milestone.task_id.in_(bids)))).scalars().all()
-    src_ids = [m.src_task_id for m in ms if (m.src_task_id or "").strip()]
-    if not src_ids:
-        return busy
-    srcs = (await session.execute(
-        select(models.Task).where(models.Task.id.in_(src_ids)))).scalars().all()
-    for t in srcs:
-        rid = (getattr(t, "repo_id", "") or "").strip()
-        if rid:
-            busy.add(rid)
+    """Prefer an unfinished batch's execution repository, with a fallback for older batches."""
+    source = aliased(models.Task)
+    repositories = await session.execute(select(models.Task.repo_id, source.repo_id).select_from(models.Task)
+        .join(models.Milestone, models.Milestone.task_id == models.Task.id)
+        .outerjoin(source, source.id == models.Milestone.src_task_id)
+        .where(models.Task.status.in_(("todo", "doing")), models.Task.origin == "local",
+               models.Milestone.src_task_id != "")
+        .distinct())
+    busy = set()
+    for batch_repo, source_repo in repositories:
+        repo_id = (batch_repo or "").strip() or (source_repo or "").strip()
+        if repo_id:
+            busy.add(repo_id)
     return busy
 
 
@@ -145,7 +139,7 @@ async def group(session: AsyncSession) -> list[dict]:
             g["reason"] = (f"工程「{repo.name or repo.id}」既没绑交付流程插件、"
                            "也没配 AI 干活目录（ai_work_dir），不能自动派")
         elif g["repoId"] in busy:
-            g["reason"] = "这个工程上还有没干完的批次（同工程不许并行）"
+            g["reason"] = _REPO_BUSY_REASON
         elif n >= min_n:
             g["ready"], g["reason"] = True, f"攒够 {n} 条（阈值 {min_n}）"
         elif n >= 2 and g["oldestAgeMin"] >= wait_min:
@@ -197,7 +191,7 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
 
     from .. import automation_models as am
     from ..realtime import hub
-    from . import batch_dispatch, workflow_engine
+    from . import batch_dispatch, workflow_runs
     from . import task_events as ev
 
     binding = await session.get(am.PluginBinding, g["flowBindingId"])
@@ -226,13 +220,13 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
         if getattr(t, "external_url", None):
             parts.append("   原文：" + str(t.external_url))
     batch = models.Task(
+        id=str(uuid.uuid4()),
         owner_client_id=client.id, owner_user_id=client.user_ref, status="todo",
         title=f"合并修复 {len(rows)} 条 bug · {repo.name or '同一工程'}",
         note="\n".join(parts)[:8000])
     batch.project_id = repo.project_id
     batch.repo_id = repo.id
     session.add(batch)
-    await session.flush()
     for i, t in enumerate(rows):
         session.add(models.Milestone(task_id=batch.id, seq=i, title=t.title[:300],
                                      accept=(t.note or "").strip()[:2000], src_task_id=t.id))
@@ -245,9 +239,9 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
                    "一条一条修、每条单独提交，提交信息里带上对应的 bug 序号或标题；"
                    "不要顺手重构或改动无关代码。")
     try:
-        run = await workflow_engine.start(session, batch, binding, {},
-                                          actor_id="autobatch",
-                                          instruction=instruction, repo_id=repo.id)
+        run = await workflow_runs.start_new_task(session, batch, binding, {},
+                                               actor_id="autobatch",
+                                               instruction=instruction, repo_id=repo.id)
     except ValueError as e:
         # Roll back the batch shell, milestones, and deduplication markers together if startup fails.
         await session.rollback()
@@ -278,60 +272,67 @@ async def run_once(session: AsyncSession, dry: bool | None = None) -> dict:
         if dry:
             done.append({**g, "dispatched": False, "dry": True})
             continue
-        client = await session.get(models.Client, g["ownerClientId"])
-        repo = await session.get(models.Repo, g["repoId"])
-        if client is None or repo is None:
-            done.append({**g, "dispatched": False, "error": "负责人或工程不在了"})
-            continue
-        # Use a bound delivery plugin when available; otherwise use direct batch dispatch.
-        if g.get("flowBindingId"):
-            done.append(await _dispatch_flow(session, g, client, repo))
-            continue
-        picked, why = await pick_assignee(session, str(g.get("ownerClientId") or ""))
-        if picked is None:
-            done.append({**g, "dispatched": False, "error": why})
-            continue
-        # Prefer the owner's configured workspace, falling back to repository ai_work_dir when absent.
-        from . import workdirs
-        work_dir, _why = workdirs.auto_dir(client, repo)
-        if not work_dir:
-            done.append({**g, "dispatched": False,
-                         "error": "没有可用的干活目录（负责人那台 SoduWork 没设工作目录，工程也没配）"})
-            continue
-        # Reuse the manual dispatch implementation for instructions, milestones, and events.
-        # Match api.tasks._repo_ctx fields: path, branch, and flow.
-        # An empty path would omit the execution directory from the instructions.
-        from ..api import tasks as tasks_api
-        body = {
-            "taskIds": g["taskIds"],
-            "title": f"合并处理 {len(g['taskIds'])} 条 bug · {repo.name or '同一工程'}",
-            "repo": {"id": repo.id, "path": work_dir, "name": repo.name, "kind": repo.kind,
-                     "gitUrl": repo.git_url, "branch": repo.default_branch,
-                     "note": repo.note, "flow": True,   # flow enables branch creation, implementation, verification, commit, and push.
-                     # Unattended mode overrides screenshot settings to disable GUI capture.
-                     # GUI capture can hang without an operator to recover it.
-                     "unattended": True},
-            # Include the explicit unattended-execution instructions.
-            # This prevents GUI steps from stalling until timeout.
-            "brief": ("这一批是测试平台推过来的 bug，按里程碑一条条修，"
-                      "每条单独提交，别把几条揉进一个提交里。\n"
-                      + ai_prompts.UNATTENDED),
-            # Select the executor explicitly.
-            # The selected machine must be able to use the supplied workspace path.
-            "assigneeId": picked.get("id"), "assigneeType": picked.get("type") or "agent",
-        }
         try:
-            r = await tasks_api.batch_dispatch(body=body, client=client, session=session)
-            done.append({**g, "dispatched": bool(r.get("ok")), "batchId": r.get("batchId", ""),
-                         "assignee": picked.get("name") or picked.get("id")})
-            log.info("自动合并派活：%s 条 → 批次 %s（派给 %s，%s）", len(g["taskIds"]),
-                     r.get("batchId", ""), picked.get("name"), why)
+            done.append(await _dispatch_ready_group(session, g))
         except Exception as e:  # noqa: BLE001 - A failed group must not prevent dispatching other groups.
-            await session.rollback()
             done.append({**g, "dispatched": False, "error": f"{type(e).__name__}: {e}"[:200]})
             log.warning("自动合并派活失败：%s", e)
+        finally:
+            # Dispatch commits its own admissions. Release locks on early returns
+            # and after post-commit reads before proceeding to another group.
+            await session.rollback()
     return {"enabled": enabled, "dry": dry, "min": min_n, "waitMin": wait_min,
             "groups": len(groups), "ready": len(ready), "results": done, "all": groups}
+
+
+async def _dispatch_ready_group(session: AsyncSession, g: dict) -> dict:
+    client = await session.get(models.Client, g["ownerClientId"])
+    # The preview is a snapshot. Serialize admissions and check the latest
+    # state before starting execution, including across concurrent sweeps.
+    repo = await repository_catalog.lock_deployment_repository(session, g["repoId"])
+    if client is None or repo is None:
+        return {**g, "dispatched": False, "error": "负责人或工程不在了"}
+    if repo.id in await _busy_repos(session):
+        return {**g, "dispatched": False, "error": _REPO_BUSY_REASON}
+    # Use a bound delivery plugin when available; otherwise use direct batch dispatch.
+    if g.get("flowBindingId"):
+        return await _dispatch_flow(session, g, client, repo)
+    picked, why = await pick_assignee(session, str(g.get("ownerClientId") or ""))
+    if picked is None:
+        return {**g, "dispatched": False, "error": why}
+    # Prefer the owner's configured workspace, falling back to repository ai_work_dir when absent.
+    from . import workdirs
+    work_dir, _why = workdirs.auto_dir(client, repo)
+    if not work_dir:
+        return {**g, "dispatched": False,
+                "error": "没有可用的干活目录（负责人那台 SoduWork 没设工作目录，工程也没配）"}
+    # Reuse the manual dispatch implementation for instructions, milestones, and events.
+    # Match api.tasks._repo_ctx fields: path, branch, and flow.
+    # An empty path would omit the execution directory from the instructions.
+    from ..api import tasks as tasks_api
+    body = {
+        "taskIds": g["taskIds"],
+        "title": f"合并处理 {len(g['taskIds'])} 条 bug · {repo.name or '同一工程'}",
+        "repo": {"id": repo.id, "path": work_dir, "name": repo.name, "kind": repo.kind,
+                 "gitUrl": repo.git_url, "branch": repo.default_branch,
+                 "note": repo.note, "flow": True,   # flow enables branch creation, implementation, verification, commit, and push.
+                 # Unattended mode overrides screenshot settings to disable GUI capture.
+                 # GUI capture can hang without an operator to recover it.
+                 "unattended": True},
+        # Include the explicit unattended-execution instructions.
+        # This prevents GUI steps from stalling until timeout.
+        "brief": ("这一批是测试平台推过来的 bug，按里程碑一条条修，"
+                  "每条单独提交，别把几条揉进一个提交里。\n"
+                  + ai_prompts.UNATTENDED),
+        # Select the executor explicitly.
+        # The selected machine must be able to use the supplied workspace path.
+        "assigneeId": picked.get("id"), "assigneeType": picked.get("type") or "agent",
+    }
+    result = await tasks_api.batch_dispatch(body=body, client=client, session=session)
+    log.info("自动合并派活：%s 条 → 批次 %s（派给 %s，%s）", len(g["taskIds"]),
+             result.get("batchId", ""), picked.get("name"), why)
+    return {**g, "dispatched": bool(result.get("ok")), "batchId": result.get("batchId", ""),
+            "assignee": picked.get("name") or picked.get("id")}
 
 
 async def tick_loop() -> None:

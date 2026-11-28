@@ -447,6 +447,119 @@ class AdminRequirementDispatchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await session.get(models.Task, "pending")).status, "todo")
             self.assertEqual((await session.get(models.Task, "previous-account")).status, "todo")
 
+    async def test_autobatch_waits_for_another_owners_batch_on_the_same_repository(self):
+        async with self.sessions() as session:
+            session.add(models.Repo(id="repo", project_id="project", ai_work_dir="runner-work"))
+            await session.commit()
+        common = {"repo_id": "repo", "project_id": "project", "integration_id": "import"}
+        for owner in ("owner", "reader"):
+            for index in range(2):
+                await self.create(f"{owner}-{index}", owner_client_id=owner, **common)
+        routes = [{"id": f"runner:{owner}:pi", "runnerId": owner, "clientId": owner,
+                   "cli": "pi", "online": True} for owner in ("owner", "reader")]
+        settings = SimpleNamespace(autobatch_enabled=True, autobatch_min=2, autobatch_wait_min=60,
+                                   autobatch_assignee="", autobatch_plugin_key="")
+        with patch.object(autobatch, "get_settings", return_value=settings), \
+             patch.object(ai_exec, "list_assignees_sync", return_value={"agents": routes}), \
+             patch.object(ai_exec, "resolve_requested_sync",
+                          side_effect=lambda ctx, aid, *_: next(route for route in routes if route["id"] == aid)), \
+             patch.object(tasks, "_push_task", new=AsyncMock()), \
+             patch.object(tasks, "_settle_work_dir", new=AsyncMock(return_value={"ok": True})), \
+             patch.object(tasks, "_attach_skills", new=AsyncMock()):
+            async with self.sessions() as session:
+                first = await autobatch.run_once(session)
+                started = [row for row in first["results"] if row["dispatched"]]
+                self.assertEqual(len(started), 1, first["results"])
+                waiting, = [row for row in first["results"] if not row["dispatched"]]
+                rows = list(await session.scalars(select(models.Task).where(models.Task.id.in_(waiting["taskIds"]))))
+                self.assertEqual([row.status for row in rows], ["todo", "todo"])
+                batch = await session.get(models.Task, started[0]["batchId"])
+                await task_status.mark(session, batch, "done", engine=True, allow_incomplete=True)
+                await session.commit()
+                second = await autobatch.run_once(session)
+                next_batch, = second["results"]
+                self.assertTrue(next_batch["dispatched"], next_batch)
+                self.assertEqual(next_batch["taskIds"], waiting["taskIds"])
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_autobatch_uses_the_existing_batch_execution_repository(self):
+        async with self.sessions() as session:
+            session.add_all(models.Repo(id=rid, project_id="project", ai_work_dir="runner-work")
+                            for rid in ("execution-repo", "source-repo"))
+            await session.commit()
+        common = {"project_id": "project", "integration_id": "import"}
+        sources = [await self.create(tid, repo_id="source-repo", **common) for tid in ("a", "b")]
+        waiting = [await self.create(tid, repo_id="execution-repo", **common) for tid in ("c", "d")]
+        route = {"id": "runner:current:pi", "runnerId": "current", "clientId": "owner",
+                 "cli": "pi", "online": True}
+        settings = SimpleNamespace(autobatch_enabled=True, autobatch_min=2, autobatch_wait_min=60,
+                                   autobatch_assignee="", autobatch_plugin_key="")
+        with patch.object(autobatch, "get_settings", return_value=settings), \
+             patch.object(ai_exec, "list_assignees_sync", return_value={"agents": [route]}), \
+             patch.object(ai_exec, "resolve_requested_sync", return_value=route), \
+             patch.object(tasks, "_push_task", new=AsyncMock()), \
+             patch.object(tasks, "_settle_work_dir", new=AsyncMock(return_value={"ok": True})), \
+             patch.object(tasks, "_attach_skills", new=AsyncMock()):
+            manual = await self.http.post("/api/v1/tasks/batch-dispatch", json={
+                "taskIds": sources, "repo": {"id": "execution-repo"},
+            })
+            self.assertEqual(manual.status_code, 200, manual.text)
+            async with self.sessions() as session:
+                batch = await session.get(models.Task, manual.json()["batchId"])
+                self.assertEqual((batch.repo_id, batch.status), ("execution-repo", "doing"))
+                result = await autobatch.run_once(session)
+                group, = result["all"]
+                self.assertEqual(group["taskIds"], waiting)
+                self.assertFalse(group["ready"])
+                self.assertIn("没干完的批次", group["reason"])
+                self.assertEqual(result["results"], [])
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_autobatch_plugin_preflight_failure_leaves_sources_ready_for_retry(self):
+        async with self.sessions() as session:
+            session.add_all([
+                models.Repo(id="repo", project_id="project", ai_work_dir="runner-work"),
+                am.Plugin(id="plugin", key="batch-plugin", name="Batch plugin", enabled=True),
+                am.PluginVersion(id="version", plugin_id="plugin", version="1.0.0", checksum="fixture",
+                                 enabled=True, trust_state="approved",
+                                 manifest={"inputs": [{"key": "reportTitle", "required": True}]}),
+                am.PluginBinding(id="binding", plugin_id="plugin", version_id="version", project_id="project"),
+            ])
+            await session.commit()
+        ids = [await self.create(tid, repo_id="repo", project_id="project", integration_id="import")
+               for tid in ("a", "b")]
+        settings = SimpleNamespace(autobatch_enabled=True, autobatch_min=2, autobatch_wait_min=60,
+                                   autobatch_plugin_key="batch-plugin")
+        with patch.object(autobatch, "get_settings", return_value=settings):
+            async with self.sessions() as session:
+                result = await autobatch.run_once(session)
+                failure, = result["results"]
+                self.assertFalse(failure["dispatched"], failure)
+                self.assertIn("reportTitle", failure["error"])
+                self.assertEqual(set(await session.scalars(select(models.Task.id))), set(ids))
+                self.assertEqual(list(await session.scalars(select(models.Milestone))), [])
+                self.assertEqual(list(await session.scalars(select(models.TaskEvent))), [])
+                retry, = await autobatch.group(session)
+                self.assertTrue(retry["ready"], retry)
+                self.assertEqual(retry["taskIds"], ids)
+
+                session.add(am.PluginVersion(id="updated", plugin_id="plugin", version="1.0.1", checksum="updated",
+                                             enabled=True, trust_state="approved",
+                                             workflow={"nodes": [{"key": "check", "type": "validate",
+                                                                  "config": {"rules": []}}]}))
+                binding = await session.get(am.PluginBinding, "binding")
+                binding.version_id = "updated"
+                await session.commit()
+                retry_result = await autobatch.run_once(session)
+                started, = retry_result["results"]
+                self.assertTrue(started["dispatched"], started)
+                run = await session.get(am.WorkflowRun, started["runId"])
+                self.assertEqual(run.task_id, started["batchId"])
+                self.assertEqual(run.plugin_version_id, "updated")
+                sources = await session.scalars(select(models.Milestone.src_task_id).where(
+                    models.Milestone.task_id == run.task_id))
+                self.assertEqual(set(sources), set(ids))
+
     async def test_batch_nonstart_releases_only_owned_transitions_and_unblocks_repo(self):
         async with self.sessions() as session:
             session.add(models.Repo(id="repo", project_id="project", ai_work_dir="work"))

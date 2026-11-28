@@ -745,6 +745,21 @@ async def _start_unlocked(session: AsyncSession, task: models.Task, binding: am.
     return run
 
 
+async def start_new_task(session: AsyncSession, task: models.Task, binding: am.PluginBinding,
+                         inputs: dict, *, actor_id: str, instruction: str, repo_id: str) -> am.WorkflowRun:
+    """Start an unpublished task in the transaction that inserts it."""
+    from .task_requirements import ensure_executable
+
+    if task not in session.new:
+        raise ValueError("Expected a new task")
+    await session.flush()
+    ensure_executable(task)
+    # The uncommitted task has no competing starter. Taking a workflow-start
+    # lease would commit the new task and its source admissions before preflight.
+    return await _start_unlocked(session, task, binding, inputs, actor_id=actor_id,
+                                 instruction=instruction, repo_id=repo_id)
+
+
 async def start(session: AsyncSession, task: models.Task, binding: am.PluginBinding,
                 inputs: dict, actor_id: str = "", execution: dict | None = None,
                 instruction: str = "", repo_id: str = "", *,
