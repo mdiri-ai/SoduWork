@@ -1691,8 +1691,8 @@ async def put_model_provider(
     from ..models import ModelDef, ModelProvider
     from ..services import model_config_guard
     new_key = str(body.get("apiKey") or "").strip()
-    if len(new_key) > 400:
-        raise HTTPException(status_code=400, detail="模型服务密钥最多 400 个字符，原密钥未更改")
+    if len(new_key) > 4000:
+        raise HTTPException(status_code=400, detail="模型服务密钥最多 4000 个字符，原密钥未更改")
     p = await model_config_guard.catalog(session, ModelProvider, pid, body.get("expectedRevision"))
     kind = p.kind if p else "openai-compat"
     if "kind" in body:

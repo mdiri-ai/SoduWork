@@ -109,7 +109,7 @@ class ModelProvider(Base):
     # Use openai-compat for compatible gateways; Anthropic and Google use their own protocols.
     kind: Mapped[str] = mapped_column(String(24), default="openai-compat")
     base_url: Mapped[str] = mapped_column(String(400), default="")
-    api_key: Mapped[str] = mapped_column(String(400), default="")     # Organization credential, never returned in API responses.
+    api_key: Mapped[str] = mapped_column(String(4000), default="")    # Organization credential, never returned in API responses.
     builtin: Mapped[bool] = mapped_column(Boolean, default=False)      # Built-in definition: may be disabled but not deleted.
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     note: Mapped[str] = mapped_column(String(300), default="")

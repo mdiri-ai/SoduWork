@@ -180,10 +180,17 @@ class ModelIdentifierBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_overlong_api_key_is_rejected_without_creating_a_provider(self):
         created = await self.request("PUT", "/model-providers/longkey", json={
             "expectedRevision": "new", "name": "LongKey", "kind": "openai-compat",
-            "baseUrl": "https://example.com/v1", "apiKey": "k" * 420, "enabled": True})
+            "baseUrl": "https://example.com/v1", "apiKey": "k" * 4200, "enabled": True})
         self.assertEqual(created.status_code, 400, created.text)
         async with self.sessions() as session:
             self.assertIsNone(await session.get(models.ModelProvider, "longkey"))
+        # The widened cap accepts exactly 4000 characters, so long vendor credentials fit.
+        accepted = await self.request("PUT", "/model-providers/longkey", json={
+            "expectedRevision": "new", "name": "LongKey", "kind": "openai-compat",
+            "baseUrl": "https://example.com/v1", "apiKey": "k" * 4000, "enabled": True})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        async with self.sessions() as session:
+            self.assertEqual((await session.get(models.ModelProvider, "longkey")).api_key, "k" * 4000)
 
     async def test_rejected_key_update_preserves_the_entire_existing_provider(self):
         original_key = secrets.token_hex(200)
@@ -195,7 +202,7 @@ class ModelIdentifierBoundaryTests(unittest.IsolatedAsyncioTestCase):
         row = next(p for p in catalog["providers"] if p["id"] == "exact")
         rejected = await self.request("PUT", "/model-providers/exact", json={
             "expectedRevision": row["revision"], "name": "Must not persist", "enabled": False,
-            "apiKey": "k" * 401})
+            "apiKey": "k" * 4001})
         self.assertEqual(rejected.status_code, 400, rejected.text)
         async with self.sessions() as session:
             stored = await session.get(models.ModelProvider, "exact")

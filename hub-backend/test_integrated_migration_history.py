@@ -29,7 +29,7 @@ from app.schema_migrations import (
 
 OLD_MERGE = "0067_merge_release_account_ownership"
 CANONICAL_MERGE = "0067_merge_account_ownership"
-CURRENT_HEAD = "0097_model_advertised_window"
+CURRENT_HEAD = "0098_model_key_length"
 
 
 class IntegratedMigrationHistoryTests(unittest.TestCase):
@@ -132,6 +132,7 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
         expected = {
             "0095_business_record_source": "0094_review_recipient",
             "0097_model_advertised_window": "0096_usage_chat_source",
+            "0098_model_key_length": "0097_model_advertised_window",
             "0096_usage_chat_source": "0095_business_record_source",
             "0094_review_recipient": "0093_user_test_account",
             "0093_user_test_account": "0092_task_text_storage",
