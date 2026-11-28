@@ -169,6 +169,8 @@ function compare(before, after, metadata = {}) {
   for (const relative of [...names].sort((a, b) => a.localeCompare(b))) {
     const oldFile = left[relative] || null;
     const newFile = right[relative] || null;
+    // An omitted path in a bounded scan is unknown, not evidence of absence.
+    if ((!oldFile && before?.truncated) || (!newFile && after?.truncated)) continue;
     if (oldFile && newFile && oldFile.hash === newFile.hash) continue;
     const action = !oldFile ? 'created' : !newFile ? 'deleted' : 'modified';
     const row = { path: relative, action, before: publicRecord(oldFile), after: publicRecord(newFile) };
