@@ -180,8 +180,10 @@
   // An archive/runtime open must always reach a terminal UI state.  The
   // underlying SDK is third-party code and may leave a Promise pending when a
   // model adapter or extension stalls; without this guard the opening skeleton
-  // remained on screen forever.
-  const OPEN_TIMEOUT_MS = 30000;
+  // remained on screen forever.  This budget matches the main process open
+  // timeout (pi-session/ipc.js OPEN_TIMEOUT_MS = 45000) so the renderer does
+  // not report a false timeout while the runtime is still initializing.
+  const OPEN_TIMEOUT_MS = 45000;
   let _submitTail = Promise.resolve();
   let _model = null;
   let _composerControls = null;

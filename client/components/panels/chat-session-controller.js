@@ -143,7 +143,7 @@ async function _ensureOnce(chatId, epoch, ownerScope = ctx._draftOwnerScope?.() 
       } catch (error) {
         openTimedOut = error && error.code === 'SODUWORK_OPEN_TIMEOUT';
         if (openTimedOut) {
-          return failOpen('打开对话超时', '执行底座超过 30 秒没有响应，请重试', error);
+          return failOpen('打开对话超时', '执行底座超过 45 秒没有响应，请重试', error);
         }
         throw error;
       }
