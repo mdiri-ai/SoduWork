@@ -8,9 +8,9 @@
 """
 from __future__ import annotations
 
-import logging
-import hashlib
 import calendar
+import hashlib
+import logging
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -19,24 +19,44 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import models
-from . import resource_leases
-from . import schedule_timing
-from .schedule_execution import (
-    CAPABILITY_SKILLS, _capability_remediation, capability_save_blocker,
-    preflight_execution, required_skill_names, validate_direct_execution,
-    validate_execution, normalize_conversation_schedule,
+from . import resource_leases, schedule_timing
+from .schedule_execution import (  # noqa: F401  re-exported: api consumers call these via sch.<name>
+    CAPABILITY_SKILLS,
+    _capability_remediation,
+    capability_save_blocker,
+    normalize_conversation_schedule,
+    preflight_execution,
+    required_skill_names,
+    validate_direct_execution,
+    validate_execution,
 )
 from .schedule_repo_scope import resolve_repo
-from .schedule_run_contracts import (
-    DIRECT_CAPABILITIES, PERSONAL_PLUGIN_VERSION_POLICIES,
-    RUN_ACTIVE, RUN_TRIGGERS, derive_run_state,
-    _run_iso, _run_time, apply_attempt_outcome, apply_outcome,
-    automation_conversation_title, begin_run, claim_run,
-    clean_personal_plugin_checksum, clean_personal_plugin_key,
-    clean_personal_plugin_version, clean_personal_plugin_version_policy,
-    clean_plugin_inputs, clean_required_capabilities, is_local_model_reference,
-    sanitize_schedule_model_payload, schedule_model_source,
-    error_text, normalize_personal_plugin_snapshot, personal_plugin_spec,
+from .schedule_run_contracts import (  # noqa: F401  re-exported: api consumers call these via sch.<name>
+    DIRECT_CAPABILITIES,
+    PERSONAL_PLUGIN_VERSION_POLICIES,
+    RUN_ACTIVE,
+    RUN_TRIGGERS,
+    _run_iso,
+    _run_time,
+    apply_attempt_outcome,
+    apply_outcome,
+    automation_conversation_title,
+    begin_run,
+    claim_run,
+    clean_personal_plugin_checksum,
+    clean_personal_plugin_key,
+    clean_personal_plugin_version,
+    clean_personal_plugin_version_policy,
+    clean_plugin_inputs,
+    clean_required_capabilities,
+    derive_run_state,
+    error_text,
+    is_local_model_reference,
+    latest_run_active,
+    normalize_personal_plugin_snapshot,
+    personal_plugin_spec,
+    sanitize_schedule_model_payload,
+    schedule_model_source,
 )
 
 log = logging.getLogger("uvicorn.error")
@@ -364,6 +384,16 @@ async def execute_one(session: AsyncSession, s, trigger: str = "timer",
     normalize_conversation_schedule(s)
     if getattr(s, "every", "") == "once" and trigger != "manual" and not s.enabled:
         return {"ok": True, "deduplicated": True, "scheduleRunState": "paused"}
+    # Reuse-mode runs continue one conversation. A still-active run must hold
+    # back the next occurrence — timer or manual — instead of dispatching a
+    # duplicate prompt into that conversation. The skip is truthful (ok: True)
+    # so manual endpoints return it as a successful no-op, not a dispatch
+    # failure; the timer loop ignores the response either way.
+    if str(getattr(s, "session_mode", "") or "fresh") == "reuse":
+        if await latest_run_active(session, s.id):
+            return {"ok": True, "skipped": True,
+                    "skipReason": "上一轮自动化仍在执行，本次已跳过",
+                    "scheduleRunId": "", "scheduleRunState": "running"}
     if idempotency_key:
         run, claimed = await claim_run(session, s, trigger, idempotency_key)
         # The claim is committed before external work. Reload both rows so crash recovery
@@ -420,9 +450,12 @@ async def execute_one(session: AsyncSession, s, trigger: str = "timer",
                     dict(run.receipt or {}).get("timing", {}).get("every") == "once")
     schedule_id, plan_exists = s.id, True
     # Adapter failures may roll back the transaction and expire both ORM rows.
-    # Capture display/diagnostic values before crossing that boundary.
+    # Capture display/diagnostic values before crossing that boundary. Reuse
+    # runs share one conversation, so their fallback title must be stable too.
+    reuse_mode = str(getattr(s, "session_mode", "") or "fresh") == "reuse"
     run_id = run.id
-    conversation_title = automation_conversation_title(s, run.started_at)
+    conversation_title = automation_conversation_title(s, run.started_at,
+                                                       stable=reuse_mode)
     try:
         out = await run_one(session, s, who=who, schedule_run_id=run_id,
                             conversation_title=conversation_title)

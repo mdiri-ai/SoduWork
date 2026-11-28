@@ -1635,7 +1635,19 @@ async def put_skills(body: dict = Body(default_factory=dict),
 @router.get("/model-catalog", dependencies=[Depends(require_perm("integration.manage"))])
 async def get_model_catalog(session: AsyncSession = Depends(get_session)):
     from ..services import model_catalog
-    return await model_catalog.catalog(session)
+    return await model_catalog.catalog(session, admin=True)
+
+
+@router.get("/model-defs/accounts", dependencies=[Depends(require_perm("integration.manage"))])
+async def get_model_def_accounts(session: AsyncSession = Depends(get_session)):
+    """Accounts for the per-model allowlist picker; only account IDs and names leave."""
+    from ..models import User
+    rows = (await session.execute(
+        select(User.id, User.username, User.display_name)
+        .where(User.is_active.is_(True), User.account_deleted_at.is_(None))
+        .order_by(User.username))).all()
+    return {"accounts": [{"id": row.id, "name": row.display_name or row.username}
+                         for row in rows]}
 
 
 def _provider_base_url(value, kind, previous, allow_root):
@@ -1880,6 +1892,21 @@ async def put_model_def(
             raise HTTPException(status_code=400, detail=str(exc), headers=headers) from exc
     if "note" in body:
         m.note = str(body.get("note") or "")[:300]
+    if "allowedAccounts" in body:
+        accounts = body.get("allowedAccounts")
+        if accounts is None:
+            accounts = []
+        if not isinstance(accounts, list) or any(not isinstance(v, str) for v in accounts):
+            raise HTTPException(status_code=400, detail="允许账户要是账户 ID 列表")
+        unique: list[str] = []
+        for v in accounts:
+            v = v.strip()
+            if v and v not in unique:
+                unique.append(v)
+        if len(unique) > 200:
+            raise HTTPException(status_code=400, detail="允许账户最多 200 个")
+        # An empty list means every account may use the model.
+        m.allowed_user_ids = unique
     try:
         from ..services.model_capabilities import validate_limits
         m.ctx_window = validate_limits(body.get("ctxWindow", m.ctx_window), m.config or {})
@@ -1899,7 +1926,8 @@ async def put_model_def(
     await models_changed(session)
     await audit.log(
         session, user, "model.def", "setting", mid, m.label or name,
-        {"enabled": m.enabled, "modality": m.modality},
+        {"enabled": m.enabled, "modality": m.modality,
+         "allowedAccounts": model_catalog.model_accounts(m)},
     )
     return {"ok": True, "id": mid, **receipt}
 

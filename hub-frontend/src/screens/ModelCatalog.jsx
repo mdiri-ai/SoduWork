@@ -327,6 +327,8 @@ export default function ModelCatalog({ me }) {
                   </i>
                   <code title={m.name}>{m.label || m.name}</code></div>
                   {m.label && m.label !== m.name && <span className="model-chip-id">{m.name}</span>}
+                  {Array.isArray(m.allowedAccounts) && m.allowedAccounts.length > 0 &&
+                    <span className="model-chip-id" title={tx('仅允许所选账户使用该模型')}>{tx('限 {0} 账户', [m.allowedAccounts.length])}</span>}
                   {(m.modality || 'chat') === 'chat' && <CapabilityBadges model={m} />}
                 </div>
                 <div className="model-chip-actions" role="group" aria-label={tx("{0} 操作", [m.label || m.name])}>
@@ -579,6 +581,18 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
   const [supportsReasoningEffort, setSupportsReasoningEffort] = useState(
     initial?.config?.supportsReasoningEffort !== false
   )
+  // Per-model account allowlist; an empty list means every account may use the model.
+  const [accounts, setAccounts] = useState(null)
+  const [allowed, setAllowed] = useState(Array.isArray(initial?.allowedAccounts) ? initial.allowedAccounts : [])
+  useEffect(() => {
+    let alive = true
+    api.modelAccounts().then(d => { if (alive) setAccounts(Array.isArray(d?.accounts) ? d.accounts : []) })
+      .catch(() => { if (alive) setAccounts([]) })
+    return () => { alive = false }
+  }, [])
+  function toggleAccount(id) {
+    setAllowed(current => current.includes(id) ? current.filter(v => v !== id) : [...current, id])
+  }
   const [busy, setBusy] = useState(false)
 
   function changeModality(next) {
@@ -676,6 +690,7 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
           defaults,
         },
         enabled: initial ? initial.enabled : true,
+        allowedAccounts: allowed,
       })
       toast(editing ? tx("模型配置已更新") : tx("已加上"))
       onSaved(!editing && modality === 'chat' ? [saved] : [])
@@ -685,7 +700,7 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
 
   return (
     <Modal draft={{ name, label, modality, endpointPath, statusPath, resultPath, defaultsText, thinkingMode,
-        thinkingFormat, imageRouting, capabilities, ctxWindow, maxOutputTokens, supportsReasoningEffort }} title={editing ? tx("配置模型") : tx("加一个模型")} icon={editing ? 'pencil' : 'plus'}
+        thinkingFormat, imageRouting, capabilities, ctxWindow, maxOutputTokens, supportsReasoningEffort, allowed }} title={editing ? tx("配置模型") : tx("加一个模型")} icon={editing ? 'pencil' : 'plus'}
       wide busy={busy} onClose={onClose}
       foot={dismiss => <><button className="btn btn-ghost" disabled={busy} onClick={dismiss}>{tx("取消")}</button>
         <button className="btn btn-primary" disabled={busy} onClick={save}>{busy ? tx("保存中…") : tx("保存")}</button></>}>
@@ -765,6 +780,22 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
             placeholder={'{\n  "size": "1024x1024"\n}'} />
           <div className="muted" style={{ fontSize: 14.5, marginTop: 6, lineHeight: 1.7 }}>{tx("可配置尺寸、时长、清晰度、比例等服务参数；每次调用仍可覆盖这些默认值。")}</div></div>
       </>}
+      <section className="model-config-section" style={{ marginTop: 16 }}>
+        <h3>{tx('允许账户')}</h3>
+        <p className="model-config-hint">{tx('留空表示所有账户都能使用；选定后只有这些账户名下的设备能使用该模型。')}</p>
+        {accounts === null ? <p className="model-config-hint">{tx('账户列表加载中…')}</p>
+          : accounts.length === 0 ? <p className="model-config-hint">{tx('暂无可用账户')}</p>
+          : <>
+            <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+              {accounts.map(a => (
+                <label className="f-check" style={{ display: 'flex', alignItems: 'center', gap: 6 }} key={a.id}>
+                  <input type="checkbox" checked={allowed.includes(a.id)} onChange={() => toggleAccount(a.id)} />
+                  {a.name}{a.id !== a.name && <span className="model-chip-id">{a.id}</span>}
+                </label>))}
+            </div>
+            {allowed.length > 0 && <p className="model-config-hint">{tx('已选 {0} 个账户', [allowed.length])}</p>}
+          </>}
+      </section>
       <div className="muted" style={{ fontSize: 14.5, marginTop: 10, lineHeight: 1.7 }}>{tx("密钥配置在模型服务上，这个服务底下的所有模型共用。")}</div></div>
     </Modal>
   )

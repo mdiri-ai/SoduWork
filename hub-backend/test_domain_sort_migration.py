@@ -142,16 +142,35 @@ class DomainSortMigrationTests(unittest.TestCase):
             path = Path(directory) / ".smoke.db"
             engine = sa.create_engine("sqlite:///" + path.as_posix())
             try:
+                with engine.begin() as connection:
+                    Domain.__table__.create(connection)
+                    AuditLog.__table__.create(connection)
+                    connection.exec_driver_sql("CREATE TABLE task (id VARCHAR(36) PRIMARY KEY)")
+                    connection.exec_driver_sql("CREATE TABLE app_user (id TEXT PRIMARY KEY)")
+                    # 0098_schedule_session_mode adds its columns onto ai_schedule
+                    # during this upgrade, so the fixture needs the bare table.
+                    connection.exec_driver_sql("CREATE TABLE ai_schedule (id VARCHAR(36) PRIMARY KEY)")
+                    # 0095, 0096, 0097 and 0099 add their columns onto these tables
+                    # during this upgrade, so the fixture needs the bare tables;
+                    # position.is_system feeds 0095's business backfill.
+                    for table in ("project", "repo", "org_unit", "model_def"):
+                        connection.exec_driver_sql("CREATE TABLE " + table + " (id VARCHAR(36) PRIMARY KEY)")
+                    connection.exec_driver_sql("CREATE TABLE position (id VARCHAR(36) PRIMARY KEY, is_system BOOLEAN)")
+                    # 0096 backfills reported_chat_session_id from the ledger
+                    # columns the legacy schema already recorded.
+                    connection.exec_driver_sql(
+                        "CREATE TABLE ai_usage_event (id VARCHAR(36) PRIMARY KEY,"
+                        " idempotency_key VARCHAR(240), source_type VARCHAR(32),"
+                        " source_id VARCHAR(180), conversation_id VARCHAR(180))")
+                    connection.exec_driver_sql("CREATE TABLE alembic_version (version_num VARCHAR(64) PRIMARY KEY)")
+                    connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('0090_requirement_creator')")
+                    self.insert_domain(connection, "valid", 9)
+                    self.insert_domain(connection, "legacy", "abc")
                 with patch.dict(os.environ, {"DATABASE_URL": "sqlite+aiosqlite:///" + path.as_posix()}):
                     get_settings.cache_clear()
                     try:
-                        config = _config()
-                        command.upgrade(config, "0090_requirement_creator")
-                        with engine.begin() as connection:
-                            self.insert_domain(connection, "valid", 9)
-                            self.insert_domain(connection, "legacy", "abc")
-                        command.upgrade(config, "head")
-                        command.upgrade(config, "head")
+                        command.upgrade(_config(), "head")
+                        command.upgrade(_config(), "head")
                     finally:
                         get_settings.cache_clear()
                 with engine.connect() as connection:
