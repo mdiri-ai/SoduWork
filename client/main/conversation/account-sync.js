@@ -1044,12 +1044,12 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
       if (refreshPromise) return refreshPromise;
       refreshPromise = (async () => {
         let recovered = false;
-        let messages = [];
+        let messages = new Map();
         let nextMetadata = null;
         for (let attempt = 0; attempt < 2; attempt++) {
           let after = 0;
           nextMetadata = null;
-          messages = [];
+          messages = new Map();
           let missing = false;
           const base = endpoint(identity, '/account-conversations/' + encodeURIComponent(accountId) + '/messages');
           for (let page = 0; page < 200; page++) {
@@ -1064,16 +1064,26 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
             }
             nextMetadata = data.conversation;
             for (const item of data.items) {
-              if (!item || typeof item.id !== 'string' || item.deleted) continue;
+              if (!item || typeof item.id !== 'string') continue;
+              if (item.deleted) { messages.delete(item.id); continue; }
+              const previous = messages.get(item.id);
               const at = Date.parse(String(item.createdAt || ''));
-              messages.push({ id: item.id, role: item.role, text: safeText(item.text), position: Number(item.position || 0),
-                sentAt: Number.isFinite(at) ? at : now(), done: item.done === true });
+              // Pages contain revisions, including endpoint deltas for the
+              // same stream. Keep its first position while updating its text.
+              const stream = data.format === 'events';
+              messages.set(item.id, { id: item.id, role: item.role,
+                text: safeText((item.delta === true ? previous?.text || '' : '') + safeText(item.text)),
+                position: stream && previous ? previous.position : Number(item.position || 0),
+                sentAt: stream && previous ? previous.sentAt : Number.isFinite(at) ? at : now(),
+                done: item.done === true });
             }
-            if (messages.length > MAX_MESSAGES || messages.reduce((n, item) => n + item.text.length, 0) > 32 * 1024 * 1024) {
+            if (messages.size > MAX_MESSAGES || [...messages.values()].reduce((n, item) => n + item.text.length, 0) > 32 * 1024 * 1024) {
               throw Error('跨设备会话正文超过桌面端读取上限');
             }
             const next = data.cursor;
-            if (next <= after || data.hasMore !== true) break;
+            if (data.hasMore !== true) break;
+            if (!Number.isSafeInteger(next) || next <= after) throw Error('跨设备会话正文读取失败');
+            if (page === 199) throw Error('跨设备会话正文超过桌面端读取上限');
             after = next;
           }
           if (!missing) break;
@@ -1090,7 +1100,7 @@ function create({ app, identityOf, localIdentityOf, store, resolveNativeSource, 
         metadata = directoryRow(wanted) || accountRows.get(accountId);
         if (metadata.deleted) return false;
         snapshotValue = {
-          messages: messages.sort((a, b) => a.position - b.position).map(require('./history-message.cjs').project),
+          messages: [...messages.values()].sort((a, b) => a.position - b.position).map(require('./history-message.cjs').project),
           status: safeText(metadata.state || 'idle', 24),
           adapterId: 'account-sync', displayName: '账号会话',
           modelSelection: {}, execution: { accountConversation: true, readOnly: true },
