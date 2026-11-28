@@ -2,6 +2,6 @@
 # Install in the test venv with: python -m pip install -r requirements-test.txt
 -r requirements.txt
 # Keep the recipe checker on the same version as requirements-runner-build.txt.
-pyinstaller==6.21.0
+pyinstaller==6.22.3
 ruff==0.17.6
 mypy==2.4.1

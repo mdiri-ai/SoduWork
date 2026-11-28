@@ -1,6 +1,6 @@
 # Build-time dependency only; the delivered Runner does not need PyInstaller.
 -r requirements-runner.txt
-pyinstaller==6.21.0
+pyinstaller==6.22.3
 
 # Build the Linux venv with python-build-standalone using the glibc 2.17 baseline.
 # Freezing the Ubuntu 24.04 system Python can link libpython against GLIBC_2.38,
