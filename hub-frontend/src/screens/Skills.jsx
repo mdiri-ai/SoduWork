@@ -291,6 +291,7 @@ function SkillCatalog({ rows, allowed, legacy, onToggle, submissions, disabled }
                       <i>{item.inUse || 0}{tx(" 台 SoduWork 在用")}</i>
                       {!item.portable && <i title={tx("目标 Runner 也必须安装同名 Skill；建议导入公司能力库固化版本")}>{tx("需执行机同名能力")}</i>}
                       {item.compatibility && <i title={item.compatibility}>{tx("有环境要求")}</i>}
+                      {item.packageChecksum && <i title={tx("技能包内容指纹，客户端 v 徽章与其前 12 位一致即同一份")}>{`v ${item.packageChecksum.slice(0, 12)}`}</i>}
                     </span>
                   </div>
                   <button type="button" className="cap-admin-switch" aria-label={tx("开放 {0}", [item.name])}
