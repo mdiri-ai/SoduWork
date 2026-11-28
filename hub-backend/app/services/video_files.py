@@ -1,8 +1,9 @@
 """Bounded temporary storage for provider video responses."""
 from __future__ import annotations
 
-import asyncio
 import tempfile
+
+from . import file_io
 
 JSON_MAX_BYTES = 8 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
@@ -10,12 +11,7 @@ CHUNK_SIZE = 1024 * 1024
 
 async def disk_call(function, *args):
     """Wait for file IO to finish before cancellation closes its handle."""
-    task = asyncio.create_task(asyncio.to_thread(function, *args))
-    try:
-        return await asyncio.shield(task)
-    except asyncio.CancelledError:
-        await task
-        raise
+    return await file_io.run(function, *args)
 
 
 class VideoBody:
