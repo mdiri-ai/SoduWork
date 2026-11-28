@@ -686,8 +686,9 @@
         const same = references([id], row ? [row] : []);
         if (next.pins.some(value => same.has(value))) {
           next.pins = next.pins.filter(value => !same.has(value));
+          // An unpinned conversation returns to the top of a manually ordered recent list.
           if (![...next.projects, ...next.archivedProjects].some(p => p.chatIds.some(value => same.has(value))))
-            next.recent = unique([...next.recent, id]);
+            next.recent = unique([id, ...next.recent]);
         } else next.pins = unique([...next.pins, id]);
         if (row?.id === id) remember(next, [row]);
       }); },
@@ -711,6 +712,11 @@
         });
         return filed;
       },
+      /*
+       * Without a neighbor, recent places the conversation first: the list reads newest
+       * first, and an appended row lands behind every older conversation. Projects and
+       * pinned keep appending.
+       */
       move(item, target, beforeId, items) {
         if (!item?.id || item.pending) throw Error('会话建立后即可移动');
         const id = String(item.id);
@@ -736,7 +742,7 @@
           if (p) p.chatIds = unique([...storedOrder(projectIds, p.chatIds), ...p.chatIds]).filter(v => !same.has(v));
           const list = p ? p.chatIds : target === 'pinned' ? next.pins : next.recent;
           const at = list.findIndex(value => before.has(value));
-          list.splice(at < 0 ? list.length : at, 0, id);
+          list.splice(at >= 0 ? at : target === 'recent' ? 0 : list.length, 0, id);
           next.manualOrder = normalizedManualOrder(next.manualOrder);
           if (target === 'recent') next.manualOrder.recent = true;
           else if (p) next.manualOrder.projects[p.id] = true;

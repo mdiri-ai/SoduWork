@@ -41,6 +41,13 @@
 .ws-chat-row[data-chat-dragging]{opacity:.4}
 [data-sidebar-section].is-drop-target{background:color-mix(in srgb,var(--accent) 5%,transparent);
   border-radius:9px;outline:1px solid color-mix(in srgb,var(--accent) 24%,transparent);outline-offset:-1px}
+/* Briefly marks where a moved conversation landed, close to the active-row tint. */
+.ws-chat-row[data-just-moved]>.ws-chat{animation:ws-just-moved 1.6s ease-out}
+/* No end frame: the row fades back to its own background, including the active state. */
+@keyframes ws-just-moved{0%,35%{background:color-mix(in srgb,var(--accent) 10%,var(--bg-0))}}
+@media(prefers-reduced-motion:reduce){
+  .ws-chat-row[data-just-moved]>.ws-chat{animation:none;outline:1px solid color-mix(in srgb,var(--accent) 24%,transparent);outline-offset:-1px}
+}
 .ws-chat-row.is-drop-before::before,.ws-chat-row.is-drop-after::after{content:"";position:absolute;left:10px;right:9px;
   height:2px;border-radius:2px;background:var(--accent);z-index:5;pointer-events:none}
 .ws-chat-row.is-drop-before::before{top:-1px}.ws-chat-row.is-drop-after::after{bottom:-1px}

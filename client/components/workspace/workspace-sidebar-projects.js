@@ -74,6 +74,28 @@
       const groups = state().view(getItems());
       return [...groups.pinned, ...groups.recent, ...groups.projects.flatMap(p => p.items)];
     }
+    function rowFor(id) {
+      return [...root.querySelectorAll('.ws-chat-row')].find(el => {
+        const button = el.querySelector('.ws-chat');
+        return !!button && (button.dataset.sidebarChatId === id || button.dataset.chatId === id);
+      }) || null;
+    }
+    // Scroll the moved conversation into view and mark it briefly, so it is never lost off screen.
+    function reveal(id) {
+      const show = () => {
+        const row = rowFor(id);
+        if (!row) return;
+        // Instant: a smooth scroll is skipped while the window is in the background.
+        row.scrollIntoView?.({ block: 'nearest' });
+        // A data attribute survives list repaints, which reassign the row's className.
+        delete row.dataset.justMoved;
+        void row.offsetWidth;
+        row.dataset.justMoved = '1';
+        clearTimeout(row.__justMoved);
+        row.__justMoved = setTimeout(() => { delete row.dataset.justMoved; }, 1700);
+      };
+      if (typeof global.requestAnimationFrame === 'function') global.requestAnimationFrame(show); else show();
+    }
     function move(id, destination, before) {
       safe(() => {
         const item = allItems().find(row => String(row.id) === id);
@@ -86,6 +108,7 @@
           if (body.hidden) root.querySelector(destination === 'pinned' ? '#wsPinnedToggle' : '#wsChatsToggle').click();
         }
         render();
+        reveal(id);
         const label = destination === 'pinned' ? '置顶' : destination === 'recent' ? '最近聊天'
           : state().get().projects.find(p => p.id === destination)?.name;
         status.textContent = '已移到' + label;
@@ -320,6 +343,7 @@
         }
         render();
         status.textContent = pinned ? '已置顶' : '已取消置顶';
+        reveal(wanted);
       }); },
       openMoveMenu: id => moveMenu(id),
       forget: id => safe(() => state().forget(id)),

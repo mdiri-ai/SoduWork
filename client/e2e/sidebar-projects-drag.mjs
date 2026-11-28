@@ -222,6 +222,52 @@ try {
   await page.run(() => { fixtureAccount = 'employee'; WorkspaceShell.setChats([]); });
   assert.deepEqual(await page.run(() => [...document.querySelectorAll('.ws-project')].map(el => el.querySelectorAll('.ws-chat-row').length)), [5, 5]);
   report.cases.push('project expansion does not leak across account changes');
+  report.stage = 'recent-top';
+  // Manual recent order is where an appended row used to sink below older history.
+  await page.run(() => {
+    window.toasts = 0;
+    window.petSay = () => { window.toasts++; };
+    window.drag('chat-29', 'recent', 'chat-28');
+  });
+  const recentIds = () => page.run(() => [...document.querySelectorAll('#wsChats .ws-chat')].map(el => el.dataset.sidebarChatId));
+  const projectMember = () => page.run(() => document.querySelector('.ws-project .ws-chat').dataset.sidebarChatId);
+  const inView = id => page.run(id => {
+    const box = row(id).getBoundingClientRect(), view = document.querySelector('#wsSideScroll').getBoundingClientRect();
+    return box.top >= view.top && box.bottom <= view.bottom;
+  }, id);
+  // Over the recent heading, the drop slot is the first row.
+  const moved = await projectMember();
+  await page.call('Input.setInterceptDrags', { enabled: false });
+  const slot = await page.run(id => {
+    const source = row(id), data = new DataTransfer();
+    source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: data }));
+    const heading = document.querySelector('#wsChatsBox .ws-section-toggle'), box = heading.getBoundingClientRect();
+    heading.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data, clientX: box.x + 20, clientY: box.y + 8 }));
+    const first = document.querySelector('#wsChats .ws-chat-row');
+    const result = { marker: first?.classList.contains('is-drop-before'), target: document.querySelector('#wsChatsBox').classList.contains('is-drop-target') };
+    source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+    return result;
+  }, moved);
+  assert.deepEqual(slot, { marker: true, target: true });
+  assert.equal(await page.run(() => document.querySelectorAll('.is-drop-before,.is-drop-target').length), 0, 'markers clear when the drag ends');
+  await drag(moved, 'recent');
+  assert.equal((await recentIds())[0], moved, 'a heading drop puts the conversation first in recent');
+  assert.equal(await inView(moved), true, 'the moved conversation is scrolled into view');
+  assert.equal(await page.run(id => row(id).hasAttribute('data-just-moved'), moved), true);
+  // The move dialog has no drop row either.
+  const dialogMoved = await projectMember();
+  await page.run(() => { document.querySelector('#wsSideScroll').scrollTop = document.querySelector('#wsSideScroll').scrollHeight; });
+  await page.run(id => { row(id).querySelector('.ws-chat-move').click(); document.querySelector('[data-move-to="recent"]').click(); }, dialogMoved);
+  await delay(400);
+  assert.equal((await recentIds())[0], dialogMoved, 'the move dialog also places the conversation first');
+  assert.equal(await inView(dialogMoved), true, 'a move from far down scrolls back to the conversation');
+  // Unpinning returns the conversation to the top of a manually ordered list.
+  const pinnedId = (await recentIds()).at(-1);
+  await page.run(id => row(id).querySelector('.ws-chat-pin').click(), pinnedId);
+  await page.run(id => row(id).querySelector('.ws-chat-pin').click(), pinnedId);
+  assert.equal((await recentIds())[0], pinnedId, 'unpinning returns to the top of recent');
+  assert.equal(await page.run(() => window.toasts), 0, 'moves show no toast');
+  report.cases.push('recent heading, move-dialog and unpin place the conversation first and reveal it; the heading drop marks the first slot; no toast');
   assert.deepEqual(page.takeRuntimeErrors(), []);
   report.ok = true;
 } catch (error) { report.error = error.stack; report.cause = String(error.cause || ''); report.browserLog = browserLog; report.runtimeErrors = page?.takeRuntimeErrors(); process.exitCode = 1; }

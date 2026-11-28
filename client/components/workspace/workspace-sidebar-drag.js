@@ -50,6 +50,16 @@
       event.preventDefault(); event.dataTransfer.dropEffect = 'move';
       target = zone; target.classList.add('is-drop-target');
       const row = event.target.closest('.ws-chat-row');
+      if (!row && zone.dataset.sidebarSection === 'recent') {
+        // Outside a row, recent receives the conversation first; mark exactly that slot.
+        const first = [...zone.querySelectorAll('#wsChats .ws-chat-row')].find(el => !el.dataset.chatDragging);
+        const button = first?.querySelector('.ws-chat');
+        if (first && button) {
+          marker = first; marker.classList.add('is-drop-before');
+          before = button.dataset.sidebarChatId || button.dataset.chatId || '';
+        }
+        return;
+      }
       if (!row || row.dataset.chatDragging) return;
       marker = row;
       const box = row.getBoundingClientRect(), lower = y > box.top + box.height / 2;
