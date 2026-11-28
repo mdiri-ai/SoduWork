@@ -159,6 +159,11 @@ def seed_sql(kind, port):
             cursor.execute("INSERT INTO sample VALUES (%s,%s,%s,%s)", (index, "fixture-中文-" + str(index), b"\xff\x01", date(2026, 1, index)))
         cursor.execute("CREATE USER reader " + ("WITH PASSWORD '" if kind == "postgres" else "IDENTIFIED BY '") + PASSWORD + "'")
         cursor.execute("GRANT SELECT ON " + ("ALL TABLES IN SCHEMA public" if kind == "postgres" else "fixture.*") + " TO reader")
+        if kind == "postgres":
+            cursor.execute("CREATE TABLE write_product (id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY, "
+                           "title VARCHAR(30) NOT NULL, price DECIMAL(8,2) NOT NULL, stock INTEGER DEFAULT 0)")
+            cursor.execute("CREATE USER insert_fixture WITH PASSWORD '" + PASSWORD + "'")
+            cursor.execute("GRANT SELECT, INSERT ON write_product TO insert_fixture")
         connection.commit()
     finally:
         connection.close()
@@ -217,7 +222,7 @@ def verify(spec):
     status = health(spec)
     assert status.get("ok") and status["connectionState"] == "verified", status
     tools = mcp_servers.bridge_list_sync("fixture", spec)
-    expected = {t["name"] for t in db.definition(kind)["tools"]}
+    expected = {t["name"] for t in db.definition(kind)["tools"] if t["readOnly"]}
     assert {t["name"] for t in tools} == expected
     assert all(t["annotations"]["readOnlyHint"] for t in tools)
     if kind in {"postgres", "mysql", "sqlite", "clickhouse"}:
@@ -240,11 +245,40 @@ def verify(spec):
         assert call(spec, "get_value", {"key": "sample"})["value"] == "fixture-中文"
         assert call(spec, "get_value", {"key": "binary"})["value"] == "/wE="
         assert call(spec, "get_value", {"key": "missing"})["exists"] is False
+        writer = copy.deepcopy(spec)
+        writer["env"].update(REDIS_USER="default", ALLOW_WRITES="true", REDIS_INSERT_PREFIXES="handoff:")
+        request = {"key": "handoff:night", "text": "支付回归已通过", "ttl_seconds": 60}
+        assert call(writer, "create_text", request)["ttl_seconds"] == 60
+        try:
+            call(writer, "create_text", {**request, "text": "重复记录"})
+        except ValueError as exc:
+            assert "已经存在" in str(exc)
+        else:
+            raise AssertionError("Existing Redis key was overwritten")
+        assert call(spec, "get_value", {"key": request["key"]})["value"] == "支付回归已通过"
     elif kind == "mongodb":
         assert call(spec, "ping")["ok"]
         assert "sample" in call(spec, "list_collections")["collections"]
         rows = call(spec, "find_documents", {"collection": "sample", "filter": {"_id": {"$gte": 2}}, "limit": 1, "skip": 1})
         assert rows["documents"][0]["_id"] == 3
+        writer = copy.deepcopy(spec)
+        writer["env"].update(MONGO_USER="fixture", MONGO_AUTH_DB="admin",
+            ALLOW_WRITES="true", MONGO_INSERT_COLLECTIONS="sample,readings")
+        _, config = db.config(writer)
+        from app.services.connector_database_extra import _mongo_connection
+        with _mongo_connection(config, 10) as client:
+            client.fixture.create_collection("readings", validator={"$jsonSchema": {"bsonType": "object",
+                "properties": {"value": {"bsonType": "int"}}}})
+        invalid = {"collection": "readings", "document": {"value": "偏热"}}
+        try:
+            call(writer, "insert_document", invalid)
+        except ValueError as exc:
+            assert "value" in str(exc) and "整数" in str(exc)
+        else:
+            raise AssertionError("Collection validator did not reject the string")
+        inserted = call(writer, "insert_document", {**invalid, "collection": "sample"})
+        rows = call(spec, "find_documents", {"collection": "sample", "object_id": inserted["insertId"]["$oid"]})
+        assert [row["value"] for row in rows["documents"]] == ["偏热"]
     else:
         assert call(spec, "ping")["ok"]
         assert "sample" in json.dumps(call(spec, "list_indices"))
@@ -269,6 +303,8 @@ def sqlite_fixture():
         connection = sqlite3.connect(file)
         try:
             connection.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY, title TEXT)")
+            connection.execute("CREATE TABLE write_product (id INTEGER PRIMARY KEY, title VARCHAR(30) NOT NULL, "
+                               "price DECIMAL(8,2) NOT NULL, stock INTEGER DEFAULT 0)")
             connection.executemany("INSERT INTO sample VALUES (?,?)", [(n, "fixture-中文-" + str(n)) for n in range(1, 5)])
             connection.commit()
         finally:
@@ -276,7 +312,36 @@ def sqlite_fixture():
         before = file.read_bytes()
         report = verify(target("sqlite", SQLITE_PATH=str(file)))
         assert before == file.read_bytes()
+        report["singleRowInsert"] = verify_product_insert(target("sqlite", SQLITE_PATH=str(file)))
         return report
+
+
+def verify_product_insert(spec):
+    kind = spec["args"][0]
+    writer = copy.deepcopy(spec)
+    env = writer["env"]
+    env["ALLOW_WRITES"] = "true"
+    if kind == "postgres":
+        env.update(PG_USER="insert_fixture", PG_INSERT_TABLES="public.write_product")
+    else:
+        env["SQLITE_INSERT_TABLES"] = "write_product"
+    tools = {t["name"] for t in mcp_servers.bridge_list_sync("fixture", writer)}
+    assert tools == {"read_rows", "list_tables", "describe_table", "insert_row"}, tools
+    args = {"table": "write_product", "values": {"title": "旅行水杯", "price": "19.90"}}
+    inserted = call(writer, "insert_row", args)
+    assert inserted["insertId"] == 1 and inserted["inserted"] == 1, inserted
+    for table, values, expected in (("write_product", {"title": "马克杯", "price": "面议"}, "price"),
+                                    ("write_product", {"title": "样品", "province": "河北"}, "province"),
+                                    ("sample", {"title": "样品"}, "未授权")):
+        try:
+            call(writer, "insert_row", {"table": table, "values": values})
+        except ValueError as exc:
+            assert expected in str(exc), str(exc)
+        else:
+            raise AssertionError("Unexpected insert into " + table)
+    rows = call(writer, "read_rows", {"table": "write_product", "order_by": "id"})["rows"]
+    assert rows == [[1, "旅行水杯", "19.90" if kind == "postgres" else 19.9, 0]], rows
+    return True
 
 
 def main():
@@ -291,7 +356,10 @@ def main():
             report = sqlite_fixture()
         else:
             with container(kind) as (port, identifier, digest):
-                report = verify(seed(kind, port, identifier))
+                spec = seed(kind, port, identifier)
+                report = verify(spec)
+                if kind == "postgres":
+                    report["singleRowInsert"] = verify_product_insert(spec)
                 report["imageDigest"] = digest
         report["seconds"] = round(time.monotonic() - started, 3)
         reports.append(report)

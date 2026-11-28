@@ -3,7 +3,7 @@
   "id": "postgres",
   "name": "PostgreSQL",
   "category": "数据库",
-  "description": "PostgreSQL 通用连接器：查看表、字段与最多 100 行数据；在只读事务中执行固定语句。",
+  "description": "查看 PostgreSQL 表、字段和数据，向已授权的普通表新增单条记录。",
   "runtimeKind": "postgres",
   "officialDocs": [
     "https://www.postgresql.org/docs/current/information-schema.html",
@@ -42,7 +42,7 @@
     },
     {
       "key": "PG_USER",
-      "label": "数据库用户（建议只读账号）",
+      "label": "数据库用户",
       "secret": false,
       "required": true,
       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$",
@@ -70,6 +70,14 @@
       "secret": false,
       "required": false,
       "example": ""
+    },
+    {
+      "key": "PG_INSERT_TABLES",
+      "label": "允许新增的表（默认 public，可填 schema.表名，多个用英文逗号分隔）",
+      "secret": false,
+      "required": false,
+      "pattern": "^(?:[A-Za-z_][A-Za-z0-9_]{0,62}\\.)?[A-Za-z_][A-Za-z0-9_]{0,62}(?: *, *(?:[A-Za-z_][A-Za-z0-9_]{0,62}\\.)?[A-Za-z_][A-Za-z0-9_]{0,62})*$",
+      "example": "city, product"
     }
   ],
   "auth": {
@@ -119,7 +127,7 @@
     },
     {
       "name": "describe_table",
-      "description": "获取表结构（宿主固定查询 information_schema.columns，按 schema+table 过滤，只读事务执行）。无分页。出处：https://www.postgresql.org/docs/current/infoschema-columns.html",
+      "description": "查看真实列名、声明类型、可空性、默认值及自动生成信息，最多 100 列。",
       "method": "GET",
       "path": "/schemas/{schema}/tables/{table}/columns",
       "inputSchema": {
@@ -200,12 +208,47 @@
         "offset": "offset"
       },
       "readOnly": true
+    },
+    {
+      "name": "insert_row",
+      "description": "按真实表结构校验字段并新增一行，先查看表结构。省略自动编号和生成列；缺少必填项时询问用户。提交结果不确定时先查回核实。",
+      "method": "POST",
+      "path": "/schemas/{schema}/tables/{table}/rows",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "table": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"
+          },
+          "values": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 100,
+            "additionalProperties": true
+          },
+          "schema": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$",
+            "description": "目标 schema（宿主校验后拼接固定语句，默认 public）",
+            "maxLength": 10000,
+            "default": "public"
+          }
+        },
+        "required": [
+          "table",
+          "values"
+        ]
+      }
     }
   ],
   "limitations": [
-    "只提供固定只读操作，不执行用户 SQL，也不提供数据库写入。",
+    "默认只读。单行新增需要开启写入并明确列出目标表；支持文本、整数、定点小数、日期等常用字段。不能修改或删除记录，不接受任意 SQL。",
+    "需要数据库账号具备目标表的 SELECT 和 INSERT 权限；序列型自增列还需相应序列权限。",
     "远程连接默认使用 TLS 并校验证书与主机名。数据库未启用 TLS 时，可在高级设置中选择明文连接。",
-    "需升级包含 pg8000 / PyMySQL 的 Runner；最多 100 行、结果不超过 2 MB。",
+    "Runner 需要包含 pg8000 驱动。每次查询最多 100 行，结果不超过 2 MB。",
     "尚未使用真实业务数据库授权验证。",
     "数据分页需指定稳定唯一的 order_by；最多跳过 10000 行。非快照，不保证并发修改期间跨页一致。"
   ]

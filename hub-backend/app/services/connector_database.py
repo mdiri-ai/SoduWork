@@ -1,9 +1,10 @@
-"""Fixed, bounded read-only database tools on the authorized Runner."""
+"""Fixed database operations on the authorized Runner."""
 from __future__ import annotations
 import json
 import re
 import ssl
 from pathlib import Path
+from .connector_insert_schema import authorize, insert_tables
 
 EXTRA_KINDS = {"sqlite", "redis", "mongodb", "clickhouse", "elasticsearch"}
 
@@ -24,7 +25,8 @@ def config(spec: dict) -> tuple[str, dict]:
     if not handles(spec):
         raise ValueError("数据库连接器配置无效")
     kind, values = spec["args"][0], dict(spec.get("env") or {})
-    fields = definition(kind)["fields"]
+    from .connector_catalog import connection_fields
+    fields = connection_fields(definition(kind))
     if set(values) - {f["key"] for f in fields}:
         raise ValueError("数据库连接器包含未声明配置")
     for field in fields:
@@ -82,7 +84,13 @@ def statement(kind: str, name: str, args: dict) -> tuple[str, tuple, int]:
         return ("SELECT table_schema, table_name FROM information_schema.tables WHERE " + scope +
                 " AND table_type = 'BASE TABLE' ORDER BY table_schema, table_name LIMIT %s" + suffix, (*params, *page), limit)
     if name == "describe_table":
-        return ("SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE " + scope +
+        columns = "column_name, data_type, is_nullable"
+        if kind == "mysql":
+            from .connector_mysql_insert import COLUMN_FIELDS
+            columns = COLUMN_FIELDS
+        elif kind == "postgres":
+            columns += ", character_maximum_length, numeric_precision, numeric_scale, column_default, is_identity, is_generated"
+        return ("SELECT " + columns + " FROM information_schema.columns WHERE " + scope +
                 " AND table_name = %s ORDER BY ordinal_position LIMIT 100", (*params, table), 100)
     quote = '"' if kind == "postgres" else chr(96)
     target = (quote + schema + quote + "." if schema else "") + quote + table + quote
@@ -116,10 +124,24 @@ def execute(spec: dict, action: str, name: str = "", args: dict | None = None, t
     kind, values = config(spec)
     if action == "list":
         tools = definition(kind)["tools"]
-        return json.dumps({"tools": [{"name": t["name"], "description": t["description"],
-            "inputSchema": t["inputSchema"], "annotations": {"readOnlyHint": True}} for t in tools]}, ensure_ascii=False)
+        from .connector_database_extra import write_scope
+        scope = write_scope(kind, values) if kind in {"redis", "mongodb"} else set()
+        can_insert = bool(scope or insert_tables(kind, values))
+        return json.dumps({"tools": [{"name": t["name"], "description": t["description"] +
+            (" 当前可新增范围：" + ", ".join(sorted(scope)) if scope and not t["readOnly"] else ""),
+            "inputSchema": t["inputSchema"], "annotations": {"readOnlyHint": t["readOnly"]}}
+            for t in tools if t["readOnly"] or can_insert]}, ensure_ascii=False)
     if action not in {"call", "health"}:
         raise ValueError("数据库工具操作无效")
+    if action == "call" and name == "insert_row" and kind in {"mysql", "postgres", "sqlite"}:
+        from .connector_database_extra import _arguments
+        args = _arguments(kind, name, args)
+        authorize(kind, values, args)
+        if kind == "mysql":
+            from .connector_mysql_insert import insert_row
+            return insert_row(values, args, max(3, min(30, timeout)))
+        from .connector_sql_insert import insert_row
+        return insert_row(kind, values, args, max(3, min(30, timeout)))
     if kind in EXTRA_KINDS:
         from .connector_database_extra import execute as execute_extra
         return execute_extra(kind, values, action, name, args, timeout)

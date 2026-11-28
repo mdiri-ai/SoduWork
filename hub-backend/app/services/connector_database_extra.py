@@ -1,4 +1,4 @@
-"""Five read-only database adapters defined by SoduWork and checked against their protocols."""
+"""Fixed database adapters executed by the SoduWork Runner."""
 from __future__ import annotations
 
 import base64
@@ -80,10 +80,24 @@ def _url(value):
     return parts
 
 
+WRITE_SCOPE_KEYS = {"redis": "REDIS_INSERT_PREFIXES", "mongodb": "MONGO_INSERT_COLLECTIONS"}
+
+
+def write_scope(kind, values):
+    if values.get("ALLOW_WRITES") != "true":
+        return set()
+    return {item.strip() for item in values.get(WRITE_SCOPE_KEYS[kind], "").split(",") if item.strip()}
+
+
 def validate_config(kind, values):
     if kind in {"redis", "mongodb"}:
         prefix = "REDIS" if kind == "redis" else "MONGO"
         _number(int(values[prefix + "_PORT"]), 1, 65535)
+        for item in write_scope(kind, values):
+            if kind == "mongodb":
+                _identifier(item)
+            elif len(item) > 256 or any(char in item for char in "*?[]"):
+                raise InputError("可新增的键前缀请填写字面前缀，例如 handoff:")
     if kind == "redis":
         _number(int(values["REDIS_DB"]), 0, 15)
         if values["REDIS_USER"] and not values["REDIS_PASSWORD"]:
@@ -106,38 +120,53 @@ def validate_config(kind, values):
 def _arguments(kind, name, args):
     from .connector_database import definition
     tool = next((t for t in definition(kind)["tools"] if t["name"] == name), None)
+    if kind in {"postgres", "sqlite", "mysql"} and name in {"update_row", "update_rows", "delete_row", "delete_rows"}:
+        raise InputError("此连接器不支持修改或删除记录，操作未执行")
+    if kind in WRITE_SCOPE_KEYS and not tool:
+        raise InputError("这个连接器只支持查询和新增，所请求的操作未执行")
     if not tool or not isinstance(args, dict):
         raise InputError("数据库工具或参数无效")
     schema = tool["inputSchema"]
     if set(args) - set(schema["properties"]) or set(schema.get("required", [])) - set(args):
         raise InputError("数据库工具参数缺失或包含未声明字段")
-    if len(_json(args).encode("utf-8")) > 32768:
-        raise InputError("数据库查询参数过大")
+    try:
+        size = len(_json(args).encode("utf-8"))
+    except (ValueError, UnicodeError, RecursionError):
+        raise InputError("数据库参数须为有效 JSON，数值必须有限") from None
+    if size > 32768:
+        raise InputError("数据库请求参数超过 32 KiB，请缩小数据")
     for key, value in args.items():
         rule = schema["properties"][key]
         kind_ = rule["type"]
         if kind_ == "integer":
+            if key == "ttl_seconds" and (type(value) is not int or not 1 <= value <= rule["maximum"]):
+                raise InputError("保留时间须为正整数秒，并在允许范围内")
             _number(value, rule.get("minimum", 0), rule.get("maximum", 100))
         elif kind_ == "string":
+            if name == "create_text" and key == "text":
+                if not isinstance(value, str) or not value:
+                    raise InputError("请填写要保存的文本")
+                continue
             _text(value, rule.get("maxLength", 1024), rule.get("minLength", 0) == 0)
             if "pattern" in rule and not re.fullmatch(rule["pattern"], value):
                 raise InputError("数据库参数格式无效")
         elif kind_ == "object" and not isinstance(value, dict):
-            raise InputError("数据库过滤条件必须为对象")
+            raise InputError(f"{key} 必须是对象")
         elif kind_ == "array" and (not isinstance(value, list) or len(value) > rule.get("maxItems", 100)):
             raise InputError("数据库排序参数格式无效")
     return dict(args)
 
 
 @contextmanager
-def _sqlite_connection(values, timeout):
+def _sqlite_connection(values, timeout, *, writable=False):
     path = Path(values["SQLITE_PATH"])
     if not path.is_absolute() or not path.is_file():
         raise InputError("SQLite 文件不存在或不是绝对路径")
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=timeout)
+    mode = "rw" if writable else "ro"
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=" + mode, uri=True, timeout=timeout)
     try:
         conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)
-        conn.execute("PRAGMA query_only=ON")
+        conn.execute("PRAGMA foreign_keys=ON" if writable else "PRAGMA query_only=ON")
         conn.execute("PRAGMA trusted_schema=OFF")
         deadline = time.monotonic() + timeout
         conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 1000)
@@ -164,7 +193,8 @@ def _sqlite(values, name, args, timeout):
                 raise InputError("仅支持已存在的普通数据表")
             if name == "describe_table":
                 limit = 100
-                cursor = conn.execute('SELECT name,type,"notnull" AS required,pk FROM pragma_table_info(?) LIMIT 100', (table,))
+                cursor = conn.execute('SELECT name,type,"notnull" AS required,pk,dflt_value,hidden '
+                                      'FROM pragma_table_xinfo(?) LIMIT 100', (table,))
             else:
                 order = _row_order(args, '"')
                 cursor = conn.execute('SELECT * FROM "' + table + '"' + order + ' LIMIT ? OFFSET ?', (limit, offset))
@@ -202,7 +232,12 @@ def _redis_connection(values, timeout):
 
 
 def _redis(values, name, args, timeout):
+    if name == "create_text" and not args["key"].startswith(tuple(write_scope("redis", values))):
+        raise InputError("此连接未授权向该键前缀新增文本")
     with _redis_connection(values, timeout) as conn:
+        if name == "create_text":
+            from .connector_document_insert import create_text
+            return create_text(conn, args["key"], args["text"], args.get("ttl_seconds", 86400))
         if name == "ping":
             if conn.ping() is not True:
                 raise InputError("Redis 未返回有效 PONG")
@@ -297,9 +332,14 @@ def _mongo_connection(values, timeout):
 
 
 def _mongo(values, name, args, timeout):
-    from bson import json_util
+    from bson import ObjectId, json_util
+    if name == "insert_document" and args["collection"] not in write_scope("mongodb", values):
+        raise InputError("此连接未授权向该集合新增文档")
     with _mongo_connection(values, timeout) as client:
         db = client[values["MONGO_DATABASE"]]
+        if name == "insert_document":
+            from .connector_document_insert import insert_document
+            return insert_document(db, args["collection"], args["document"])
         if name == "ping":
             if client.admin.command("ping").get("ok") != 1:
                 raise InputError("MongoDB 未返回有效连接状态")
@@ -318,6 +358,9 @@ def _mongo(values, name, args, timeout):
                     "notice": "有界目录，不提供跨调用游标；可使用 name_prefix 缩小范围。"}
         filt = args.get("filter", {})
         _filter(filt)
+        if "object_id" in args:
+            by_id = {"_id": ObjectId(args["object_id"])}
+            filt = {"$and": [by_id, filt]} if filt else by_id
         order = []
         for pair in args.get("sort", []):
             if (not isinstance(pair, list) or len(pair) != 2 or not isinstance(pair[0], str)
@@ -484,6 +527,10 @@ def execute(kind, values, action, name="", args=None, timeout=30):
             raise
         if isinstance(exc, ImportError):
             raise InputError("此执行机缺少数据库驱动，请升级执行机后重试") from None
+        if name in {"create_text", "insert_document"}:
+            if _auth_error(exc):
+                raise InputError("新增授权失败，请检查账号与目标的写入权限") from None
+            raise InputError("新增操作出错，请核对目标记录和连接状态后再决定是否重试") from None
         if _auth_error(exc):
             raise InputError("数据库授权失败，请检查账号与只读权限") from None
         raise InputError("数据库读取失败，请检查网络、证书、资源名称及只读权限") from None

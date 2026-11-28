@@ -163,9 +163,14 @@ async function execute(def, values, tool, args, options = {}) {
 async function session(spec, fn, options = {}) {
   if (spec.command !== 'soduwork-connector' || !Array.isArray(spec.args) || spec.args.length !== 1) throw Error('连接器启动配置无效');
   const def = provider(spec.args[0]), values = settings(def, spec.env || {});
+  const insertList = { mysql: 'MYSQL_INSERT_TABLES', postgres: 'PG_INSERT_TABLES', sqlite: 'SQLITE_INSERT_TABLES',
+    redis: 'REDIS_INSERT_PREFIXES', mongodb: 'MONGO_INSERT_COLLECTIONS' }[def.runtimeKind];
+  const scope = insertList ? (values[insertList] || '').split(',').map(item => item.trim()).filter(Boolean) : [];
+  const mayWrite = values.ALLOW_WRITES === 'true' && (!insertList || scope.length > 0);
   return fn(async (method, params = {}) => {
-    if (method === 'tools/list') return { tools: def.tools.filter(tool => readOnly(tool) || values.ALLOW_WRITES === 'true').map(tool => ({
-      name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
+    if (method === 'tools/list') return { tools: def.tools.filter(tool => readOnly(tool) || mayWrite).map(tool => ({
+      name: tool.name, description: !readOnly(tool) && ['redis', 'mongodb'].includes(def.runtimeKind)
+        ? tool.description + ' 当前可新增范围：' + scope.join(', ') : tool.description, inputSchema: tool.inputSchema,
       annotations: { readOnlyHint: readOnly(tool), destructiveHint: !readOnly(tool), openWorldHint: true },
     })) };
     if (method !== 'tools/call') throw Error('连接器方法不支持');

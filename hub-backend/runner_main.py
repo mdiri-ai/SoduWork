@@ -2566,6 +2566,13 @@ def main() -> None:
         http_base = "http://" + http_base[len("ws://"):]
     if http_base.startswith(("http://", "https://")):
         os.environ.setdefault("SODUWORK_HUB_HTTP_BASE", http_base)
+    # The MCP bridge trusts this Runner's control-plane origin. A download
+    # mirror or an earlier desktop session may point at a different Hub.
+    from app.services.plugin_application_mcp import origin
+    try:
+        os.environ["SODUWORK_HUB_ORIGIN"] = origin(http_base)
+    except ValueError:
+        os.environ.pop("SODUWORK_HUB_ORIGIN", None)
     log.info("执行机 %s @ %s → %s（并发上限 %d）",
              rid, socket.gethostname(), hub, max_concurrent)
     boot_id = uuid.uuid4().hex

@@ -1,6 +1,7 @@
 """Upgrade regressions; isolated storage and database, no real device credentials."""
 import asyncio
 import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -68,6 +69,30 @@ class DesktopIdentityTests(unittest.TestCase):
 
 
 class DesktopIdentityStartupTests(unittest.TestCase):
+    def test_bridge_origin_comes_from_this_runners_startup_config(self):
+        import runner_main
+        from app.services import local_base, runner_lifecycle
+
+        mirror = "https://mirror.fixture.invalid"
+        inherited = {"SODUWORK_HUB": "", "SODUWORK_HUB_ORIGIN": "https://old.fixture.invalid",
+                     "SODUWORK_HUB_HTTP_BASE": mirror}
+        async def check(runner):
+            self.assertTrue(runner.desktop_owned)
+            cfg = {"runtimeSecrets": {"SODUWORK_HUB_ORIGIN": "SODUWORK_HUB_HTTP_BASE"}}
+            env = local_base._env_for({"needs_llm": False}, cfg)
+            self.assertEqual(env["SODUWORK_HUB_ORIGIN"], "https://hub.fixture.invalid")
+            self.assertEqual(env["SODUWORK_HUB_HTTP_BASE"], mirror)
+            cfg["llm"] = {"localOnly": True}
+            self.assertNotIn("SODUWORK_HUB_ORIGIN", local_base._env_for({"needs_llm": False}, cfg))
+
+        with tempfile.TemporaryDirectory() as data, patch.dict(os.environ, inherited):
+            config = {"hub": "wss://hub.fixture.invalid:443/", "dataRoot": data, "runnerId": "fixture"}
+            frame = runner_lifecycle.CONFIG_PREFIX + json.dumps(config) + "\n"
+            with (patch.object(sys, "argv", ["runner_main.py", "--config-stdin"]),
+                  patch.object(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(frame.encode()))),
+                  patch.object(runner_lifecycle, "run_until_stopped", check)):
+                runner_main.main()
+
     def check_failed_startup(self, *, unreadable=False):
         # Exercise the real entrypoint before Runner construction, with only
         # disposable storage and fake credentials. No Hub connection is made.

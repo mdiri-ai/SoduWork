@@ -3,12 +3,13 @@
   "id": "mongodb",
   "name": "MongoDB",
   "category": "数据库",
-  "description": "MongoDB 通用连接器：ping 连接检测、listCollections 集合列表、find 固定查询（操作符白名单，≤100 条）。禁止任意管道、任意代码与危险操作符。",
+  "description": "查看集合、按条件查询最多 100 条文档，可授权向指定集合新增一条文档，遵循集合当前的校验规则。",
   "runtimeKind": "mongodb",
   "officialDocs": [
     "https://www.mongodb.com/docs/manual/reference/command/ping/",
     "https://www.mongodb.com/docs/manual/reference/command/listCollections/",
     "https://www.mongodb.com/docs/manual/reference/command/find/",
+    "https://www.mongodb.com/docs/manual/reference/method/db.collection.insertOne/",
     "https://www.mongodb.com/docs/manual/core/security-tls/",
     "https://www.mongodb.com/docs/manual/reference/connection-string/"
   ],
@@ -44,7 +45,7 @@
     },
     {
       "key": "MONGO_USER",
-      "label": "用户名（建议只读账号）",
+      "label": "用户名",
       "secret": false,
       "required": false,
       "pattern": "^\\S{1,512}$",
@@ -81,6 +82,13 @@
       "secret": false,
       "required": false,
       "example": ""
+    },
+    {
+      "key": "MONGO_INSERT_COLLECTIONS",
+      "label": "可新增的集合（多个用英文逗号分隔）",
+      "secret": false,
+      "required": false,
+      "example": "run_notes,tickets"
     },
     {
       "key": "MONGO_SRV",
@@ -159,6 +167,11 @@
             "maxProperties": 50,
             "description": "查询过滤条件（操作符白名单，值限 JSON 基本类型与一层对象/数组）"
           },
+          "object_id": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{24}$",
+            "description": "按返回的 ObjectId 精确查回，将 24 位编号填在这里。"
+          },
           "sort": {
             "type": "array",
             "maxItems": 5,
@@ -194,10 +207,26 @@
         "maxProperties": 50
       },
       "readOnly": true
+    },
+    {
+      "name": "insert_document",
+      "description": "向已授权的现有集合新增一条文档。字段、对象和数组按用户输入提供，遵循该集合的数据库校验，返回记录编号。结果待确认时按原编号查询，勿再次写入。",
+      "method": "POST",
+      "path": "/collections/{collection}/documents",
+      "readOnly": false,
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "collection": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,62}$"},
+          "document": {"type": "object", "minProperties": 1, "additionalProperties": true}
+        },
+        "required": ["collection", "document"]
+      }
     }
   ],
   "limitations": [
-    "只提供固定 ping/listCollections/find 三个只读操作；不提供 aggregate 管道、runCommand、mapReduce、eval 与任意代码执行。",
+    "新增需要开启写入并指定已有集合。强制校验按目标集合当前规则执行；无规则或仅警告的集合允许自由字段。每次新增一条，修改和删除均不支持。",
     "find 的 filter 使用操作符白名单，$where/$function/$accumulator/$mapReduce 等代码类与 $out/$merge 等写类操作符一律拒绝；未知操作符直接拒绝而非透传。",
     "远程连接默认使用 TLS 并校验证书与主机名。数据库未启用 TLS 时，可在高级设置中选择明文连接。",
     "最多 100 条、结果不超过 2 MB；需 Runner 内置 pymongo 驱动（新依赖，版本与许可证见交付报告）。",
