@@ -158,6 +158,39 @@ test('任务首屏不等待网络，断网期间保持加载态且不展示缓�
   assert.equal(f.Store.taskState, 'loading');
 });
 
+test('hydration overlays a queued edit batch without changing Hub order, shadow or permission filters', async () => {
+  const items = Array.from({ length: 2000 }, (_, index) => ({
+    id: 'batch-' + index, title: 'Hub ' + index, status: 'todo', origin: 'local',
+    readOnly: index === 10,
+  }));
+  const operations = Array.from({ length: 500 }, (_, index) => ({
+    id: 'batch-' + index, kind: 'patch', data: { title: 'Edited ' + index, status: 'doing' },
+    ...(index === 20 ? { blocked: 'HTTP 409' } : {}),
+  }));
+  operations.push({ id: 'missing', kind: 'patch', data: { title: 'Missing' } },
+    { id: 'unconfirmed', kind: 'put', data: { title: 'Unconfirmed' } });
+  const f = fixture({ online: true, getConfig: async () => ({}),
+    getTasksSnapshot: async () => ({ online: true, items }) }, {
+    soduwork_work_task_ops_v1: JSON.stringify(operations),
+  });
+  const visible = f.Store.tasks;
+  await f.Store.init();
+  assert.equal(f.Store.taskState, 'ready');
+  assert.equal(f.Store.tasks, visible);
+  assert.deepEqual(Array.from(visible, task => task.id), items.map(task => task.id));
+  for (let index = 0; index < items.length; index++) {
+    const edited = index < 500 && index !== 10 && index !== 20;
+    assert.equal(visible[index].title, (edited ? 'Edited ' : 'Hub ') + index);
+    assert.equal(visible[index].status, edited ? 'doing' : 'todo');
+    assert.equal(f.Store._shadow[items[index].id].title, 'Hub ' + index);
+    assert.equal(items[index].status, 'todo');
+  }
+  const pending = f.Store._readTaskOps();
+  assert.equal(pending.some(operation => operation.id === 'batch-10' || operation.id === 'missing'), false);
+  assert.equal(pending.find(operation => operation.id === 'batch-20').blocked, 'HTTP 409');
+  assert.equal(pending.some(operation => operation.id === 'unconfirmed'), true);
+});
+
 test('后台离线时有多少本地任务缓存都不进入任务视图', async () => {
   const api = {
     online: false,

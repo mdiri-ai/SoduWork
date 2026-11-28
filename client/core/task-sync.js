@@ -156,7 +156,10 @@
         else rows.unshift(task);
       } else if (op.kind === 'patch' && index >= 0) {
         rows[index] = Object.assign({}, rows[index], clone(op.data || {}));
-      }
+      } else continue;
+      // Updating fields leaves every ID at its existing position. Rebuild the
+      // index only after inserting a row or explicitly changing its identity.
+      if (index >= 0 && rows[index].id === op.id) continue;
       byId.clear();
       rows.forEach((task, i) => byId.set(task.id, i));
     }

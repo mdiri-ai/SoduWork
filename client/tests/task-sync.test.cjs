@@ -146,6 +146,61 @@ test('显式删除只影响指定任务', () => {
   assert.deepEqual(rows.map((x) => x.id), ['b']);
 });
 
+test('repeated patches and replacement PUTs retain row order without sharing nested input', () => {
+  const server = [{ id: 'a', title: 'A', tags: ['original'] }, { id: 'b', title: 'B' }];
+  const operations = [
+    { id: 'b', kind: 'patch', data: { title: 'First', tags: ['changed'] } },
+    { id: 'a', kind: 'put', data: { title: 'Replaced', progress: [{ text: 'Saved' }] } },
+    { id: 'b', kind: 'patch', data: { title: 'Final' } },
+  ];
+  const rows = sync.applyOperations(server, operations);
+  assert.deepEqual(rows, [
+    { id: 'a', origin: 'local', title: 'Replaced', tags: ['original'], progress: [{ text: 'Saved' }] },
+    { id: 'b', title: 'Final', tags: ['changed'] },
+  ]);
+  rows[0].tags.push('result only');
+  rows[0].progress[0].text = 'Result only';
+  rows[1].tags.push('result only');
+  assert.deepEqual(server[0].tags, ['original']);
+  assert.equal(operations[1].data.progress[0].text, 'Saved');
+  assert.deepEqual(operations[0].data.tags, ['changed']);
+});
+
+test('interleaved inserts, deletions and restoration keep later patches bound to the right row', () => {
+  const rows = sync.applyOperations(
+    [{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }, { id: 'c', title: 'C' }],
+    [
+      { id: 'b', kind: 'patch', data: { title: 'Changed B' } },
+      { id: 'new', kind: 'put', data: { title: 'New' } },
+      { id: 'c', kind: 'patch', data: { title: 'Changed C' } },
+      { id: 'a', kind: 'delete' },
+      { id: 'a', kind: 'patch', data: { title: 'Must stay deleted' } },
+      { id: 'b', kind: 'delete' },
+      { id: 'b', kind: 'put', data: { title: 'Restored B' } },
+      { id: 'new', kind: 'patch', data: { status: 'doing' } },
+    ]);
+  assert.deepEqual(rows, [
+    { id: 'b', origin: 'local', title: 'Restored B' },
+    { id: 'new', origin: 'local', title: 'New', status: 'doing' },
+    { id: 'c', title: 'Changed C' },
+  ]);
+});
+
+test('an identity-changing payload refreshes the index for subsequent operations', () => {
+  const rows = sync.applyOperations([{ id: 'a', title: 'A' }, { id: 'b', title: 'B' }], [
+    { id: 'a', kind: 'patch', data: { id: 'renamed' } },
+    { id: 'renamed', kind: 'put', data: { id: 'replacement', title: 'Replaced' } },
+    { id: 'replacement', kind: 'patch', data: { status: 'doing' } },
+    { id: 'a', kind: 'patch', data: { title: 'No longer present' } },
+    { id: 'missing', kind: 'patch', data: { title: 'Not a creation' } },
+    { id: 'b', kind: 'unknown', data: { title: 'Ignored' } },
+  ]);
+  assert.deepEqual(rows, [
+    { id: 'replacement', origin: 'local', title: 'Replaced', status: 'doing' },
+    { id: 'b', title: 'B' },
+  ]);
+});
+
 test('queued patch is rebuilt when a field is changed back', () => {
   const server = { id: 't1', title: 'Original', note: 'Base', status: 'todo' };
   const queued = { id: 't1', kind: 'patch', data: { title: 'Draft', note: 'Changed' } };
