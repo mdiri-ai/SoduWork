@@ -96,19 +96,46 @@ def _apply_scene(
 
 
 def _extract_json(s: str) -> dict:
-    """Parse the first JSON object from output that may contain Markdown fences or surrounding
-    prose.
+    """Parse the first complete top-level object without promoting nested objects from
+    arrays or incomplete or malformed responses.
     """
     import json
-    import re
-    m = re.search(r"\{.*\}", (s or "").strip(), re.S)
-    if not m:
-        return {}
-    try:
-        d = json.loads(m.group(0))
-    except Exception:
-        return {}
-    return d if isinstance(d, dict) else {}
+    text = (s or "").strip()
+    decoder = json.JSONDecoder()
+    start = None
+    closing = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if start is None:
+            if char in "{[":
+                start = index
+                closing.append("}" if char == "{" else "]")
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "{[":
+            closing.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if char != closing.pop():
+                return {}
+            if not closing:
+                try:
+                    value, _ = decoder.raw_decode(text, start)
+                except (ValueError, RecursionError):
+                    start = None
+                    continue
+                if isinstance(value, dict):
+                    return value
+                start = None
+    return {}
 
 
 def _sanitize_parsed(d: dict) -> dict:

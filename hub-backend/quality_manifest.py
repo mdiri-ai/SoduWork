@@ -398,6 +398,7 @@ RELEASE_SMOKES = tuple(sorted((
     "test_skill_policy_concurrency.py",
     "test_ai_proxy_open_keepalive.py",
     "test_model_gateway_diagnostics.py",
+    "test_task_parse_json.py",
     "test_task_parse_keepalive.py",
     "test_mcp_import_preview.py",
     "test_mcp_management.py",
