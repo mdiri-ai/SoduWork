@@ -10,39 +10,40 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections import defaultdict
-from weakref import WeakValueDictionary
 from collections.abc import Awaitable, Callable
 from typing import Any
+from weakref import WeakValueDictionary
 
 
-_ENTRIES: dict[tuple[str, str, str, str, int], tuple[int, float, Any]] = {}
+class _Generation:
+    def __init__(self):
+        self.revision = 0
+
+
+_ENTRIES: dict[tuple[str, str, str, str, int], tuple[_Generation, int, float, Any]] = {}
 _LOCKS: WeakValueDictionary = WeakValueDictionary()
-_DEVICE_GENERATION: dict[str, int] = defaultdict(int)
-_TASK_GENERATION: dict[tuple[str, str], int] = defaultdict(int)
+_GENERATIONS: WeakValueDictionary[str, _Generation] = WeakValueDictionary()
 _MAX_ENTRIES = 512
 
 
-def _generation(client_id: str, task_id: str) -> int:
-    return (_DEVICE_GENERATION[client_id] * 1_000_003 +
-            (_TASK_GENERATION[(client_id, task_id)] if task_id else 0))
+def _generation(client_id: str) -> _Generation:
+    return _GENERATIONS.setdefault(client_id, _Generation())
 
 
 def invalidate(client_id: str, event: dict | None = None) -> None:
-    """Invalidate a device view and, when present, the affected task view."""
+    """Invalidate every live view for a device, including in-flight builders."""
     client_id = str(client_id or "")
     if not client_id:
         return
-    _DEVICE_GENERATION[client_id] += 1
-    task_id = str((event or {}).get("taskId") or (event or {}).get("task_id") or "")
-    if task_id:
-        _TASK_GENERATION[(client_id, task_id)] += 1
+    generation = _GENERATIONS.get(client_id)
+    if generation is not None:
+        generation.revision += 1
 
 
 def _prune(now: float) -> None:
     if len(_ENTRIES) <= _MAX_ENTRIES:
         return
-    expired = [key for key, value in _ENTRIES.items() if value[1] <= now]
+    expired = [key for key, value in _ENTRIES.items() if value[2] <= now]
     for key in expired:
         _ENTRIES.pop(key, None)
         if len(_ENTRIES) <= _MAX_ENTRIES:
@@ -64,23 +65,26 @@ async def get_or_build(namespace: str, client_id: str, task_id: str,
            str(getattr(actor, "user_ref", None) or ""),
            int(getattr(actor, "auth_version", 0) or 0))
     now = time.monotonic()
-    generation = _generation(key[1], key[2])
+    # Cached snapshots and active builders own the token. Events for devices
+    # with neither need no history, and evicting a view releases its token.
+    generation = _generation(key[1])
+    revision = generation.revision
     cached = _ENTRIES.get(key)
-    if cached and cached[0] == generation and cached[1] > now:
-        return cached[2]
+    if cached and cached[0] is generation and cached[1] == revision and cached[2] > now:
+        return cached[3]
 
     lock = _LOCKS.setdefault(key, asyncio.Lock())
     async with lock:
         now = time.monotonic()
-        generation = _generation(key[1], key[2])
+        revision = generation.revision
         cached = _ENTRIES.get(key)
-        if cached and cached[0] == generation and cached[1] > now:
-            return cached[2]
+        if cached and cached[0] is generation and cached[1] == revision and cached[2] > now:
+            return cached[3]
         value = await builder()
         # A realtime event may arrive while the expensive snapshot is building.
         # Return that snapshot to the caller, but never publish it as a fresh hit.
-        if _generation(key[1], key[2]) == generation:
-            _ENTRIES[key] = (generation, time.monotonic() + max(0.1, float(ttl)), value)
+        if generation.revision == revision:
+            _ENTRIES[key] = (generation, revision, time.monotonic() + max(0.1, float(ttl)), value)
             _prune(time.monotonic())
         return value
 
@@ -88,12 +92,11 @@ async def get_or_build(namespace: str, client_id: str, task_id: str,
 def clear() -> None:
     """Invalidate snapshots without dropping locks held by in-flight builders."""
     _ENTRIES.clear()
-    for client_id in _DEVICE_GENERATION:
-        _DEVICE_GENERATION[client_id] += 1
+    for generation in list(_GENERATIONS.values()):
+        generation.revision += 1
 
 
 def reset_for_tests() -> None:
     _ENTRIES.clear()
     _LOCKS.clear()
-    _DEVICE_GENERATION.clear()
-    _TASK_GENERATION.clear()
+    _GENERATIONS.clear()
