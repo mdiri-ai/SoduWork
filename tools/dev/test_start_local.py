@@ -1717,8 +1717,10 @@ class LocalStartupTests(unittest.TestCase):
                     'DISPLAY': ':fixture', 'ELECTRON_MIRROR': 'https://mirror.example/electron/',
                     'HTTPS_PROXY': 'http://proxy.example:8080',
                 }):
-            with self.assertRaisesRegex(build.StartupError, 'ELECTRON_MIRROR'):
+            with self.assertRaisesRegex(build.StartupError, 'ELECTRON_MIRROR') as failure:
                 build.prepare_desktop(self.state, self.state / 'startup.log')
+        self.assertIn('electron_config_cache', str(failure.exception))
+        self.assertIn('download source', str(failure.exception))
         self.assertEqual(calls[-1][1]['timeout'], build.ELECTRON_DOWNLOAD_TIMEOUT)
         self.assertEqual(calls[-1][0], ['node', str(client / 'scripts/install-electron.cjs')])
         self.assertFalse((self.state / 'desktop-dependencies.sha256').exists())

@@ -545,7 +545,12 @@ def prepare_desktop(state: Path, log: Path) -> Path:
                     f"{exc}\nElectron 准备失败；先查看日志中的具体原因。仅网络连接失败时检查代理或 ELECTRON_MIRROR。\n"
                     "If the log reports a download connection failure, check your proxy or set "
                     "ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ in your shell "
-                    "if that mirror is reachable, then run the same launcher again. "
+                    "if that mirror is reachable, then run the same launcher again.\n"
+                    "若下载超时且已有 Electron 下载缓存，可将 electron_config_cache 指向缓存根目录，再运行原启动命令。"
+                    "保留缓存子目录，使用与缓存相同的版本、平台、架构和下载源。\n"
+                    "To retry offline with a populated Electron cache, point electron_config_cache at its root "
+                    "and rerun the launcher. Keep its subdirectories and use the same version, platform, "
+                    "architecture and download source. "
                     "See docs/getting-started.md for shell-specific commands."
                 ) from exc
         if not electron_binary(client).is_file():
