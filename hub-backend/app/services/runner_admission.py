@@ -29,6 +29,7 @@ DEFAULT_TASK_CAPACITY = 100
 MIN_CONCURRENCY = 1
 MAX_CONCURRENCY = 20
 _GIB = 1024 ** 3
+_MEMORY_FLOOR = 768 * 1024 ** 2
 _CPU_CONFIRM_SECONDS = 1.0
 log = logging.getLogger(__name__)
 
@@ -73,6 +74,19 @@ def classify(message: dict) -> str:
     return MANUAL
 
 
+def prepares_materials(payload: dict) -> bool:
+    """Work which can retain bulk input bytes or create a checkout during native startup."""
+    ctx = payload.get("ctx") or {}
+    cfg = payload.get("cfg") or {}
+    if not isinstance(ctx, dict) or not isinstance(cfg, dict):
+        return True  # Leave malformed input to the job's normal validation path.
+    packets = (payload.get("files"), payload.get("skills"))
+    return bool(payload.get("localFiles") or any(p.get("items") for p in packets if isinstance(p, dict))
+                or ctx.get("workspace") or ctx.get("workspaceHandoff") or ctx.get("personalPlugin")
+                or ctx.get("pluginTurn") or payload.get("pluginTurn") or payload.get("turnSkills")
+                or cfg.get("pluginResourceBundles"))
+
+
 @dataclass
 class ResourceSnapshot:
     cpu_percent: float = 0.0
@@ -83,6 +97,15 @@ class ResourceSnapshot:
     pressure: str = "normal"
     can_start: bool = True
     sampled_at: float = field(default_factory=time.time)
+
+    def local_chat_limit(self, ceiling: int, running_chats: int) -> int:
+        """Bound concurrent cold starts separately from chats already generating a reply."""
+        if self.pressure != "normal" or not self.can_start:
+            return self.limit
+        # Keep the emergency reserve. Budget half a GiB per simultaneous plain
+        # native startup. Without a memory reading, stagger starts at the original rate.
+        cold_starts = max(self.limit, (self.memory_available - _MEMORY_FLOOR) // (512 * 1024 ** 2))
+        return min(ceiling, running_chats + cold_starts)
 
     def public(self) -> dict:
         return {
@@ -215,7 +238,7 @@ class AdaptiveResourceBudget:
             elif self._high_cpu_since is None:
                 self._high_cpu_since = now
             pressure, can_start = "normal", True
-            if memory >= 92.0 or (available and available < int(0.75 * _GIB)):
+            if memory >= 92.0 or (available and available < _MEMORY_FLOOR):
                 pressure, can_start, limit = "critical", False, 1
             elif self._high_cpu_since is not None:
                 pressure, limit = "critical", 1
@@ -396,29 +419,53 @@ class AdmissionQueue:
         interactive = [item for item in waiting if item.category == INTERACTIVE]
         return interactive or waiting
 
+    def _preparations_full(self, limit: int, local_chat_limit: int) -> bool:
+        return (local_chat_limit > limit
+                and sum(1 for row in self._items.values()
+                        if row.state == "starting" and prepares_materials(row.payload or {})) >= limit)
+
     @staticmethod
-    def _slots_full(active: int, limit: int, category: str) -> bool:
+    def _slots_full(active: int, limit: int, item: AdmissionItem, local_chat_limit: int,
+                    preparations_full: bool) -> bool:
+        if local_chat_limit and item.category == INTERACTIVE:
+            from .runner_event_scope import payload_destination
+            if payload_destination(item.payload or {}) == "local":
+                if preparations_full and prepares_materials(item.payload or {}):
+                    return True
+                limit = local_chat_limit
         limit = max(MIN_CONCURRENCY, min(MAX_CONCURRENCY, int(limit or 1)))
-        if category != INTERACTIVE and limit > 1:
+        if item.category != INTERACTIVE and limit > 1:
             limit -= 1  # Reserve one slot for a conversation.
         return int(active or 0) >= limit
 
     def claim_next(self, active: int, limit: int, can_start: bool,
                    blocked_refs: set[str] | None = None,
                    hub_blocked: bool = False,
-                   local_refs: set[str] | None = None) -> AdmissionItem | None:
-        if not can_start or self._slots_full(active, limit, INTERACTIVE):
+                   local_refs: set[str] | None = None,
+                   local_chat_limit: int = 0) -> AdmissionItem | None:
+        if not can_start or active >= max(limit, local_chat_limit):
             return None
         waiting = self._eligible_waiting(blocked_refs, hub_blocked, local_refs)
-        item = min(waiting, key=lambda row: (PRIORITY[row.category], row.sequence), default=None)
-        if item is None or self._slots_full(active, limit, item.category):
+        if not waiting:
             return None
-        return self._update(item, state="starting", started_at=time.time())
+        preparations_full = self._preparations_full(limit, local_chat_limit)
+        seen = set()
+        for item in sorted(waiting, key=lambda row: (PRIORITY[row.category], row.sequence)):
+            if item.ref in seen:
+                continue
+            seen.add(item.ref)
+            if not self._slots_full(active, limit, item, local_chat_limit, preparations_full):
+                return self._update(item, state="starting", started_at=time.time())
+        return None
 
     def wait_reason(self, item: AdmissionItem, active: int, limit: int, can_start: bool,
                     blocked_refs: set[str] | None = None, hub_blocked: bool = False,
-                    local_refs: set[str] | None = None) -> str:
-        if item.state != "queued" or (can_start and not self._slots_full(active, limit, item.category)):
+                    local_refs: set[str] | None = None,
+                    local_chat_limit: int = 0) -> str:
+        if item.state != "queued":
+            return ""
+        if can_start and not self._slots_full(active, limit, item, local_chat_limit,
+                                              self._preparations_full(limit, local_chat_limit)):
             return ""
         if not any(row.key == item.key for row in self._eligible_waiting(blocked_refs, hub_blocked, local_refs)):
             return ""

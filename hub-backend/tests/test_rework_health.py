@@ -5,6 +5,7 @@ lifecycle and retry tests.
 """
 
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -107,6 +108,31 @@ class ReworkHealthTests(unittest.IsolatedAsyncioTestCase):
                 out = await task_rework.retry_once(session)
             self.assertEqual(out["candidates"], 1)
             self.assertEqual(await task_rework.pending_cards(session), 1)
+
+
+    async def test_first_transaction_failure_rolls_back_and_does_not_poison_next_card(self):
+        now = datetime.now(timezone.utc)
+        async with self.sessions() as session:
+            await self._seed(session, task_id="first", card_at=now)
+            await self._seed(session, task_id="next", card_at=now - timedelta(seconds=1))
+            original_title = (await session.get(models.Task, "first")).title
+
+        async def persist_retry(session, task_id, *, now):
+            task = await session.get(models.Task, task_id)
+            task.title = "retried"
+            event_id = "ev-first" if task_id == "first" else "second-retry"
+            session.add(models.TaskEvent(id=event_id, task_id=task_id, kind="ai.rework"))
+            await session.commit()
+            return "sent"
+
+        async with self.sessions() as session:
+            with patch.object(task_rework, "_retry_one", new=persist_retry):
+                counts = await task_rework.retry_once(session, now=now)
+        async with self.sessions() as session:
+            self.assertEqual((await session.get(models.Task, "first")).title, original_title)
+            self.assertEqual((await session.get(models.Task, "next")).title, "retried")
+            self.assertIsNotNone(await session.get(models.TaskEvent, "second-retry"))
+        self.assertEqual((counts["errors"], counts["sent"]), (1, 1))
 
     async def test_loop_health_shape(self):
         """Preserve heartbeat fields consumed by /healthz.rework alerting."""

@@ -32,8 +32,7 @@ function imageReadHarness() {
   f.sandbox.ChatWorkbench = { openPath: (file, hint) => { opened.push({ file, hint }); return true; } };
   function add(tool) {
     let status = null;
-    const node = { isConnected: true, attrs: {}, classList: { toggle() {}, add() {}, remove() {}, contains: () => false },
-      querySelector: () => status,
+    const node = { isConnected: true, attrs: {}, querySelector: () => status,
       setAttribute(name, value) { this.attrs[name] = value; }, removeAttribute(name) { delete this.attrs[name]; },
       appendChild(child) { status = child; child.remove = () => { status = null; }; } };
     nodes.set(tool.id, node); f.ctx._snap.tools.push(tool); return node;
@@ -123,92 +122,22 @@ test('receipt cache has an entry bound and a byte bound', async () => {
   assert.match(details.bodyHtml(ctx, big, tools.render(big)), /short/);
   assert.equal(count.requests, 20, 'the bounded rendered body is reusable after the oversized receipt is discarded');
 });
-test('command summaries expand inline and queue a receipt read for the recorded output', async () => {
+test('command summaries ignore old detail clicks without queueing a receipt read', async () => {
   const { ctx, count, full, details, tools } = harness();
   const tool = { id: 'cmd', name: 'bash', state: 'done', detailsDeferred: true, detailVersion: 'v1',
     args: { command: 'netstat -ano | findstr ":9080"' } };
-  Object.defineProperty(tool, 'result', { get() { throw Error('快照摘要不得读取完整收据'); } });
-  Object.defineProperty(tool, 'partial', { get() { throw Error('快照摘要不得读取流式输出'); } });
+  Object.defineProperty(tool, 'result', { get() { throw Error('命令行的展开不得回读收据'); } });
+  Object.defineProperty(tool, 'partial', { get() { throw Error('命令行的展开不得回读流式输出'); } });
   full.set(tool.id, { ...tool, result: 'LARGE_PRIVATE_OUTPUT'.repeat(1000) });
   ctx._snap.tools = [tool];
   assert.equal(tools.render(tool).commandOnly, true);
   assert.equal(tools.render(tool).summaryOnly, true);
+  assert.equal(tools.render(tool).body, '');
   details.activate(ctx, tool.id);
-  assert.equal(ctx._openTool.has(tool.id), true);
-  assert.match(details.bodyHtml(ctx, tool, tools.render(tool)), /正在读取详情/);
+  assert.equal(details.bodyHtml(ctx, tool, tools.render(tool)), '');
   await tick();
-  assert.equal(count.requests, 1, '命令展开排队一次收据读取');
-});
-
-function commandRecordFixture() {
-  const f = imageReadHarness(), records = [];
-  f.sandbox.ChatWorkbench.openCommandRecord = tool => { records.push(tool); return true; };
-  function add(id, deferred = true) {
-    const tool = { id, name: 'bash', state: 'done', args: { command: 'echo ' + id },
-      detailsDeferred: deferred, detailVersion: 'v1' };
-    const row = f.add(tool);
-    // 卡片上的执行记录链接已移除，这里直接构造同源的 owner/按钮验证取数能力。
-    const owner = f.tools.recordOwner(f.ctx);
-    const button = { isConnected: true, dataset: { commandRecord: id, commandOwner: owner },
-      closest: () => row };
-    row.contains = target => target === button;
-    const query = row.querySelector;
-    row.querySelector = selector => selector.includes('data-command-record') ? button : query(selector);
-    return { tool, button, open: () => f.details.openRecord(f.ctx, id, button) };
-  }
-  return { ...f, add, records };
-}
-
-test('explicit record selection reads only the selected receipt and keeps the transcript collapsed', async () => {
-  const f = commandRecordFixture(), calls = [];
-  const first = f.add('first'), second = f.add('second');
-  const full = { ...second.tool, detailsDeferred: false, result: 'second command output' };
-  f.ctx._api = () => ({ toolDetail: async (ref, id) => { calls.push([ref, id]); return { ok: true, tool: full }; } });
-  f.details.activate(f.ctx, first.tool.id); await tick();
-  assert.deepEqual(calls, [['test', 'first']], 'activate expands the command and fetches its receipt');
-  second.open(); await tick();
-  assert.deepEqual(calls, [['test', 'first'], ['test', 'second']]);
-  assert.deepEqual(f.records, [full]);
-  assert.equal(f.ctx._openTool.size, 1, 'first stays expanded while second stays collapsed');
-  assert.doesNotMatch(f.renderer._toolHtml(second.tool), /second command output/);
-});
-
-test('late command receipts cannot open another conversation or a newer revision of the record', async () => {
-  for (const change of ['conversation', 'version', 'selection']) {
-    const f = commandRecordFixture(), first = f.add('same-id'), second = f.add('second', false);
-    let finish;
-    f.ctx._api = () => ({ toolDetail: () => new Promise(resolve => { finish = resolve; }) });
-    first.open(); await tick();
-    if (change === 'conversation') {
-      f.ctx._ref = 'other'; f.ctx._viewEpoch++;
-      f.ctx._snap = { tools: [{ ...first.tool }] };
-    } else if (change === 'version') {
-      f.ctx._snap.tools[0] = { ...first.tool, detailVersion: 'v2' };
-    } else {
-      second.open();
-    }
-    finish({ ok: true, tool: { ...first.tool, result: 'stale output' } }); await tick();
-    assert.deepEqual(f.records, change === 'selection' ? [second.tool] : [], change);
-  }
-});
-
-test('an old command link cannot request a reused tool ID after a conversation switch', async () => {
-  const f = commandRecordFixture(), old = f.add('same-id');
-  f.ctx._ref = 'other'; f.ctx._viewEpoch++;
-  f.ctx._snap = { tools: [{ ...old.tool }] };
-  old.open(); await tick();
-  assert.equal(f.count.requests, 0);
-  assert.deepEqual(f.records, []);
-});
-
-test('a deferred bridge receipt stays private even if its projected summary looked like an ordinary command', async () => {
-  const f = commandRecordFixture(), summary = f.add('projected');
-  f.full.set('projected', { ...summary.tool, detailsDeferred: false, result: 'bridge output',
-    args: { command: 'node "C:/private/mcp.mjs" --config "C:/private/session.json" call soduwork task_list' } });
-  summary.open(); await tick();
-  assert.equal(f.count.requests, 1);
-  assert.deepEqual(f.records, []);
-  assert.doesNotMatch(f.renderer._toolHtml(summary.tool), /bridge output|session\.json/);
+  assert.equal(count.requests, 0, '状态摘要不排队任何收据读取');
+  assert.equal(ctx._openTool.has(tool.id), false);
 });
 
 test('stale task command clicks cannot hydrate raw output into the conversation', () => {

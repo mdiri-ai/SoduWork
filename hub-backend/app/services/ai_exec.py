@@ -371,6 +371,7 @@ def with_llm(ctx: dict, llm: dict | None) -> dict:
         return ctx
     resolved_window = context_window.resolve({
         "contextWindow": llm.get("contextWindow") or llm.get("ctxWindow"),
+        "contextWindowSource": llm.get("contextWindowSource"),
         "modelName": llm.get("model"),
         "provider": llm.get("provider") or llm.get("providerId"),
     })
@@ -422,10 +423,11 @@ async def with_task_git(session, ctx: dict, task, *, lock_to_client: bool = True
     out = dict(ctx or {})
     try:
         from ..models import Client
-        from . import code_creds
+        from . import code_creds, task_code_targets
         c = await session.get(Client, cid)
         if c is not None:
-            out = with_git(out, code_creds.resolve(c))
+            repo = await task_code_targets.repo_view(session, task) if getattr(task, "repo_id", None) else None
+            out = with_git(out, code_creds.for_repo(c, getattr(repo, "git_url", "")))
     except Exception as e:  # noqa: BLE001 - Credential lookup failure must not disable the entire dispatch path.
         log.warning("解析任务归属人的代码账号失败: %s", type(e).__name__)
     # Employee tasks remain bound to the owner's current device.
@@ -917,56 +919,123 @@ def preview(t, ctx: dict, extra: dict | None = None) -> dict:
 
 # Provider-independent SoduWork orchestration.
 
-async def collect_task_files(session, task_id: str, limit: int = 5,
-                             max_mb: int = 10) -> list[tuple[str, bytes, str]]:
-    """Collect human-uploaded task attachments as name, bytes, and content type. Exclude
-    agent-prefixed uploaders to avoid feeding previous AI outputs back as inputs.
-    """
-    from sqlalchemy import select as _sel
+class TaskAttachmentError(ValueError):
+    """A selected task input could not be delivered intact."""
 
+
+_TASK_INPUT_LIMIT = 5
+_TASK_INPUT_MAX_BYTES = 10 * 1024 * 1024
+
+
+async def _select_task_files(session, task_id: str):
     from .. import models
+
+    attachment = models.Attachment
+    rows = await session.scalars(select(attachment).where(attachment.task_id == task_id)
+                                 .order_by(attachment.created_at, attachment.id)
+                                 .execution_options(populate_existing=True))
+    selected, omitted = [], []
+    for row in rows:
+        if str(row.uploaded_by or "").startswith("agent:"):
+            continue
+        if row.size > _TASK_INPUT_MAX_BYTES or len(selected) >= _TASK_INPUT_LIMIT:
+            omitted.append(row.filename)
+        else:
+            selected.append(row)
+    return selected, omitted
+
+
+def _task_file_entry(row, digest):
+    return {"id": row.id, "name": row.filename, "size": row.size, "sha256": digest}
+
+
+def _read_task_file(row):
+    import hashlib
+    from contextlib import closing
+
     from . import storage
-    rows = (await session.execute(
-        _sel(models.Attachment).where(models.Attachment.task_id == task_id)
-        .order_by(models.Attachment.created_at)
-    )).scalars().all()
-    out: list[tuple[str, bytes, str]] = []
-    for a in rows:
-        if str(a.uploaded_by or "").startswith("agent:"):
-            continue
-        if a.size and a.size > max_mb * 1024 * 1024:
-            continue
-        try:
-            data = storage.get(a.storage_key, a.backend)
-        except Exception:  # noqa: BLE001 - Skip unavailable attachments without failing dispatch.
-            continue
-        out.append((a.filename, data, a.content_type or "application/octet-stream"))
-        if len(out) >= limit:
-            break
-    return out
+
+    name = " ".join(row.filename.split())[:200]
+    data = bytearray()
+    try:
+        with closing(storage.iter_stream(storage.open_stream(row.storage_key, row.backend))) as chunks:
+            for chunk in chunks:
+                if len(data) + len(chunk) > row.size:
+                    raise TaskAttachmentError(f"需求附件「{name}」大小与上传记录不一致")
+                data.extend(chunk)
+    except TaskAttachmentError:
+        raise
+    except Exception as exc:
+        raise TaskAttachmentError(f"无法读取需求附件「{name}」，请恢复或重新上传") from exc
+    digest = hashlib.sha256(data).hexdigest()
+    expected = (row.evidence_meta or {}).get("sha256")
+    if len(data) != row.size or (expected and digest != expected):
+        raise TaskAttachmentError(f"需求附件「{name}」内容与上传记录不一致")
+    return (row.filename, bytes(data), row.content_type or "application/octet-stream"), _task_file_entry(row, digest)
 
 
-async def list_task_file_names(session, task_id: str, limit: int = 5, max_mb: int = 10) -> list[str]:
-    """Collect preview file names without reading contents, using the same filtering rules as
-    collect_task_files.
-    """
-    from sqlalchemy import select as _sel
+async def preview_task_files(session, task_id: str):
+    from . import file_io
 
-    from .. import models
-    rows = (await session.execute(
-        _sel(models.Attachment).where(models.Attachment.task_id == task_id)
-        .order_by(models.Attachment.created_at)
-    )).scalars().all()
-    out = []
-    for a in rows:
-        if str(a.uploaded_by or "").startswith("agent:"):
-            continue
-        if a.size and a.size > max_mb * 1024 * 1024:
-            continue
-        out.append(a.filename)
-        if len(out) >= limit:
-            break
-    return out
+    selected, omitted = await _select_task_files(session, task_id)
+    manifest = []
+    for row in selected:
+        digest = (row.evidence_meta or {}).get("sha256")
+        if digest:
+            entry = _task_file_entry(row, digest)
+        else:
+            # Legacy uploads have no digest to bind until their bytes are read.
+            _, entry = await file_io.run(_read_task_file, row)
+        manifest.append(entry)
+    return manifest, omitted
+
+
+def check_task_file_manifest(expected, actual):
+    if (isinstance(expected, list) and len(expected) == len(actual)
+            and all(isinstance(entry, dict) and type(entry.get("size")) is int
+                    and entry == observed for entry, observed in zip(expected, actual))):
+        return
+    raise TaskAttachmentError("需求附件自预览后已变化，请重新预览后再派发")
+
+
+def _task_file_sources(rows):
+    return [(row.id, row.filename, row.size, row.content_type, row.backend, row.storage_key,
+             (row.evidence_meta or {}).get("sha256")) for row in rows]
+
+
+async def _read_task_files(rows):
+    from . import file_io
+
+    files, manifest = [], []
+    for row in rows:
+        payload, entry = await file_io.run(_read_task_file, row)
+        files.append(payload)
+        manifest.append(entry)
+    return files, manifest
+
+
+async def collect_task_files(session, task_id: str):
+    selected, _ = await _select_task_files(session, task_id)
+    return await _read_task_files(selected)
+
+
+async def snapshot_task_file_selection(session, task_id: str):
+    selected, _ = await _select_task_files(session, task_id)
+    for row in selected:
+        session.expunge(row)
+    return selected
+
+
+async def prepare_confirmed_task_files(selected, expected):
+    files, manifest = await _read_task_files(selected)
+    check_task_file_manifest(expected, manifest)
+    return files, manifest, _task_file_sources(selected)
+
+
+async def verify_task_file_selection(session, task_id: str, sources):
+    selected, _ = await _select_task_files(session, task_id)
+    if _task_file_sources(selected) != sources:
+        raise TaskAttachmentError("需求附件自预览后已变化，请重新预览后再派发")
 
 
 async def collect_task_context(session, task_id: str, limit: int = 5) -> dict:

@@ -74,6 +74,17 @@ test('accepted dispatch opens its returned conversation and navigation failure c
   assert.match(calls.at(-1)[1], /需求已派发.*暂未打开/);
 });
 
+test('assignment sends the selected conversation plugin through the native queue only', async () => {
+  for (const transport of ['queue', 'http']) {
+    const {ctx, calls} = fixture({ok: true}, 'dispatchToAI', {transport});
+    const plugin = {pluginId: 'local:method', inputValues: {goal: 'Synthetic requirement'}};
+    await ctx._dispatchAITo('task', {id: 'local:pi'}, 'Pi', plugin);
+    assert.equal(calls.some(row => row[0] === 'http'), false);
+    if (transport === 'queue') assert.equal(calls.find(row => row[0] === 'enqueue')[2].assignmentPlugin, plugin);
+    else assert.deepEqual(calls.at(-1), ['status', '所选插件需要本机会话才能执行', true]);
+  }
+});
+
 for (const method of ['dispatchToAI', 'handoffTask']) test(method + ' keeps the arrangement open on business failure', async () => {
   const {ctx, calls} = fixture({ok: false, reason: 'Runner unavailable'}, method);
   if (method === 'dispatchToAI') await ctx._dispatchAITo('task', {id: 'pi'}, 'Pi');

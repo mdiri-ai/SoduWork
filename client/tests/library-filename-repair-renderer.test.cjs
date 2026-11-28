@@ -32,7 +32,7 @@ function fixture(answer) {
   assert.equal(source.split(seam).length, 2);
   vm.runInContext(source.replace(seam, `
     load = async () => {};
-    global.review = { state, repairFilename, renameItem, itemActions, itemRow };
+    global.review = { state, renameItem, itemActions, itemRow };
 ${seam}`), context);
   return { ...context.review, context, calls, prompts, errors, notifications, finish,
     switchAccount: () => events.get('soduwork-data-scope-changed')(),
@@ -41,94 +41,55 @@ ${seam}`), context);
 
 const local = { id: 'local-fixture', title: 'Visible title', filename: 'legacy.p', backend: 'local', kind: 'file', size: 12 };
 
-test('filename repair asks for the full stored name and submits an explicit extension without using title rename', async () => {
-  const f = fixture('recovered.pdf');
-  f.state.items = [local];
-  await f.repairFilename(f.button, local.id);
-  assert.equal(f.prompts[0].value, 'legacy.p');
-  assert.match(f.prompts[0].label, /扩展名/);
-  assert.match(f.prompts[0].description, /不转换文件格式/);
-  assert.deepEqual(f.calls, [['repair', local.id, 'recovered.pdf']]);
-  assert.equal(f.errors.length, 0);
-  assert.equal(f.notifications.at(-1), '文件名已修复');
-  assert.equal(f.button.disabled, false);
-});
-
-test('cancelling the filename dialog does not mutate the library', async () => {
-  const f = fixture(''); f.state.items = [local];
-  await f.repairFilename(f.button, local.id);
-  assert.deepEqual(f.calls, []);
-  assert.deepEqual(f.notifications, []);
-});
-
-test('confirming the current filename still repairs a differing legacy display title', async () => {
-  const f = fixture('legacy.p'); f.state.items = [local];
-  await f.repairFilename(f.button, local.id);
-  assert.equal(f.prompts[0].value, local.filename);
-  assert.deepEqual(f.calls, [['repair', local.id, 'legacy.p']]);
-});
-
-test('a filename dialog accepted after an account switch cannot send an old selection', async () => {
-  const f = fixture(); f.state.items = [local];
-  const operation = f.repairFilename(f.button, local.id);
-  assert.equal(f.prompts.length, 1);
-  f.switchAccount();
-  f.finish('late.pdf');
-  await operation;
-  assert.deepEqual(f.calls, []);
-  assert.deepEqual(f.notifications, []);
-});
-
-test('repair remains available for every active local file but never remote, historical or trashed files', async () => {
+test('only Rename is shown for ordinary and damaged local files', () => {
   const f = fixture('unused.pdf');
   for (const filenameIssue of [undefined, 'duplicate', 'invalid', 'check']) {
     const row = { ...local, filenameIssue };
-    assert.match(f.itemActions(row), /data-library-repair-filename="local-fixture"/);
-    const html = f.itemRow(row);
-    assert.equal(html.includes('请核对文件名'), Boolean(filenameIssue));
-    assert.doesNotMatch(html, /文件损坏/);
-  }
-  for (const row of [
-    { ...local, id: 'remote-fixture', backend: 'nfs', filenameIssue: 'check' },
-    { ...local, id: 'history-fixture', storageOrigin: 'server-history', filenameIssue: 'check' },
-  ]) {
-    f.state.items = [row];
+    assert.match(f.itemActions(row), /data-library-rename="local-fixture"/);
     assert.doesNotMatch(f.itemActions(row), /data-library-repair-filename/);
-    assert.doesNotMatch(f.itemRow(row), /请核对文件名/);
-    await f.repairFilename(f.button, row.id);
+    assert.doesNotMatch(f.itemRow(row), /library-filename-hint|请核对文件名/);
   }
-  f.state.scope = 'trash'; f.state.items = [local];
-  assert.doesNotMatch(f.itemActions(local), /data-library-repair-filename/);
-  await f.repairFilename(f.button, local.id);
-  assert.deepEqual(f.calls, []);
-  assert.equal(f.prompts.length, 0);
+  f.state.scope = 'trash';
+  assert.doesNotMatch(f.itemActions(local), /data-library-rename|data-library-repair-filename/);
 });
 
-test('a pending repair is cancelled when its item leaves the current listing or the user enters trash', async () => {
-  for (const change of [f => { f.state.items = []; }, f => { f.state.scope = 'trash'; }]) {
+test('the original rename dialog submits the user-confirmed title for local and remote files', async () => {
+  for (const row of [local, { ...local, filenameIssue: 'check' }, { ...local, id: 'remote-file', backend: 'nfs' }]) {
+    const f = fixture('confirmed.pdf'); f.state.items = [row];
+    await f.renameItem(f.button, row.id);
+    assert.equal(f.prompts[0].title, '重命名文件');
+    assert.equal(f.prompts[0].value, 'Visible title.p');
+    assert.deepEqual(JSON.parse(JSON.stringify(f.calls)), [['update', row.id, { title: 'confirmed.pdf' }]]);
+    assert.equal(f.notifications.at(-1), '已重命名');
+    assert.equal(f.button.disabled, false);
+  }
+});
+
+test('cancelling or accepting the current visible name does not mutate the library', async () => {
+  for (const answer of ['', 'Visible title.p']) {
+    const f = fixture(answer); f.state.items = [local];
+    await f.renameItem(f.button, local.id);
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.notifications, []);
+  }
+});
+
+test('a pending rename is cancelled after an account switch, listing removal or entry into trash', async () => {
+  for (const invalidate of [f => f.switchAccount(), f => { f.state.items = []; }, f => { f.state.scope = 'trash'; }]) {
     const f = fixture(); f.state.items = [local];
-    const operation = f.repairFilename(f.button, local.id);
-    change(f); f.finish('late.pdf');
+    const operation = f.renameItem(f.button, local.id);
+    assert.equal(f.prompts.length, 1);
+    invalidate(f); f.finish('late.pdf');
     await operation;
-    assert.deepEqual(f.calls, []);
+    assert.deepEqual(f.calls, []); assert.deepEqual(f.notifications, []);
   }
 });
 
-test('ordinary rename keeps the title-only update contract', async () => {
-  const f = fixture('Normal title'); f.state.items = [local];
-  await f.renameItem(f.button, local.id);
-  assert.equal(f.prompts[0].value, 'Visible title.p');
-  assert.deepEqual(JSON.parse(JSON.stringify(f.calls)), [['update', local.id, { title: 'Normal title' }]]);
-});
-
-test('failed repair retains the row, reports the error and releases the action', async () => {
+test('failed rename retains the row, reports the error and releases the action', async () => {
   const f = fixture('duplicate.pdf'); f.state.items = [local];
   const failure = Error('The filename is already used');
-  f.context.SoduWorkAPI.repairLocalLibraryFilename = async () => { throw failure; };
-  await f.repairFilename(f.button, local.id);
-  assert.equal(f.state.items[0], local);
-  assert.equal(f.errors[0].error, failure);
-  assert.equal(f.errors[0].fallback, '文件名修复失败');
-  assert.deepEqual(f.notifications, []);
-  assert.equal(f.button.disabled, false);
+  f.context.SoduWorkAPI.updateLibraryItem = async () => { throw failure; };
+  await f.renameItem(f.button, local.id);
+  assert.equal(f.state.items[0], local); assert.equal(f.errors[0].error, failure);
+  assert.equal(f.errors[0].fallback, '重命名失败');
+  assert.deepEqual(f.notifications, []); assert.equal(f.button.disabled, false);
 });

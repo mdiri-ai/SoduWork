@@ -2,7 +2,9 @@
 import asyncio
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+import json
 import os
+from pathlib import Path
 import threading
 import tempfile
 from types import SimpleNamespace
@@ -11,17 +13,26 @@ from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("AUTH_SECRET", "isolated-cloud-recovery-not-a-real-secret")
 
-from fastapi import HTTPException
+import httpx
+from fastapi import FastAPI, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app import models, automation_models as am
+from app.api import cloud_conversations as cloud_api
 from app.conversation_handoff_models import ConversationHandoff as Handoff
 from app.db import Base
-from app.services import (ai_exec, ai_remote, artifact_ingest, cloud_conversations, cloud_deliveries, cloud_recovery,
+from app.services import (ai_exec, ai_remote, artifact_bytes, artifact_ingest, cloud_conversations, cloud_deliveries, cloud_recovery,
                           code_delivery, conversation_handoffs as handoffs,
                           dispatch_reconcile, execution_settlement, project_context,
                           storage, task_dispatch, terminal_recovery)
+
+
+def managed_target(revision):
+    return {"runnerId": "cloud", "runnerBootId": "boot", "managedModelSelection": {
+        "provider": "synthetic", "model": "fixture-model", "configRevision": revision,
+        "runtimeRevision": "fixture-runtime",
+    }}
 
 
 class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -42,6 +53,7 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(lambda conn: Base.metadata.create_all(conn, tables=list(tables)))
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.stack = ExitStack()
+        self.stack.enter_context(patch.object(storage, "_LOCAL_DIR", str(Path(self.temp.name) / "uploads")))
         self.stack.enter_context(patch.object(cloud_recovery, "SessionLocal", self.sessions))
         self.stack.enter_context(patch.object(dispatch_reconcile, "SessionLocal", self.sessions))
         self.stack.enter_context(patch.object(terminal_recovery, "SessionLocal", self.sessions))
@@ -76,8 +88,9 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             return row.id, row.task_id
 
-    async def accepted(self, tid, body, client, session):
+    async def accepted(self, tid, body, client, session, *, handoff_claim):
         row = await session.scalar(select(Handoff).where(Handoff.task_id == tid))
+        assert row.receipt[handoffs._CLAIM_ID] == handoff_claim
         ref = "ref-" + tid
         session.add(models.TaskEvent(task_id=tid, kind=ai_exec.EV_DISPATCHED,
                     detail={"attemptId": handoffs.dispatch_id(row), "ref": ref, "runnerId": "cloud"}))
@@ -100,6 +113,181 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
             submitted = await session.get(Handoff, authorized)
             self.assertTrue(handoffs.public(submitted)["accepted"])
             self.assertFalse(handoffs.public(submitted)["canAbort"])
+
+    async def test_delayed_confirmation_cannot_admit_a_replaced_snapshot(self):
+        row_id, _ = await self.seed(submitted=False)
+        old_target, new_target = managed_target("B"), managed_target("C")
+        old_generation = "b" * 32
+        async with self.sessions() as session:
+            row = await session.get(Handoff, row_id)
+            row.options = {**row.options, "managedModelSelection": old_target["managedModelSelection"],
+                           handoffs._MODEL_CONFIRMATION: old_generation}
+            await session.commit()
+        selected, resume = asyncio.Event(), asyncio.Event()
+
+        async def delayed_destination(*args):
+            selected.set()
+            await resume.wait()
+            return old_target
+
+        async def confirm():
+            async with self.sessions() as session:
+                client = await session.get(models.Client, "device")
+                return await handoffs.commit(session, client, "request", "", confirmation_generation=old_generation)
+
+        with patch.object(task_dispatch, "dispatch", AsyncMock(side_effect=self.accepted)) as dispatch, \
+             patch.object(handoffs, "destination", side_effect=delayed_destination):
+            older = asyncio.create_task(confirm())
+            try:
+                await asyncio.wait_for(selected.wait(), timeout=5)
+                with patch.object(handoffs, "destination", AsyncMock(return_value=new_target)):
+                    with self.assertRaises(HTTPException) as conflict:
+                        await confirm()
+                assert conflict.exception.status_code == 409
+            finally:
+                resume.set()
+                old_result = await asyncio.wait_for(older, timeout=10)
+            assert (old_result["phase"], old_result["accepted"], old_result["canAbort"]) == ("prepared", False, True)
+            assert old_result["confirmationGeneration"] != old_generation
+            dispatch.assert_not_awaited()
+            async with self.sessions() as session:
+                current = await session.get(Handoff, row_id)
+                assert current.options["managedModelSelection"]["configRevision"] == "C"
+                assert current.submitted_at is None
+
+    async def test_cloud_version_conflict_waits_for_explicit_same_request_retry(self):
+        app = FastAPI()
+        app.include_router(cloud_api.router)
+
+        async def isolated_session():
+            async with self.sessions() as session:
+                yield session
+
+        async def isolated_client():
+            async with self.sessions() as session:
+                return await session.get(models.Client, "device")
+
+        app.dependency_overrides.update({cloud_api.get_session: isolated_session,
+                                         cloud_api.current_ai_client: isolated_client})
+        route = "/api/v1/cloud-conversations/changed-version"
+        body = {"sessionId": "new-cloud", "agentId": "pi", "text": "Make a report", "targetRunnerId": "cloud"}
+        form = {"options": (None, json.dumps(body))}
+        before, after = managed_target("B"), managed_target("C")
+        with patch.object(handoffs, "destination", AsyncMock(side_effect=[before, after, after])), \
+             patch.object(task_dispatch, "dispatch", AsyncMock(side_effect=self.accepted)) as dispatch:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://isolated") as client:
+                conflict = await client.post(route, files=form)
+                assert conflict.status_code == 409, conflict.text
+                assert (await cloud_recovery.recover_submissions())["candidates"] == 0
+                # The original POST first reaches the Hub after the new version
+                # has already been saved. Its identical digest is not consent.
+                repeated = await client.post(route, files=form)
+                assert repeated.status_code == 200, repeated.text
+                pending = repeated.json()
+                assert (pending["phase"], pending["accepted"], pending["canAbort"]) == ("prepared", False, True)
+                generation = pending["confirmationGeneration"]
+                stale_generation = ("0" if generation[0] != "0" else "1") + generation[1:]
+                assert (await client.post(route, files={**form, "confirmation_generation": (None, "invalid")})).status_code == 422
+                stale = await client.post(route, files={**form, "confirmation_generation": (None, stale_generation)})
+                assert stale.status_code == 200 and stale.json()["confirmationGeneration"] == generation
+                confirmed = {**form, "confirmation_generation": (None, generation)}
+                assert (await client.post(route + "-unrelated", files=confirmed)).status_code == 404
+                changed = {**confirmed, "options": (None, json.dumps({**body, "text": "Different message"}))}
+                assert (await client.post(route, files=changed)).status_code == 409
+                dispatch.assert_not_awaited()
+                accepted = await client.post(route, files=confirmed)
+                assert accepted.status_code == 200, accepted.text
+                receipt = accepted.json()
+                assert (receipt["phase"], receipt["accepted"]) == ("committed", True)
+                repeated = await client.post(route, files=confirmed)
+                assert repeated.status_code == 200 and repeated.json()["ref"] == receipt["ref"]
+            dispatch.assert_awaited_once()
+
+    async def test_recovery_of_pre_dispatch_interruption_requires_new_confirmation(self):
+        row_id, _ = await self.seed(phase="committing")
+        async with self.sessions() as session:
+            row = await session.get(Handoff, row_id)
+            row.options = {**row.options, "managedModelSelection": managed_target("B")["managedModelSelection"]}
+            await session.commit()
+        with patch.object(handoffs, "destination", AsyncMock(return_value=managed_target("C"))), \
+             patch.object(task_dispatch, "dispatch", AsyncMock()) as dispatch:
+            assert (await cloud_recovery.recover_submissions()).get("awaitingConfirmation") == 1
+            assert (await cloud_recovery.recover_submissions())["candidates"] == 0
+            async with self.sessions() as session:
+                row = await session.get(Handoff, row_id)
+                state = handoffs.public(row)
+                assert (state["phase"], state["accepted"], state["canAbort"]) == ("prepared", False, True)
+                client = await session.get(models.Client, "device")
+                aborted = await handoffs.abort(session, client, "request")
+                assert aborted["phase"] == "aborted"
+                repeated = await handoffs.commit(session, client, "request", "",
+                                                 confirmation_generation=state["confirmationGeneration"])
+                assert repeated["phase"] == "aborted"
+            assert (await cloud_recovery.recover_submissions())["candidates"] == 0
+            dispatch.assert_not_awaited()
+
+    async def test_model_drift_after_claim_releases_that_unstarted_claim(self):
+        row_id, _ = await self.seed(submitted=False)
+        before, after = managed_target("B"), managed_target("C")
+        async with self.sessions() as session:
+            row = await session.get(Handoff, row_id)
+            row.options = {**row.options, "managedModelSelection": before["managedModelSelection"]}
+            await session.commit()
+        late_conflict = handoffs.ModelConfirmationRequired(after["managedModelSelection"])
+        with patch.object(handoffs, "destination", AsyncMock(return_value=before)), \
+             patch.object(task_dispatch, "dispatch", AsyncMock(side_effect=late_conflict)):
+            async with self.sessions() as session:
+                client = await session.get(models.Client, "device")
+                with self.assertRaises(HTTPException) as conflict:
+                    await handoffs.commit(session, client, "request", "")
+                assert conflict.exception.status_code == 409
+        async with self.sessions() as session:
+            row = await session.get(Handoff, row_id)
+            status = handoffs.public(row)
+            assert (status["phase"], status["accepted"], status["canAbort"]) == ("prepared", False, True)
+            assert row.options["managedModelSelection"]["configRevision"] == "C"
+        assert (await cloud_recovery.recover_submissions())["candidates"] == 0
+
+    async def test_legacy_accepted_handoff_can_abort_after_model_confirmation_conflict(self):
+        row_id, _ = await self.seed()
+        async with self.sessions() as session:
+            row = await session.get(Handoff, row_id)
+            row.source = {"sessionId": "old-local-handoff"}
+            await session.commit()
+        with patch.object(handoffs, "destination", AsyncMock(return_value=managed_target("C"))), \
+             patch.object(task_dispatch, "dispatch", AsyncMock()) as dispatch:
+            async with self.sessions() as session:
+                client = await session.get(models.Client, "device")
+                with self.assertRaises(HTTPException) as conflict:
+                    await handoffs.commit(session, client, "request", "")
+                assert conflict.exception.status_code == 409
+                row = await session.get(Handoff, row_id, populate_existing=True)
+                assert handoffs.public(row)["canAbort"]
+                assert "managedModelSelection" not in row.options
+                assert (await handoffs.abort(session, client, "request"))["phase"] == "aborted"
+            dispatch.assert_not_awaited()
+
+    async def test_previous_failure_cannot_reopen_new_claim_and_recovery_can_still_continue(self):
+        row_id, _ = await self.seed(event=ai_exec.EV_DISPATCH_FAILED)
+
+        async def interrupt_before_launch(*args, **kwargs):
+            async with self.sessions() as status_session:
+                row = await status_session.get(Handoff, row_id)
+                assert (await handoffs.refresh(status_session, row)).phase == "committing"
+            raise asyncio.CancelledError
+
+        with patch.object(task_dispatch, "dispatch", new=interrupt_before_launch):
+            async with self.sessions() as session:
+                client = await session.get(models.Client, "device")
+                with self.assertRaises(asyncio.CancelledError):
+                    await handoffs.commit(session, client, "request", "")
+                row = await session.get(Handoff, row_id)
+                row.commit_started_at = datetime.now(timezone.utc) - timedelta(minutes=3)
+                await session.commit()
+        with patch.object(task_dispatch, "dispatch", AsyncMock(side_effect=self.accepted)) as dispatch:
+            assert (await cloud_recovery.recover_submissions()).get("dispatched") == 1
+            assert (await cloud_recovery.recover_submissions())["candidates"] == 0
+            dispatch.assert_awaited_once()
 
     async def test_submit_commit_crash_recovers_without_request_retry(self):
         body = {"sessionId": "new-cloud", "agentId": "pi", "text": "Make a report", "targetRunnerId": "cloud"}
@@ -406,8 +594,7 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
             return b"# Verified report\nComplete result.\n"
 
         with patch.object(ai_remote, "fetch_attachment_for_sync", side_effect=fetch) as download, \
-             patch.object(storage, "put", return_value="fixture"), \
-             patch.object(storage, "delete", return_value=None), \
+             patch.object(storage, "put", return_value="local"), \
              patch.object(ai_exec, "load", AsyncMock(return_value={})), \
              patch.object(ai_exec, "status_sync", return_value=status), \
              patch.object(code_delivery, "check", AsyncMock(return_value={"applies": True})), \
@@ -437,7 +624,7 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_lost_ingestion_commit_ack_does_not_create_a_second_attachment(self):
         tid, status = await self.artifact_fixture()
         with patch.object(ai_remote, "fetch_attachment_for_sync", return_value=b"# Report\nComplete.\n") as download, \
-             patch.object(storage, "put", return_value="fixture"):
+             patch.object(storage, "put", return_value="local"):
             async with self.sessions() as session:
                 original_commit = session.commit
 
@@ -458,7 +645,7 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_ingestion_preserves_outer_write_transaction_and_storage_failure_rollback(self):
         tid, status = await self.artifact_fixture()
         with patch.object(ai_remote, "fetch_attachment_for_sync", return_value=b"# Report\nComplete.\n"), \
-             patch.object(storage, "put", side_effect=[OSError("Object store unavailable"), "fixture"]):
+             patch.object(storage, "put", side_effect=[OSError("Object store unavailable"), "local"]):
             async with self.sessions() as session:
                 task = await session.get(models.Task, tid)
                 task.title = "Uncommitted caller intent"
@@ -473,6 +660,51 @@ class CloudRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     session, tid, {}, status, "execution", settle=False))["files"], 1)
                 files = list(await session.scalars(select(models.Attachment).where(models.Attachment.task_id == tid)))
                 self.assertEqual(len(files), 1)
+
+    async def test_partial_artifact_write_is_cleaned_and_same_turn_can_retry(self):
+        tid, status = await self.artifact_fixture()
+        status["attachments"].append({"filename": "second.md", "id": "second.md"})
+        put = storage.put
+        keys = []
+
+        def write(key, data, content_type):
+            keys.append(key)
+            backend = put(key, data, content_type)
+            if len(keys) == 2:
+                raise OSError("Second object write interrupted")
+            return backend
+
+        with patch.object(ai_remote, "fetch_attachment_for_sync", return_value=b"# Report\nComplete.\n"):
+            async with self.sessions() as session:
+                with (patch.object(storage, "put", side_effect=write),
+                      self.assertRaisesRegex(OSError, "Second object write interrupted")):
+                    await artifact_ingest.pull_artifacts(session, tid, {}, status, "execution", settle=False)
+                self.assertEqual(list(await session.scalars(select(models.Attachment))), [])
+                for key in keys:
+                    with self.assertRaises(FileNotFoundError):
+                        storage.get(key, "local")
+                result = await artifact_ingest.pull_artifacts(session, tid, {}, status, "execution", settle=False)
+                self.assertEqual(result["files"], 2)
+                rows = list(await session.scalars(select(models.Attachment)))
+                self.assertEqual({row.filename for row in rows}, {"report.md", "second.md"})
+                self.assertEqual([storage.get(row.storage_key, row.backend) for row in rows],
+                                 [b"# Report\nComplete.\n"] * 2)
+
+    async def test_over_limit_file_is_rejected_without_poisoning_same_turn_retry(self):
+        tid, status = await self.artifact_fixture()
+        content = b"# Report\nComplete.\n"
+        with patch.object(ai_remote, "fetch_attachment_for_sync", return_value=content):
+            async with self.sessions() as session:
+                with patch.object(artifact_bytes, "MAX_BYTES", len(content) - 1):
+                    rejected = await artifact_ingest.pull_artifacts(session, tid, {}, status, "execution", settle=False)
+                self.assertEqual(rejected["files"], 0)
+                self.assertEqual(list(await session.scalars(select(models.Attachment))), [])
+                event = await session.scalar(select(models.TaskEvent).where(
+                    models.TaskEvent.kind == "artifact.delivery_rejected"))
+                self.assertEqual(event.detail["files"], ["report.md"])
+                with patch.object(artifact_bytes, "MAX_BYTES", len(content)):
+                    retry = await artifact_ingest.pull_artifacts(session, tid, {}, status, "execution", settle=False)
+                self.assertEqual(retry["files"], 1)
 
 
 if __name__ == "__main__":

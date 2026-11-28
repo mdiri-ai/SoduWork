@@ -650,14 +650,18 @@ async function _sendCore(textOverride, sendOptions) {
           failedDraft.requirement.conversationId = String(ctx._sessionId || retainedRef || '');
       }
       if (localQueue) localQueue.submissionId = submissionId;
-      if (currentSendView()) ctx._retryDraft = null;
-      if (currentSendView()) ctx._rememberSubmission(submissionId, {
-        ...failedDraft,
-        files: sentFiles.slice(),
-        plugins: (selectedPlugins.length ? selectedPlugins : resolvedPlugins).map((item) => ({
-          pluginId: item.pluginId, name: item.name, version: item.version, scopeLabel: item.scopeLabel,
-        })),
-      });
+      if (currentSendView()) {
+        ctx._retryDraft = null;
+        const displayPlugins = selectedPlugins.length ? selectedPlugins : resolvedPlugins;
+        ctx._rememberSubmission(submissionId, {
+          ...failedDraft,
+          files: sentFiles.slice(),
+          // A queued requirement may need its confirmed inputs after acknowledgement.
+          plugins: sendTaskExecution?.assignmentPluginId ? failedDraft.plugins : displayPlugins.map(item => ({
+            pluginId: item.pluginId, name: item.name, version: item.version, scopeLabel: item.scopeLabel,
+          })),
+        });
+      }
       const submissionRef = retainedRef || ctx._ref; if (!api || !submissionRef) return false;
       const submissionSnapshot = ctx._snap;
       if (failedDraft.requirement) failedDraft.requirement.deliveryState = 'uncertain';

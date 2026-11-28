@@ -472,8 +472,9 @@ class UnifiedRequirementTests(unittest.IsolatedAsyncioTestCase):
         from app.services import ai_exec, agent_runner, conversation_turns, device_auth, workflow_runs
         response = await self.call("PATCH", "tasks/shared", json={"archivedAt": 1234567890000})
         self.assertEqual(response.status_code, 200, response.text)
-        for path, body in (("ai-dispatch", {}), ("conversation-turn", {
-                "action": "prepare", "turnId": "test-turn", "conversationId": "test-chat"})):
+        for path, body in (("ai-dispatch", {}),
+                ("ai-dispatch-confirmed", {"executionContext": {"strategy": "direct"}, "inputManifest": []}),
+                ("conversation-turn", {"action": "prepare", "turnId": "test-turn", "conversationId": "test-chat"})):
             headers = {}
             if path == "conversation-turn":
                 headers["Authorization"] = "Device " + device_auth.issue_session(self.clients["owner"])[0]
@@ -602,6 +603,34 @@ class UnifiedRequirementTests(unittest.IsolatedAsyncioTestCase):
         info.assert_called_once()
         async with self.sessions() as session:
             self.assertEqual((await session.get(models.Milestone, mid)).status, "doing")
+
+    async def test_closed_tasks_keep_their_milestone_plan(self):
+        for status in ("done", "cancel"):
+            with self.subTest(status=status):
+                tid, mid = await self._seed_guard_milestone(task_status=status, suffix=status)
+                route = f"tasks/{tid}/milestones"
+                response = await self.call("PUT", route, json={"items": []})
+                self.assertEqual(response.status_code, 409, response.text)
+                rows = (await self.call("GET", route)).json()["items"]
+                self.assertEqual([row["id"] for row in rows], [mid])
+
+    async def test_plan_edits_preserve_accepted_rows_and_reject_fabricated_results(self):
+        tid, _ = await self._seed_guard_milestone(status="done", rounds=1)
+        route = f"tasks/{tid}/milestones"
+        row, = (await self.call("GET", route)).json()["items"]
+        additional = {"title": "Next step"}
+        for edit in ([], [{**row, "status": "planned"}], [{**row, "status": "skipped"}],
+                     [{**row, "accept": "different criteria"}], [{**row, "title": "different scope"}],
+                     [row, {"title": "Unrun", "status": "done"}]):
+            with self.subTest(edit=edit):
+                response = await self.call("PUT", route, json={"items": [additional, *edit]})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual((await self.call("GET", route)).json()["items"], [row])
+        response = await self.call("PUT", route, json={"items": [row, additional]})
+        self.assertEqual(response.status_code, 200, response.text)
+        accepted, new = response.json()["items"]
+        self.assertEqual(accepted, row)
+        self.assertEqual(new["status"], "planned")
 
     async def test_milestone_terminal_task_cannot_dispatch_or_resume(self):
         for index, (status, explicit) in enumerate((

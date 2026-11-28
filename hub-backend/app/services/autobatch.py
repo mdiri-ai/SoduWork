@@ -6,10 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from .. import models
 from ..config import get_settings
-from . import ai_prompts
+from . import ai_exec, ai_prompts, task_requirements
 
 log = logging.getLogger("uvicorn.error")
 
@@ -25,47 +26,41 @@ def _cfg() -> tuple[bool, int, int]:
 
 
 async def pick_assignee(session: AsyncSession, client_id: str = "") -> tuple[dict | None, str]:
-    """Behavior and constraints for this operation."""
+    """Choose an online Agent on the source account's current device."""
     import asyncio as _aio
 
     from . import ai_exec
-    ctx = await ai_exec.load(session, force=True)
-    rows = await _aio.to_thread(ai_exec.list_assignees_sync, ctx)
-    agents = (rows or {}).get("agents") or []
+    ctx = ai_exec.with_client_runner_scope(await ai_exec.load(session, force=True), client_id)
     want = str(getattr(get_settings(), "autobatch_assignee", "") or "").strip()
     if want:
-        hit = (await _aio.to_thread(ai_exec.resolve_kind, ctx, want, client_id)
-               if want.startswith("local:") else
-               next((a for a in agents if a.get("id") == want), None))
+        hit = await _aio.to_thread(ai_exec.resolve_requested_sync, ctx, want, "agent", client_id)
         if hit is None:
-            return None, f"配置里指定的执行器 {want} 不在了"
+            return None, f"负责人的设备上找不到配置指定的执行器 {want}"
         return hit, "按配置指定"
-    locals_ = [a for a in agents
-               if str(a.get("id") or "").startswith("local:") and a.get("online")]
-    if not locals_:
-        return None, "这台机器上没有可用的本机执行器（自动派活的工作目录是本机路径，托管执行器不认）"
-    # Use local CLI ordering to select a type, then resolve_kind to select its machine.
-    resolved = []
-    for a in locals_:
-        hit = await _aio.to_thread(ai_exec.resolve_kind, ctx, a.get("id") or "", client_id)
-        if hit is not None:
-            resolved.append(hit)
-    if not resolved:
-        return None, "没有可用的执行器"
-    idle = next((a for a in resolved if not a.get("busy")), None)
-    chosen = idle or resolved[0]
-    where = ("归属人的桌宠" if chosen.get("remote") and chosen.get("clientId") == client_id else
-             "在线执行机" if chosen.get("remote") else "后端本机")
-    return chosen, ("优先使用" + where if idle else where + "正忙，仍按顺序派发")
+    roster = await _aio.to_thread(ai_exec.list_assignees_sync, ctx)
+    agents = [agent for agent in roster.get("agents", [])
+              if agent.get("online") and agent.get("clientId") == client_id]
+    if not agents:
+        return None, "负责人的设备上没有可用的在线 Agent"
+    idle = next((agent for agent in agents if not agent.get("busy")), None)
+    return idle or agents[0], "优先使用负责人的空闲 Agent" if idle else "负责人的 Agent 正忙，按顺序派发"
 
 
 async def _dispatched_ids(session: AsyncSession) -> set[str]:
     """Exclude previously AI-dispatched tasks, including historical multica.* events, and tasks
     already assigned to a batch.
     """
-    rows = (await session.execute(
-        select(models.TaskEvent.task_id).where(
-            models.TaskEvent.kind.in_((*_KINDS_DISPATCHED, "ai.batched"))))).scalars().all()
+    event = models.TaskEvent
+    failure = aliased(event)
+    released = select(failure.id).where(
+        failure.task_id == event.detail["batchId"].as_string(),
+        failure.kind == ai_exec.EV_DISPATCH_FAILED,
+        failure.detail["confirmedNotStarted"].as_boolean().is_(True),
+        failure.detail["attemptId"].as_string() == failure.task_id,
+    ).exists()
+    rows = (await session.scalars(select(event.task_id).where(
+        event.kind.in_(_KINDS_DISPATCHED) | ((event.kind == "ai.batched") & ~released)
+    ))).all()
     return set(rows)
 
 
@@ -102,14 +97,18 @@ async def group(session: AsyncSession) -> list[dict]:
     skip = await _dispatched_ids(session)
     busy = await _busy_repos(session)
     rows = (await session.execute(
-        select(models.Task).where(models.Task.status == "todo",
-                                  models.Task.integration_id.is_not(None),
-                                  models.Task.owner_client_id.is_not(None))
+        select(models.Task).join(models.Client, models.Client.id == models.Task.owner_client_id)
+        .where(models.Task.status == "todo", models.Task.integration_id.is_not(None),
+               models.Task.owner_user_id.is_not_distinct_from(models.Client.user_ref))
         .order_by(models.Task.created_at))).scalars().all()
     now = datetime.now(timezone.utc)
     buckets: dict[tuple[str, str], dict] = {}
     for t in rows:
         rid = (getattr(t, "repo_id", "") or "").strip()
+        try:
+            task_requirements.ensure_executable(t)
+        except ValueError:
+            continue
         if t.id in skip:
             continue
         if not rid:
@@ -194,16 +193,26 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
     Preserve one source-task milestone per bug; task_status propagates completed batch state to
     members.
     """
+    from fastapi import HTTPException
+
     from .. import automation_models as am
     from ..realtime import hub
+    from . import batch_dispatch, workflow_engine
     from . import task_events as ev
-    from . import workflow_engine
 
     binding = await session.get(am.PluginBinding, g["flowBindingId"])
     if binding is None or not binding.enabled:
         return {**g, "dispatched": False, "error": "交付流程绑定不在了（可能刚被停用）"}
-    rows = [t for t in [await session.get(models.Task, x) for x in g["taskIds"]]
-            if t is not None and t.status == "todo"]
+    try:
+        rows = await batch_dispatch.lock_members(session, g["taskIds"], client)
+        await batch_dispatch.require_unassigned(session, g["taskIds"])
+        for task in rows:
+            task_requirements.ensure_executable(task)
+            if task.status != "todo" or task.repo_id != repo.id:
+                raise ValueError("源任务状态或工程已变更，这轮先不派")
+    except (ValueError, HTTPException) as error:
+        await session.rollback()
+        return {**g, "dispatched": False, "error": str(error)}
     if len(rows) < 2:
         return {**g, "dispatched": False, "error": "源任务状态刚变了（不足两条待办），这轮先不派"}
     # Include every source task's title and description, matching batch_dispatch.
@@ -217,7 +226,7 @@ async def _dispatch_flow(session: AsyncSession, g: dict, client, repo) -> dict:
         if getattr(t, "external_url", None):
             parts.append("   原文：" + str(t.external_url))
     batch = models.Task(
-        owner_client_id=client.id, status="todo",
+        owner_client_id=client.id, owner_user_id=client.user_ref, status="todo",
         title=f"合并修复 {len(rows)} 条 bug · {repo.name or '同一工程'}",
         note="\n".join(parts)[:8000])
     batch.project_id = repo.project_id
@@ -296,7 +305,7 @@ async def run_once(session: AsyncSession, dry: bool | None = None) -> dict:
         body = {
             "taskIds": g["taskIds"],
             "title": f"合并处理 {len(g['taskIds'])} 条 bug · {repo.name or '同一工程'}",
-            "repo": {"path": work_dir, "name": repo.name, "kind": repo.kind,
+            "repo": {"id": repo.id, "path": work_dir, "name": repo.name, "kind": repo.kind,
                      "gitUrl": repo.git_url, "branch": repo.default_branch,
                      "note": repo.note, "flow": True,   # flow enables branch creation, implementation, verification, commit, and push.
                      # Unattended mode overrides screenshot settings to disable GUI capture.

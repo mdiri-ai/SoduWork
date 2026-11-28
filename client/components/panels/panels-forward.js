@@ -7,6 +7,46 @@ function _fwdSubmissionMode() {
   return value === 'auto' || value === 'manual' ? value : '';
 }
 
+let _fwdPluginInputSheet = null;
+
+function _fwdClosePluginInputs() {
+  _fwdPluginInputSheet?.close(true);
+  _fwdPluginInputSheet = null;
+}
+
+function _fwdDispatchConversationPlugin(tid, who, name, plugin) {
+  if (_fwdPluginInputSheet?.surface.root.isConnected) return;
+  const task = tasks.find(item => _fwdSameId(item.id, tid));
+  const note = document.getElementById('fwdNote')?.value.trim() || '';
+  const seed = [task?.title, task?.description || task?.note, note].filter(Boolean).join('\n\n');
+  const plan = window.ChatPluginMentionModel.prepareConversationInputs(plugin.inputs, seed);
+  const dispatch = (inputValues) => _dispatchAITo(tid, who, name, {
+    pluginId: plugin.pluginId, name: plugin.name, version: plugin.version, inputValues,
+  });
+  if (plan.ready) return dispatch(plan.values);
+  const scope = window.RequirementAssignment.scope();
+  const host = document.getElementById('fwdList');
+  const seq = _fwdLoadSeq;
+  _fwdPluginInputSheet = window.PluginInputSheet?.open({
+    plugin: { ...plugin, inputs: plan.missing }, seed,
+    initialValues: plan.values, surfaceContext: 'task',
+    submitLabel: '确认派活',
+    onApply(_prompt, values) {
+      _fwdPluginInputSheet = null;
+      if (!window.RequirementAssignment.inScope(scope) || document.getElementById('fwdList') !== host) return;
+      const choice = _fwdSelection.ai;
+      if (seq !== _fwdLoadSeq || _fwdTab !== 'ai' || plugin !== _fwdConversationPluginOf(_fwdConversationPluginId) ||
+          choice?.id !== who.id || !_fwdChoiceIsCurrent(choice) || document.getElementById('fwdConfirm')?.disabled) {
+        _fwdSetStatus('执行选项已更新，请重新选择可用选项', true);
+        return;
+      }
+      void dispatch({ ...plan.values, ...values });
+    },
+    onClose() { _fwdPluginInputSheet = null; document.getElementById('fwdConfirm')?.focus(); },
+  });
+  if (!_fwdPluginInputSheet) _fwdSetStatus('插件执行组件没有加载成功', true);
+}
+
 async function _dispatchNativeTo(tid) {
   const scope = window.RequirementAssignment.scope(), host = document.getElementById('fwdList');
   const current = () => window.RequirementAssignment.inScope(scope) && document.getElementById('fwdList') === host;
@@ -21,7 +61,7 @@ async function _dispatchNativeTo(tid) {
   }
 }
 
-async function _dispatchAITo(tid, who, name) {
+async function _dispatchAITo(tid, who, name, plugin) {
   const scope = window.RequirementAssignment.scope();
   const brief = (document.getElementById('fwdNote') || {}).value || '';
   const selectedAgent = _fwdSubstrateOf(who.id);
@@ -39,12 +79,17 @@ async function _dispatchAITo(tid, who, name) {
   _fwdSetStatus('正在等待执行端接单…');
   try {
     const repo = _pickedRepo();
+    const preview = document.getElementById('fwdPrev')?.confirmedInputs;
+    if (preview && (preview.taskId !== _fwdId(tid) || !Array.isArray(preview.manifest))) {
+      throw new Error(preview.error || '请先重新预览需求附件');
+    }
     const executionContext = window.TaskExecutionClient
       ? TaskExecutionClient.context({...(_fwdOptions || {}), substrates:_fwdDirectAgents()}, {
         strategy: 'direct', agentId: who.id, substrateKey: who.id,
         repoId: repo && repo.id, model: model,
-      }) : null;
-    const result = await SoduWorkAPI.dispatchToAI(tid, who, brief.trim(), repo, model, executionContext, _fwdSubmissionMode());
+      }) : preview ? {strategy: 'direct'} : null;
+    const result = await SoduWorkAPI.dispatchToAI(tid, who, brief.trim(), repo, model, executionContext,
+      _fwdSubmissionMode(), preview?.manifest, plugin);
     if (!window.RequirementAssignment.inScope(scope)) return;
     if (!result || result.ok === false) {
       const error = new Error((result && (result.reason || result.error || result.message)) ||

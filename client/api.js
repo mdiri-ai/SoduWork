@@ -1635,14 +1635,16 @@
      * who={id,type} selects an agent or squad; omit it to use the configured default. brief
      * adds task-specific instructions.
      */
-    async dispatchToAI(tid, who, brief, repo, model, executionContext, submissionMode) {
+    async dispatchToAI(tid, who, brief, repo, model, executionContext, submissionMode, inputManifest, plugin) {
       // All interactive task entries use the same conversation send queue.
       // The main process invokes the authorized executor only at the head.
+      const confirmed = inputManifest !== undefined;
       const native = window.NativeChat;
       if (native && typeof native.enqueueTask === 'function') {
         const result = await native.enqueueTask(tid, { source: 'task-dispatch', agentId: who && who.id || '',
           assigneeType: who && who.type || 'agent', brief, repo, model, executionContext,
-          ...(submissionMode ? { submissionMode } : {}) });
+          ...(submissionMode ? { submissionMode } : {}), ...(confirmed ? { inputManifest } : {}),
+          ...(plugin !== undefined ? { assignmentPlugin: plugin } : {}) });
         if (!result || result.ok === false) {
           const error = new Error(result && (result.reason || result.error || result.message) || '需求未能进入会话队列');
           // Explicit business refusals use the same display contract as HTTP errors.
@@ -1651,6 +1653,11 @@
         }
         return acceptTaskResult(result);
       }
+      if (plugin) {
+        const error = new Error('所选插件需要本机会话才能执行');
+        error.detail = error.message;
+        throw error;
+      }
       requireRemoteModel(model);
       var b = who && who.id ? { assigneeId: who.id, assigneeType: who.type || 'agent' } : {};
       if (brief) b.brief = String(brief).slice(0, 2000);
@@ -1658,7 +1665,8 @@
       if (model) b.model = String(model);     /* Per-request model override; empty uses the agent's configuration. */
       if (executionContext) b.executionContext = executionContext;
       if (submissionMode) b.submissionMode = submissionMode;
-      var r = await jfetch('/tasks/' + encodeURIComponent(tid) + '/ai-dispatch',
+      if (confirmed) b.inputManifest = inputManifest;
+      var r = await jfetch('/tasks/' + encodeURIComponent(tid) + (confirmed ? '/ai-dispatch-confirmed' : '/ai-dispatch'),
         { method: 'POST', body: JSON.stringify(b) });
       mark(true);
       if (r && r.ok === false) {
@@ -3636,12 +3644,18 @@
       }
     },
 
-    async clientAuthPolicy() {
+    async clientAuthPolicy(options) {
       var restoration = restoreSavedHub(); if (restoration) await restoration;
-      var res = await hubFetch(apiUrl('/client-auth/policy'), { signal: _abortSignal(DEFAULT_TIMEOUT) });
-      var text = await res.text();
-      if (!res.ok) throw httpError(res, text);
-      return text ? parseJSON(text) : {};
+      var path = options?.compact ? '/client-auth/policy?compact=true' : '/client-auth/policy';
+      // The on-demand reader downloads all published translations.
+      var timeout = options?.compact ? DEFAULT_TIMEOUT : 60000;
+      var request = _requestAbort(undefined, timeout);
+      try {
+        var res = await hubFetch(apiUrl(path), { signal: request.signal });
+        var text = await res.text();
+        if (!res.ok) throw httpError(res, text);
+        return text ? parseJSON(text) : {};
+      } finally { request.dispose(); }
     },
 
     clientAuthSnapshot() {

@@ -29,14 +29,38 @@ app.whenReady().then(async () => {
         ],
       };
       draw();
-      return {
+      const commands = {
         batches: document.querySelectorAll('.ntool-batch').length,
         rows: document.querySelectorAll('.ntool-batch .ntool').length,
         running: document.querySelectorAll('.ntool-batch.running').length,
-        count: document.querySelector('.ntool-batch-count')?.textContent || '',
+        count: document.querySelector('.ntool-batch-count').textContent,
+        title: document.querySelector('.ntool-batch-title').textContent,
+        actions: document.querySelectorAll('.ntool-batch button, .ntool-batch [data-command-record]').length,
       };
+      ctx._snap.tools[2] = { ...ctx._snap.tools[2], state: 'error', isError: true, result: 'failed' };
+      draw();
+      const failed = document.querySelector('.ntool-batch.error');
+      const failure = { title: failed.querySelector('.ntool-batch-title').textContent,
+        detail: failed.querySelector('.ntool-batch-detail').textContent,
+        count: failed.querySelector('.ntool-batch-count').textContent };
+      ctx._snap.tools[1].after = 1;
+      ctx._snap.tools[2] = { id: 'read-3', after: 1, name: 'read', state: 'done',
+        args: { path: 'readme.txt' }, result: 'text' };
+      draw();
+      const trigger = document.querySelector('[data-tool-group]');
+      const batch = trigger.closest('.ntool-batch');
+      const mixed = { rows: batch.querySelectorAll('.ntool').length,
+        initiallyExpanded: trigger.getAttribute('aria-expanded') };
+      ChatTools.toggleGroup(trigger, ctx._openToolGroup);
+      mixed.afterOpening = trigger.getAttribute('aria-expanded');
+      ChatTools.toggleGroup(trigger, ctx._openToolGroup);
+      mixed.afterClosing = trigger.getAttribute('aria-expanded');
+      return { commands, failure, mixed };
     })()`);
-    assert.deepEqual(result, { batches: 1, rows: 3, running: 1, count: '3 项' });
+    assert.deepEqual(result.commands, { batches: 1, rows: 0, running: 1, count: '3 项',
+      title: '正在运行命令', actions: 0 });
+    assert.deepEqual(result.failure, { title: '命令执行有异常', detail: '1 项异常', count: '3 项' });
+    assert.deepEqual(result.mixed, { rows: 3, initiallyExpanded: 'false', afterOpening: 'true', afterClosing: 'false' });
     console.log(JSON.stringify({ ok: true, result }));
   } finally {
     win.destroy();

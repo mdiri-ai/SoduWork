@@ -335,6 +335,7 @@
     '个连接': 'connectors', '个技能': 'Skills', '个版本': 'versions', '个节点': 'nodes', '个附件': 'attachments',
     '条需求': "issues", '条记录': 'records', '条消息': 'messages', '项': 'items',
     '请先填写 API 地址': 'Enter the API address first', '请先添加一个模型 ID': 'Add a model ID first',
+    '请选择当前账号可见的已登记 HTTPS 仓库，或输入同一主机和端口的仓库地址。': 'Select a registered HTTPS repository visible to your account, or enter a repository on the same host and port.',
     '没测出结果': 'No result returned', '没测成': 'Test failed', '服务信息已保存': 'Service information saved',
     '模型配置已保存，但模型选择器刷新失败，请重新打开对话。': 'Model settings were saved, but the model picker could not refresh. Reopen the chat.',
     '本地模型配置已保存，Hub 模型配置未保存，请重试。': 'Local model settings were saved, but Hub model settings were not. Try again.',

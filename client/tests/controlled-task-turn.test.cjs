@@ -63,6 +63,23 @@ test('controlled Runner compares execution ref, not the database record id', asy
   assert.equal(result.ok,true);assert.equal(messages.length,2);
 });
 
+test('controlled dispatch sends the confirmed attachment list only to a Hub that validates it', async () => {
+  const task = {id: 't'};
+  const inputManifest = [];
+  const spec = executionSpec(task, {agentId: 'runner:fixture:pi', executionContext: {strategy: 'direct'}, inputManifest});
+  const starts = [];
+  const adapter = create({task, spec, scope: {}, request: async (route, body) => {
+    if (body) {
+      starts.push({route, manifest: body.inputManifest, strategy: body.executionContext.strategy});
+      return {issueId: 'runner-ref'};
+    }
+    return {ref: 'runner-ref', status: 'done', items: []};
+  }});
+  const result = await adapter.execute({appendTaskMessage() {}, taskExecutionChanged() {}}, 'task', []);
+  assert.equal(result.ok, true);
+  assert.deepEqual(starts, [{route: '/tasks/t/ai-dispatch-confirmed', manifest: inputManifest, strategy: 'direct'}]);
+});
+
 test('controlled dispatch retains the selected engine and attributes replayed output to the actual Hub receipt', async () => {
   for (const engine of ['opencode', 'kimi']) {
     const messages = [], calls = []; let page = 0;

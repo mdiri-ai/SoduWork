@@ -362,17 +362,6 @@
       }));
   }
 
-  function changeRows(items) {
-    return items.map(item => {
-      const path = item.path || item.name || '', name = baseName(path);
-      const directory = path.slice(0, path.length - name.length);
-      return '<button type="button" class="ncw-change-row" ' +
-        (item.id ? 'data-wb-tool="' + esc(item.id) + '"' : 'disabled') + '><span>' + esc(item.action) + '</span>' +
-        '<b data-user-content title="' + esc(path) + '"><span>' + esc(directory) + '</span><strong>' + esc(name) +
-        '</strong></b><small>' + esc(item.state) + '</small></button>';
-    }).join('');
-  }
-
   // Self-contained SVGs also render in document headers without inherited SVG CSS.
   const icon = paths => '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + paths + '</svg>';
   const ICONS = {
@@ -468,7 +457,7 @@
       '<button type="button" data-wb-copy-location title="复制页面地址" aria-label="复制页面地址">' + ICONS.copy + '</button></div>';
   }
 
-  const api = { toolMeta, status, services, serviceCandidates, changes, changeRows, currentTurnTools, currentWorkFiles, currentWorkSelection, currentDeliveryFiles, currentWorkJournal, baseName, normalizeUrl, stripAnsi, isServerCommand, ICONS, documentToolbar, browserToolbar, mediaToolbar, displayAddress, buttonStatus, copied };
+  const api = { toolMeta, status, services, serviceCandidates, changes, currentTurnTools, currentWorkFiles, currentWorkSelection, currentDeliveryFiles, currentWorkJournal, baseName, normalizeUrl, stripAnsi, isServerCommand, ICONS, documentToolbar, browserToolbar, mediaToolbar, displayAddress, buttonStatus, copied };
   Object.assign(tools, { status, _toolMeta: toolMeta, _services: services, _serviceCandidates: serviceCandidates, _changes: changes, _currentTurnTools: currentTurnTools });
   global.ChatWorkspaceInfo = api;
   global.ChatWorkbenchIcons = ICONS;

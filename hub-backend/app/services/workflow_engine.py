@@ -1020,7 +1020,7 @@ async def _start_quality(session: AsyncSession, run: am.WorkflowRun, task: model
             "target": artifact.target or repo.merge_branch or repo.default_branch,
             "commit": artifact.commit_sha, "taskId": task.id,
             # Keep credentials in Runner memory for this RPC; runner_quality does not persist the spec.
-            "git": code_creds.resolve(owner) if owner else {},
+            "git": code_creds.for_repo(owner, repo.git_url) if owner else {},
         },
         "commands": binding_commands or list(dict(node.get("config") or {}).get("commands") or []),
         # Enable change hygiene by default for quality nodes; an explicit hygiene=False can disable it.
@@ -1087,7 +1087,7 @@ async def _start_script(session: AsyncSession, run: am.WorkflowRun, task: models
             "gitUrl": repo.git_url, "branch": artifact.branch,
             "target": artifact.target or repo.merge_branch or repo.default_branch,
             "commit": artifact.commit_sha, "taskId": task.id,
-            "git": code_creds.resolve(owner) if owner else {},
+            "git": code_creds.for_repo(owner, repo.git_url) if owner else {},
         },
         "commands": commands,
     }

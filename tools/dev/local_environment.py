@@ -239,7 +239,6 @@ def dependency_report(*, desktop: bool = False) -> None:
     if desktop:
         check_desktop_session()
         print("Desktop: Electron will be installed in this instance's private application directory.")
-    print("Prerequisites are ready. First-time setup needs internet access; no files were changed.")
 
 
 @lru_cache(maxsize=1)

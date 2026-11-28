@@ -5,6 +5,7 @@ import json
 
 import httpx
 
+from .context_window import advertised_length
 from .model_definition_contracts import MODEL_MODALITIES
 
 TIMEOUT_SECONDS = 15
@@ -83,7 +84,11 @@ def _candidate(name: str, rows: list[dict]) -> dict:
         status = "declared"
     elif declared == {"unsupported"}:
         status = "unsupported"
-    return {"id": name, "purposes": purposes, "status": status}
+    candidate = {"id": name, "purposes": purposes, "status": status}
+    windows = {n for row in rows if (n := advertised_length(row.get("context_length")))}
+    if len(windows) == 1:
+        candidate["advertisedContextWindow"] = windows.pop()
+    return candidate
 
 
 def _candidates(payload) -> list[dict] | None:
@@ -129,6 +134,7 @@ async def discover(base: str, key: str, kind: str = "openai-compat", *, allow_em
                                timeout=httpx.Timeout(TIMEOUT_SECONDS))
     try:
         status = None
+        response_error = None
         for path in _paths(kind, base):
             try:
                 response = await client.get(base + path, headers=_headers(kind, key))
@@ -144,23 +150,28 @@ async def discover(base: str, key: str, kind: str = "openai-compat", *, allow_em
             try:
                 payload = json.loads(response.content[:MAX_BYTES].decode("utf-8", "replace"))
             except (ValueError, UnicodeDecodeError):
-                return {"ok": False, "models": [], "path": path,
-                        "code": "model.discovery.invalid-payload",
-                        "detail": "模型列表不是有效的 JSON 响应"}
+                response_error = {"ok": False, "models": [], "path": path,
+                                  "code": "model.discovery.invalid-payload",
+                                  "detail": "模型列表不是有效的 JSON 响应"}
+                continue
             candidates = _candidates(payload)
             if candidates is None:
-                return {"ok": False, "models": [], "path": path,
-                        "code": "model.discovery.invalid-list",
-                        "detail": "服务没有返回有效的模型列表"}
+                response_error = {"ok": False, "models": [], "path": path,
+                                  "code": "model.discovery.invalid-list",
+                                  "detail": "服务没有返回有效的模型列表"}
+                continue
             if not candidates and not allow_empty:
-                return {"ok": False, "models": [], "path": path,
-                        "code": "model.discovery.empty",
-                        "detail": "服务返回了空模型列表"}
+                response_error = {"ok": False, "models": [], "path": path,
+                                  "code": "model.discovery.empty",
+                                  "detail": "服务返回了空模型列表"}
+                continue
             counts = {"total": len(candidates),
                       "chat": sum("chat" in row["purposes"] for row in candidates),
                       "unknown": sum(row["status"] == "unknown" for row in candidates)}
             return {"ok": True, "models": [row["id"] for row in candidates],
                     "candidates": candidates, "counts": counts, "path": path, "detail": ""}
+        if response_error and status in (None, 404, 405):
+            return response_error
         if status in (404, 405):
             return {"ok": False, "models": [],
                     "code": "model.discovery.no-endpoint",

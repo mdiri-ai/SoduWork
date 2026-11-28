@@ -81,14 +81,14 @@ async def repo_for(session: AsyncSession, t) -> models.Repo | None:
 
 
 
-async def _task_git_creds(session: AsyncSession, task) -> dict:
+async def _task_git_creds(session: AsyncSession, task, repo) -> dict:
     """Resolve the task owner's write-only code account for server-side Git."""
     owner_id = str(getattr(task, "owner_client_id", None) or "")
     client = await session.get(models.Client, owner_id) if owner_id else None
     if client is None:
         return {}
     from . import code_creds
-    return code_creds.resolve(client)
+    return code_creds.for_repo(client, repo.git_url)
 
 
 async def _ensure_repo(repo, task, git_creds: dict) -> dict:
@@ -202,7 +202,7 @@ async def check(session: AsyncSession, t, who: str = "SoduWork", force: bool = F
     state.update(applies=True, delivered=await is_delivered(session, t, state))
     if _merged_state_matches_head(state, head_hint):
         return state
-    git_creds = await _task_git_creds(session, t)
+    git_creds = await _task_git_creds(session, t, repo)
     # Do not retroactively create candidates for completed legacy tasks. force permits refresh, never approval bypass.
     if t.status in ("done", "cancel") and state["stage"] == "none" and not force:
         return {**state, "reason": "这条活已经结束了，不会自动去合它的老分支（要合请人工重试）"}
@@ -393,7 +393,7 @@ async def _merge_approved_unleased(session: AsyncSession, t, who: str = "SoduWor
     scm_support.require_active(repo)
     if repo is None:
         return {"ok": False, "stage": "config", "error": "这条需求没落在配好代码交付的工程上"}
-    git_creds = await _task_git_creds(session, t)
+    git_creds = await _task_git_creds(session, t, repo)
     async with _merge_lock(t.id):
         state = await read_state(session, t.id)
         if state["stage"] == "merged":

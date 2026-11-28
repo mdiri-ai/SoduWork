@@ -1,3 +1,5 @@
+import { deferredMessageKey } from '../i18n.js'
+
 // Comma-separated arguments, with CSV-style double quotes for literal commas.
 export function parseArguments(text) {
   const args = []
@@ -14,12 +16,12 @@ export function parseArguments(text) {
       else value += char
     } else if (char === ',') push()
     else if (closed) {
-      if (char.trim()) throw Error('参数的双引号后只能填写英文逗号或空白')
+      if (char.trim()) throw Error(deferredMessageKey('参数的双引号后只能填写英文逗号或空白'))
     } else if (char === '"' && !value.trim()) {
       value = ''; quoted = true; inQuotes = true
     } else value += char
   }
-  if (inQuotes) throw Error('参数的双引号未闭合')
+  if (inQuotes) throw Error(deferredMessageKey('参数的双引号未闭合'))
   push()
   return args
 }

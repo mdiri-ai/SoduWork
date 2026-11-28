@@ -343,7 +343,8 @@ async def test_runner_passes_trusted_grants(tmp: str) -> None:
 async def test_admission_cancel_race() -> None:
     """A completed wake must not consume cancellation of the admission loop."""
     machine = runner_main.Runner.__new__(runner_main.Runner)
-    resource = SimpleNamespace(limit=1, can_start=True)
+    resource = runner_main.runner_admission.ResourceSnapshot(limit=1, can_start=True)
+    machine.concurrency_ceiling = 1
     machine._resource_budget = SimpleNamespace(snapshot=lambda: resource)
     machine._reap_admission = lambda: None
     machine._admission = SimpleNamespace(

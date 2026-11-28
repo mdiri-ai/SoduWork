@@ -593,8 +593,6 @@ function _bind(el) {
       if (receipt) { ctx._collabAction('open-task', { taskId: receipt.getAttribute('data-task-receipt') }); return; }
       const failure = e.target.closest('[data-skill-failure]');
       if (failure) { void global.ChatToolDetails?.openSkillFailure(ctx, failure); return; }
-      const record = e.target.closest('[data-command-record]');
-      if (record) { global.ChatToolDetails?.openRecord(ctx, record.dataset.commandRecord, record); return; }
       const detailRetry = e.target.closest('[data-tool-detail-retry]');
       if (detailRetry) { global.ChatToolDetails?.activate(ctx, detailRetry.dataset.toolDetailRetry, true); return; }
       const read = e.target.closest('[data-dks-read]');

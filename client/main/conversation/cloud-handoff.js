@@ -219,6 +219,8 @@ function create({ app, identityOf, request = http, workspace = portable, notify 
     return { transferId: record.transferId, phase: record.phase, entryKind: record.entryKind || 'handoff', taskId: record.taskId || '',
       ref: record.ref || '', target: record.target || null, error: record.error || '',
       accepted: Boolean(record.accepted), acceptedAt: record.acceptedAt || '',
+      ...(record.cloudStart && record.phase === 'prepared' && !record.accepted && record.confirmationGeneration
+        ? { confirmationGeneration: record.confirmationGeneration } : {}),
       canAbort: record.canAbort === undefined ? !record.accepted && ['preparing', 'uploading', 'prepared'].includes(record.phase) : record.canAbort === true,
       pendingApprovals: (record.cloudApprovals || []).length, pendingMessages: (record.cloudMessages || []).length,
       historyGap: record.syncSnapshot?.historyGap || (record.syncRecovery?.historyGap ? { reason: 'local-cache-recovery' } : null),
@@ -515,18 +517,26 @@ function create({ app, identityOf, request = http, workspace = portable, notify 
       }
     });
   }
-  function recover(handle) {
+  function recover(handle, { confirmationGeneration } = {}) {
     return busy(handle, async () => {
       const record = guard(handle); if (!record) return { ok: true, handoff: null };
       const current = await identity(record);
+      const retryCloudStart = record.syncId
+        ? record.phase === 'prepared' && record.accepted === false
+        : record.phase === 'prepared' || record.phase === 'committing';
+      if (record.entryKind === 'cloud' && record.cloudStart && retryCloudStart) {
+        // The dialog may still show an older receipt while account sync installs
+        // a new one. Only the displayed generation can authorize a retry.
+        if (record.confirmationGeneration !== confirmationGeneration) {
+          return { ok: true, handoff: publicRecord(record) };
+        }
+        const result = await cloudStart.retry(record, confirmationGeneration);
+        if (result.ok) observe(handle);
+        return result;
+      }
       if (record.syncId) {
         await synchronization.tick();
         return { ok: true, handoff: publicRecord(read(handle.sessionId)) };
-      }
-      if (record.entryKind === 'cloud' && record.phase !== 'committed') {
-        const result = await cloudStart.retry(record);
-        if (result.ok) observe(handle);
-        return result;
       }
       // A crash before upload cannot have started a cloud task.
       if (record.phase === 'preparing') return { ok: true, handoff: await abortRecord(handle, record) };

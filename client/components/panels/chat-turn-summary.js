@@ -127,7 +127,7 @@
       return '<div class="nturn-summary" data-chat-node="turn-summary:' + ctx.esc(turn.key) + '">' +
         '<button type="button" data-turn-toggle="' + ctx.esc(turn.key) + '" aria-expanded="' + open +
         '" title="' + label + '" aria-label="' + label + '">' +
-        '<span class="nturn-summary-values">' + values + '</span><span data-turn-label>' + label + '</span>' +
+        '<span class="nturn-summary-values">' + values + '</span>' +
         '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>' +
         '<p data-turn-empty hidden>' + ctx.esc(tx('本轮没有可显示的过程记录。')) + '</p></div>';
     }
@@ -168,8 +168,6 @@
         button.setAttribute('aria-expanded', String(open));
         button.title = tx(open ? '收起过程' : '展开过程');
         button.setAttribute('aria-label', button.title);
-        const label = button.querySelector('[data-turn-label]');
-        if (label.textContent !== button.title) label.textContent = button.title;
         button.parentElement.querySelector('[data-turn-empty]').hidden = !open || withProcess.has(button.dataset.turnToggle);
       });
       if (boundList === list) return;

@@ -135,27 +135,21 @@ if (typeof electron === 'string') {
       }
       ChatWorkbench.render(fixtureRoot,${JSON.stringify(changeTurn)},[]);ChatChrome.openSummary();void 0`);
     assert.equal(await js('ChatWorkbench.state().has'), false);
-    const disclosure = '[data-chat-changes]';
-    await click(disclosure + ' summary');
-    const changeRows = selector => js('Array.from(document.querySelectorAll(' + JSON.stringify(selector + ' [data-wb-tool]') +
-      '), node => [node.dataset.wbTool, node.textContent])');
-    const rows = await changeRows(disclosure);
-    assert.deepEqual(rows.map(row => row[0]), modifications.map(tool => tool.id));
-    assert.match(rows[0][1], /新建0\/notes\.txt已完成/);
-    assert.match(rows[3][1], /修改3\/notes\.txt已取消/);
-    assert.match(rows[7][1], /修改7\/notes\.txt失败/);
-    await click(disclosure + ' [data-wb-tool="change-0"]');
-    assert.equal(await js('selectedTool'), 'change-0');
-    await click('[data-chat-summary]');
-    await click('[data-chat-summary-pop] [data-wb-files]');
+    assert.equal(await js('document.querySelector("[data-chat-summary-pop] [data-wb-files]")'), null);
+    assert.equal(await js('document.querySelector("[data-chat-changes]")'), null);
+    const latest = '[data-chat-summary-body] [data-wb-tool="change-9"]';
+    assert.match(await js('document.querySelector(' + JSON.stringify(latest) + ').textContent'), /10 处/);
+    await click(latest);
+    assert.equal(await js('selectedTool'), 'change-9');
+    await click('[data-chat-pane]');
     assert.equal(await js('ChatWorkbench.state().open'), true);
-    assert.deepEqual(await changeRows('.ncw-files'), rows);
-    await click('.ncw-files [data-wb-tool="change-3"]');
-    assert.equal(await js('selectedTool'), 'change-3');
-    await js('ChatWorkbench.render(fixtureRoot,{messages:[{role:"user"}],tools:[]},[]);ChatChrome.openSummary();void 0');
-    assert.equal(await js('document.querySelector("[data-chat-summary-pop] [data-wb-files]").hidden'), true);
-    assert.equal(await js('document.querySelector("[data-chat-changes]").hidden'), true);
-    report.cases.push('A change-only turn with no tabs opens its file panel from the summary. All ten receipts retain their paths and states, and both lists target the selected tool.');
+    assert.equal(await js('document.querySelector(".ncw-files-empty")?.textContent'), '本次对话还没有可查看的文件。');
+    await js('ChatWorkbench.reset();ChatWorkbench.bind(fixtureRoot,contextValue);ChatWorkbench.render(fixtureRoot,' +
+      JSON.stringify(changeTurn) + ',files);void 0');
+    assert.equal(await js('ChatWorkbench.state().has'), false);
+    await click('[data-chat-pane]');
+    assert.equal(await js('document.querySelectorAll(".ncw-files [data-wb-file]").length'), 2);
+    report.cases.push('The original summary count navigates to the latest modification. The existing pane toggle opens the file index without a tab, including its empty state.');
     assert.deepEqual(report.errors, []);
     report.ok = true;
   }).catch(error => { report.error = String(error.stack || error); }).finally(() => {

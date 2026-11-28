@@ -354,38 +354,28 @@ if (typeof electron === 'string') {
     legacyRow._object = path.posix.join(path.posix.dirname(legacyRow._object), legacyFilename);
     fs.writeFileSync(legacyIndexPath, JSON.stringify(legacyIndex));
     await loadPanel();
-    await until(`document.querySelector('[data-library-repair-filename="${legacy.id}"]')`);
-    const hintSelector = `[data-library-file-preview="${legacy.id}"] .library-filename-hint`;
-    await until(`!!document.querySelector(${JSON.stringify(hintSelector)})`);
+    await until(`document.querySelector('[data-library-rename="${legacy.id}"]')`);
     for (const view of ['grid', 'list']) {
       await nativeClick(`[data-library-view="${view}"]`);
       await until(`document.querySelector('[data-library-content]').classList.contains('is-${view}')`);
-      assert.equal(await js(`(() => { const hint = document.querySelector(${JSON.stringify(hintSelector)});
-        return !!hint && getComputedStyle(hint).display !== 'none' && hint.getBoundingClientRect().height > 0; })()`), true);
-      assert.equal(await js(`document.querySelector(${JSON.stringify(hintSelector)}).textContent`), '请核对文件名');
-      await js('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-      fs.writeFileSync(path.join(output, 'filename-check-' + view + '.png'), (await win.webContents.capturePage()).toPNG());
+      assert.equal(await js('document.querySelector("[data-library-repair-filename],.library-filename-hint")'), null);
     }
-    await js(`window.filenameRepairCalls = []; const repair = SoduWorkAPI.repairLocalLibraryFilename;
-      SoduWorkAPI.repairLocalLibraryFilename = (...args) => { filenameRepairCalls.push(args); return repair(...args); }; void 0;`);
-    const openRepair = async () => {
+    const openRename = async () => {
       await nativeClick(`[data-library-menu-toggle="item-${legacy.id}"]`);
-      await nativeClick(`[data-library-repair-filename="${legacy.id}"]`);
+      await nativeClick(`[data-library-rename="${legacy.id}"]`);
       await until('document.querySelector(".library-folder-dialog[open]")');
     };
-    await openRepair();
+    await openRename();
     assert.equal(await js('document.querySelector("[data-library-folder-name]").value'), legacyFilename);
     await nativeEnter('[data-library-folder-name]', 'recovered-report.pdf');
     await nativeClick('.library-folder-editor-foot [data-library-folder-cancel]');
-    assert.equal(await js('filenameRepairCalls.length'), 0);
     assert.equal((await listLocal()).items.find(row => row.id === legacy.id).filename, legacyFilename);
     assert.equal(sha(await readBytes(legacy.id)), sha(legacyBytes));
-    report.cases.push('A legacy truncated filename is flagged for review in list/grid; cancelling the full-name dialog sends no repair and preserves exact bytes');
+    report.cases.push('The original menu is preserved in list and grid, and cancelling Rename preserves the legacy filename and exact bytes');
 
-    await openRepair(); await nativeEnter('[data-library-folder-name]', 'recovered-report.pdf');
+    await openRename(); await nativeEnter('[data-library-folder-name]', 'recovered-report.pdf');
     await nativeClick('.library-folder-editor-save');
     await until(`document.querySelector('[data-library-file-preview="${legacy.id}"]')?.textContent.includes('recovered-report.pdf') && !document.querySelector('.library-folder-dialog')`);
-    assert.deepEqual(await js('filenameRepairCalls'), [[legacy.id, 'recovered-report.pdf']]);
     const repaired = (await listLocal()).items.find(row => row.id === legacy.id);
     assert.equal(repaired.filename, 'recovered-report.pdf'); assert.equal(repaired.title, 'recovered-report.pdf');
     assert.equal(repaired.sessionId, legacy.sessionId); assert.equal(repaired.conversationTitle, legacy.conversationTitle);
@@ -395,7 +385,7 @@ if (typeof electron === 'string') {
     assert.equal(path.basename(repairedIndex._object), 'recovered-report.pdf');
     assert.equal(sha(fs.readFileSync(path.join(storageRoot, repairedIndex._object))), sha(legacyBytes));
     assert.equal(fs.existsSync(legacyObject), false);
-    report.cases.push('Native repair confirmation crosses production API/preload/IPC and changes a truncated .p to the explicit .pdf, retaining ID, history metadata and bytes on disk');
+    report.cases.push('The original Rename dialog crosses production API/preload/IPC and changes a truncated .p to the explicit .pdf, retaining ID, history metadata and bytes on disk');
 
     await nativeClick(`[data-library-menu-toggle="item-${legacy.id}"]`);
     await nativeClick(`[data-library-rename="${legacy.id}"]`);
@@ -403,7 +393,6 @@ if (typeof electron === 'string') {
     await nativeEnter('[data-library-folder-name]', 'Ordinary rename'); await nativeClick('.library-folder-editor-save');
     await until(`document.querySelector('[data-library-file-preview="${legacy.id}"]')?.textContent.includes('Ordinary rename.pdf')`);
     assert.equal((await listLocal()).items.find(row => row.id === legacy.id).filename, 'Ordinary rename.pdf');
-    assert.equal(await js('filenameRepairCalls.length'), 1, 'Ordinary rename must not call the extension-repair API');
     assert.equal(sha(await readBytes(legacy.id)), sha(legacyBytes));
     report.cases.push('Ordinary rename still updates the title and preserves the repaired extension instead of using the full-filename operation');
 
@@ -412,26 +401,23 @@ if (typeof electron === 'string') {
     fs.writeFileSync(legacyIndexPath, JSON.stringify(separateTitleIndex));
     await loadPanel();
     await until(`document.querySelector('[data-library-file-preview="${legacy.id}"]')?.textContent.includes('Legacy display title.pdf')`);
-    await openRepair();
-    assert.equal(await js('document.querySelector("[data-library-folder-name]").value'), 'Ordinary rename.pdf');
-    await nativeClick('.library-folder-editor-save');
+    await openRename();
+    assert.equal(await js('document.querySelector("[data-library-folder-name]").value'), 'Legacy display title.pdf');
+    await nativeEnter('[data-library-folder-name]', 'Ordinary rename.pdf'); await nativeClick('.library-folder-editor-save');
     await until(`document.querySelector('[data-library-file-preview="${legacy.id}"]')?.textContent.includes('Ordinary rename.pdf')`);
     assert.equal((await listLocal()).items.find(row => row.id === legacy.id).title, 'Ordinary rename.pdf');
-    assert.deepEqual(await js('filenameRepairCalls.at(-1)'), [legacy.id, 'Ordinary rename.pdf']);
-    assert.equal(await js('filenameRepairCalls.length'), 2);
     assert.equal(sha(await readBytes(legacy.id)), sha(legacyBytes));
-    report.cases.push('Confirming the existing complete filename repairs a separately stored legacy title without changing its name or bytes');
+    report.cases.push('Rename can align a separately stored title with its filename without changing its bytes');
 
-    await openRepair(); await nativeEnter('[data-library-folder-name]', 'must-not-save.txt');
+    await openRename(); await nativeEnter('[data-library-folder-name]', 'must-not-save.txt');
     await call('clientLogin', { account: 'b' });
     await until('!document.querySelector(".library-folder-dialog")');
-    assert.equal(await js('filenameRepairCalls.length'), 2);
     assert.equal((await listLocal()).items.length, 0);
     await call('clientLogin', { account: 'a' });
     assert.equal((await listLocal()).items.find(row => row.id === legacy.id).filename, 'Ordinary rename.pdf');
     assert.equal(sha(await readBytes(legacy.id)), sha(legacyBytes));
     await loadPanel();
-    report.cases.push('Switching accounts closes a pending filename repair without dispatch or mutation in either account');
+    report.cases.push('Switching accounts closes a pending rename without mutating either account');
     report.cases.push('Historical Hub-local fixture rows never appear in the client-local tab');
     await until('!document.querySelector("[data-library-storage=remote]").disabled');
     await click('[data-library-storage=remote]');

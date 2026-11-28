@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import math
 from typing import Any
 
 _QUALITY_RANK = {"unknown": 0, "estimated": 1, "reported": 2, "reconciled": 3}
@@ -44,7 +45,8 @@ def _number(value: Any) -> int:
 def _pick(data: dict, *names: str) -> int:
     for name in names:
         value = data.get(name)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        if (isinstance(value, (int, float)) and not isinstance(value, bool)
+                and not (isinstance(value, float) and not math.isfinite(value)) and value >= 0):
             return _number(value)
     return 0
 
@@ -89,12 +91,15 @@ def _safe_raw(data: dict) -> dict:
     """Keep diagnostics, never arbitrary strings that may contain credentials."""
     out: dict = {}
     for key, value in data.items():
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
         if isinstance(value, (int, float, bool)) or value is None:
             out[str(key)[:80]] = value
         elif key == "cost" and isinstance(value, dict):
             out["cost"] = {
                 str(k)[:40]: v for k, v in value.items()
                 if isinstance(v, (int, float))
+                and not (isinstance(v, float) and not math.isfinite(v))
             }
         elif key == 'costUsd' and isinstance(value, str) and len(value) <= 50:
             try:

@@ -3,8 +3,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0097_model_account_allowlist"
-down_revision = "0093_schedule_session_mode"
+revision = "0099_model_account_allowlist"
+down_revision = "0098_schedule_session_mode"
 branch_labels = None
 depends_on = None
 

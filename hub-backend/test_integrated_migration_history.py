@@ -29,7 +29,7 @@ from app.schema_migrations import (
 
 OLD_MERGE = "0067_merge_release_account_ownership"
 CANONICAL_MERGE = "0067_merge_account_ownership"
-CURRENT_HEAD = "0097_model_account_allowlist"
+CURRENT_HEAD = "0099_model_account_allowlist"
 
 
 class IntegratedMigrationHistoryTests(unittest.TestCase):
@@ -108,6 +108,11 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
         script = ScriptDirectory.from_config(_config())
         self.assertEqual(script.get_heads(), [CURRENT_HEAD])
         expected = {
+            "0095_business_record_source": "0094_review_recipient",
+            "0097_model_advertised_window": "0096_usage_chat_source",
+            "0096_usage_chat_source": "0095_business_record_source",
+            "0098_schedule_session_mode": "0097_model_advertised_window",
+            "0099_model_account_allowlist": "0098_schedule_session_mode",
             "0094_review_recipient": "0093_user_test_account",
             "0093_user_test_account": "0092_task_text_storage",
             "0092_task_text_storage": "0091_domain_sort_validation",
@@ -322,7 +327,7 @@ class IntegratedMigrationHistoryTests(unittest.TestCase):
                                 self.assertEqual(row.pop("model_source"), "managed")
                                 self.assertEqual(json.loads(row.pop("source_requirement")),
                                                  expected_source if row["id"] == "schedule-enabled" else {})
-                                # 0093 backfills the reused-conversation fields on old rows.
+                                # 0098 backfills the reused-conversation fields on old rows.
                                 self.assertEqual(row.pop("session_mode"), "fresh")
                                 self.assertEqual(row.pop("recurring_conversation_id"), "")
                             self.assertEqual(actual, old_schedules)

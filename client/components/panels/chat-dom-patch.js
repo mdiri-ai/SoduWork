@@ -15,20 +15,6 @@
       // Keep the keyed row, but update the control, action attributes and body.
       patchContent(current, next); return;
     }
-    if (nextHead?.classList.contains('ntool-summary') && head) {
-      // A command can finish without changing its row or header element type.
-      patchContent(head, nextHead);
-      // Same early-exit must still refresh the expanded body: a finished command
-      // swaps its streamed placeholder for the captured result.
-      const body = current.querySelector('.ntool-body');
-      const nextBody = next.querySelector('.ntool-body');
-      const placeholder = nextBody?.innerHTML || '';
-      if (body && nextBody && body.innerHTML !== placeholder &&
-          !(placeholder.indexOf('正在读取详情') >= 0 && body.innerHTML.trim() !== '')) {
-        body.innerHTML = placeholder;
-      }
-      return;
-    }
     if (head && nextHead) {
       head.title = nextHead.title || '';
       const icon = head.querySelector('.ntool-icon'), nextIcon = nextHead.querySelector('.ntool-icon');

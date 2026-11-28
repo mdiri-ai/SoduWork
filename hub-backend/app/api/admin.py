@@ -2,8 +2,8 @@
 device management. Superusers see all records; other users see their department subtree and
 unassigned devices. Client.user_ref determines device ownership.
 """
-import hashlib
 import logging
+import re
 import uuid
 from datetime import date as calendar_date
 from datetime import datetime, timedelta, timezone
@@ -20,7 +20,7 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import StreamingResponse
-from pydantic import AwareDatetime
+from pydantic import AwareDatetime, HttpUrl, ValidationError
 from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -66,7 +66,7 @@ from ..services import (
     rbac,
     receipts,
     repository_catalog,
-    storage,
+    task_attachment_uploads,
     work_catalog,
 )
 from ..services import environment_service as environment_service
@@ -1242,25 +1242,10 @@ async def upload_task_attachment(
     vis = await _visible_client_ids(session, user)
     if vis is not None and t.owner_client_id not in vis:
         raise HTTPException(status_code=403, detail="超出作用域")
-    data = await file.read()
-    max_bytes = settings.attach_max_mb * 1024 * 1024
-    if len(data) > max_bytes:
-        raise HTTPException(status_code=413, detail=f"文件超过 {settings.attach_max_mb}MB 上限")
-    if not data:
-        raise HTTPException(status_code=400, detail="空文件")
-    fn = (file.filename or "file").replace("/", "_").replace("\\", "_").strip()[:200] or "file"
-    ct = file.content_type or "application/octet-stream"
-    # The column default is applied at flush; the storage key needs the id now.
-    a = Attachment(id=str(uuid.uuid4()), task_id=tid, filename=fn, content_type=ct, size=len(data),
-                   uploaded_by="admin:" + user.id, evidence_meta={"sha256": hashlib.sha256(data).hexdigest()})
-    a.storage_key = f"att/{tid}/{a.id}/{fn}"
-    a.backend = storage.put(a.storage_key, data, ct)
-    session.add(a)
-    await session.commit()
-    await session.refresh(a)
-    await audit.log(session, user, "task.attachment.upload", "attachment", a.id, fn,
-                    {"taskId": tid, "size": len(data),
-                     "contentType": ct[:120]})
+    a = await task_attachment_uploads.save(session, tid, file, settings=settings,
+                                          account_id=user.id, uploader="admin:" + user.id)
+    await audit.log(session, user, "task.attachment.upload", "attachment", a.id, a.filename,
+                    {"taskId": tid, "size": a.size, "contentType": a.content_type[:120]})
     return attachment_to_api(a)
 
 
@@ -1665,6 +1650,46 @@ async def get_model_def_accounts(session: AsyncSession = Depends(get_session)):
                          for row in rows]}
 
 
+def _provider_base_url(value, kind, previous, allow_root):
+    def error(code, detail):
+        return HTTPException(400, detail, headers={"X-Error-Code": "model.provider.base-url." + code})
+
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise error("invalid", "接口地址必须是文本")
+    base = value.strip()
+    # Keep an existing route usable for unrelated edits, including full-form saves.
+    if previous and previous.kind == kind and base == previous.base_url.strip():
+        return previous.base_url
+    if not base:
+        return ""
+    if len(base) > 400:
+        raise error("invalid", "接口地址最多 400 个字符，请核对服务基础地址")
+    invalid = error("invalid", "请填写有效的 http(s) 服务基础地址，移除账号、查询参数和片段")
+    # URL parsers normalize empty ports, dot segments and malformed separators;
+    # the stored string is used directly when the Hub appends operation paths.
+    authority = re.match(r"https?://([^/]+)", base)
+    if (not authority or "@" in authority[1] or authority[1].endswith(":")
+            or re.search(r"[\s\x00-\x1f\x7f\\?#]", base)
+            or re.search(r"/(?:\.|%2e){1,2}(?:/|$)", base, re.I)):
+        raise invalid
+    try:
+        url = HttpUrl(base)
+    except ValidationError:
+        raise invalid from None
+    if url.port == 0:
+        raise invalid
+    path = (url.path or "").rstrip("/")
+    # Some compatible gateways use /models as their base (e.g. Azure AI Foundry).
+    if path.endswith(("/chat/completions", "/v1/responses", "/v1/models", "/v1/messages")):
+        raise error("operation", "请移除具体的操作名（如 chat/completions 或 models），只填写服务基础地址")
+    if kind != "anthropic" and not path and allow_root is not True:
+        raise error("root", "当前仅填写了主机地址。通常需要添加 /v1（如 https://gateway.example.com/v1）；"
+                    "若服务明确使用根地址，请确认使用根地址（allowRootBaseUrl: true）")
+    return base
+
+
 @router.put("/model-providers/{pid}")
 async def put_model_provider(
     pid: str,
@@ -1675,32 +1700,35 @@ async def put_model_provider(
     """Update a provider; built-in providers may be disabled or reconfigured but not deleted. Empty
     apiKey preserves the stored key.
     """
-    from ..models import ModelProvider
+    from ..models import ModelDef, ModelProvider
     from ..services import model_config_guard
     new_key = str(body.get("apiKey") or "").strip()
     if len(new_key) > 400:
         raise HTTPException(status_code=400, detail="模型服务密钥最多 400 个字符，原密钥未更改")
     p = await model_config_guard.catalog(session, ModelProvider, pid, body.get("expectedRevision"))
+    kind = p.kind if p else "openai-compat"
+    if "kind" in body:
+        kind = str(body.get("kind") or "openai-compat")[:24]
+    base_url = _provider_base_url(body.get("baseUrl", p.base_url if p else ""), kind, p,
+                                  body.get("allowRootBaseUrl"))
     if p is None:
         if len(pid) > 48:
             raise HTTPException(status_code=400, detail="模型服务标识最多 48 个字符，请缩短后再保存")
         p = ModelProvider(id=pid, builtin=False)
         session.add(p)
+    prior_connection = (p.kind, p.base_url, p.api_key)
     if "name" in body:
         p.name = str(body.get("name") or "")[:64]
-    if "kind" in body:
-        p.kind = str(body.get("kind") or "openai-compat")[:24]
-    if "baseUrl" in body:
-        b = str(body.get("baseUrl") or "").strip()[:400]
-        if b and not b.startswith(("http://", "https://")):
-            raise HTTPException(status_code=400, detail="接口地址要以 http(s):// 开头")
-        p.base_url = b
+    p.kind, p.base_url = kind, base_url
     if "enabled" in body:
         p.enabled = bool(body.get("enabled"))
     if "note" in body:
         p.note = str(body.get("note") or "")[:300]
     if new_key:
         p.api_key = new_key
+    if prior_connection != (p.kind, p.base_url, p.api_key):
+        await session.execute(update(ModelDef).where(ModelDef.provider_id == pid,
+                              ModelDef.advertised_ctx_window.is_not(None)).values(advertised_ctx_window=None))
     await session.commit()
     from ..services.client_domain_events import models_changed
     await models_changed(session)
@@ -1783,6 +1811,7 @@ async def test_model_provider_connection(body: dict = Body(default_factory=dict)
 @router.post("/model-providers/{pid}/discover")
 async def discover_model_provider(
     pid: str,
+    model: str | None = None,
     user: User = Depends(require_perm("integration.manage")),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1790,7 +1819,7 @@ async def discover_model_provider(
     come back for review; importing them stays an explicit model-defs write.
     """
     from ..models import ModelDef, ModelProvider
-    from ..services import model_discovery
+    from ..services import model_config_guard, model_discovery
     p = await session.get(ModelProvider, pid)
     if p is None:
         raise HTTPException(status_code=404, detail="这个模型服务不存在")
@@ -1798,7 +1827,13 @@ async def discover_model_provider(
         return {"ok": False, "models": [], "known": [],
                 "code": "model.discovery.provider-incomplete",
                 "detail": "服务需要先启用，并填写地址与密钥后才能读取模型列表"}
+    provider_revision = model_config_guard.revision(p)
     result = await model_discovery.discover(p.base_url, p.api_key, p.kind)
+    result["providerRevision"] = provider_revision
+    if model is not None:
+        result["models"] = [name for name in result["models"] if name == model]
+        result["candidates"] = [row for row in result.get("candidates", []) if row["id"] == model]
+        return result
     existing = (await session.execute(
         select(ModelDef.name).where(ModelDef.provider_id == pid))).scalars().all()
     known = set(existing)
@@ -1877,6 +1912,12 @@ async def put_model_def(
         m.ctx_window = validate_limits(body.get("ctxWindow", m.ctx_window), m.config or {})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if model_catalog.normalize_modality(m.modality) != "chat":
+        m.advertised_ctx_window = None
+    elif "advertisedContextWindow" in body:
+        model_config_guard.verify(provider, body.get("discoveryProviderRevision"))
+        from ..services.context_window import advertised_length
+        m.advertised_ctx_window = advertised_length(body["advertisedContextWindow"]) or None
     receipt = {}
     if created and model_catalog.normalize_modality(m.modality) == "chat":
         receipt = await model_catalog.creation_receipt(session, provider, m)

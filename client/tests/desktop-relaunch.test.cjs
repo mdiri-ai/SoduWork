@@ -211,3 +211,27 @@ test('Linux startup recovery retains priority over file delivery and workspace a
   assert.equal(f.original.visible, false);
   assert.deepEqual(f.errors, []);
 });
+
+for (const platform of ['win32', 'linux']) {
+  test(`${platform} relaunch keeps the desktop overlay as the target while an entry is enabled`, () => {
+    for (const entry of ['dock', 'pet', 'tray']) {
+      for (const [overlay, action] of [['normal', 'overlay.focus'], ['missing', 'overlay.create'], ['emergency', 'overlay.recover']]) {
+        const f = fixture({ platform, overlay });
+        f.preferences[entry] = true;
+        f.launch();
+        assert.ok(f.calls.includes(action), `${entry} enabled with ${overlay} overlay`);
+        assert.equal(f.original.minimized, true);
+        assert.equal(f.created.length, 0);
+        assert.equal(f.preferences[entry], true);
+      }
+    }
+  });
+}
+
+test('macOS relaunch continues to open the workspace with desktop entries enabled', () => {
+  const f = fixture({ platform: 'darwin' });
+  f.preferences.pet = true;
+  f.launch();
+  assert.equal(f.original.focused, true);
+  assert.ok(!f.calls.includes('overlay.focus'));
+});

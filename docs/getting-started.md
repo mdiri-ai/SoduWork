@@ -116,7 +116,7 @@ Administrator: admin
 .\start.cmd --check --desktop
 ```
 
-`--check` 只读检查依赖和路径风险，不创建探测文件；检查通过不代表后续所有安装步骤都一定成功。随后在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
+`--check` 检查依赖和路径风险，然后尝试绑定指定的 `--host` 和 `--port`，并立即释放端口。如果端口已被占用，请用 `--port` 选择空闲端口，启动时沿用同一设置。检查通过不代表后续所有安装步骤都一定成功。随后在 PowerShell 中运行 `.\start.cmd --desktop`；在命令提示符（CMD）中运行 `start.cmd --desktop`。两种终端都可使用，不需要避开 CMD。
 
 路径诊断采用中英双语。重定向输出时保留当前编码；无法表示的字符使用转义形式，避免中断启动，英文处理说明仍然可读。
 

@@ -80,9 +80,9 @@ async function fixture(t, rows = [remote()]) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cloud-sync-'));
   const app = { getPath: () => root }, controllers = [], views = [], calls = [];
   let actor = identity(), intercept = null;
-  const request = async (who, route) => {
+  const request = async (who, route, options) => {
     calls.push({ who, route });
-    if (intercept) { const result = await intercept(who, route); if (result !== undefined) return result; }
+    if (intercept) { const result = await intercept(who, route, options); if (result !== undefined) return result; }
     const url = new URL(route, 'https://fixture.invalid');
     if (url.pathname === '/cloud-execution-sync') {
       const after = url.searchParams.get('after') || '', limit = Number(url.searchParams.get('limit'));
@@ -305,6 +305,125 @@ test('a lost create response is reconciled into its original frozen session afte
   const entries = await fs.readdir(path.join(f.root, 'conversation-handoffs'));
   assert.equal(entries.filter(name => /^[a-f0-9]{64}\.json$/.test(name)).length, 1);
   assert.equal(entries.filter(name => name.endsWith('.view.json')).length, 1);
+});
+
+async function firstSendConfirmation(t, { origin = true, accepted = false, replaceConfirmation = false } = {}) {
+  const row = remote(), execution = row.execution, { transferId } = row.receipt;
+  const { sessionId } = row.receipt.source;
+  row.receipt = { ...row.receipt, phase: 'prepared', ref: '', accepted, canAbort: !accepted,
+    error: accepted ? '' : 'Confirm the new model version',
+    confirmationGeneration: accepted ? undefined : 'b'.repeat(32) };
+  row.execution = null;
+  const f = await fixture(t, [row]), cloud = f.controller();
+  if (!origin) f.actor(identity('alice', 'another-device'));
+  const startRoute = '/cloud-conversations/' + transferId;
+  const abortRoute = '/conversation-handoffs/' + transferId + '/abort';
+  f.intercept(async (_actor, route, options) => {
+    if (route === startRoute) {
+      assert.equal(options.method, 'POST');
+      const saved = JSON.parse(options.body.get('options'));
+      assert.equal(saved.sessionId, sessionId);
+      assert.equal(saved.model, 'managed-fixture');
+      const [file] = options.body.getAll('files');
+      assert.equal(file.name, 'draft.txt');
+      assert.equal(await file.text(), 'frozen input');
+      const count = f.calls.filter(call => call.route === startRoute).length;
+      if (count === 1) {
+        assert.equal(options.body.get('confirmation_generation'), null);
+        if (accepted) return row.receipt;
+        throw Object.assign(Error('Confirm the new model version'), { status: 409 });
+      }
+      assert.equal(options.body.get('confirmation_generation'), row.receipt.confirmationGeneration);
+      if (count === 2 && replaceConfirmation) {
+        row.receipt = { ...row.receipt, confirmationGeneration: 'c'.repeat(32) };
+        return row.receipt;
+      }
+      row.execution = execution;
+      row.receipt = { ...row.receipt, phase: 'committed', ref: execution.ref, accepted: true, canAbort: false,
+        error: '', confirmationGeneration: undefined };
+      return row.receipt;
+    }
+    if (route === abortRoute) {
+      assert.equal(options.method, 'POST');
+      row.receipt = { ...row.receipt, phase: 'aborted', canAbort: false };
+      return row.receipt;
+    }
+    if (route.startsWith('/cloud-execution-sync/') && !row.execution) {
+      return { conversation: row, page: null, messages: [], approvals: [], attachments: [] };
+    }
+  });
+  if (origin) {
+    const start = cloud.start({ requestId: transferId, agentId: 'pi', text: 'Cloud first message', model: 'managed-fixture',
+      attachments: [{ name: 'draft.txt', data: Buffer.from('frozen input') }] });
+    if (accepted) assert.equal((await start).handoff.accepted, true);
+    else await assert.rejects(start, { status: 409 });
+  }
+  assert.equal((await cloud.synchronization.tick()).ok, true);
+  const id = (await cloud.history()).chats[0].id;
+  if (origin) assert.equal(id, sessionId);
+  else assert.notEqual(id, sessionId);
+  const view = await cloud.reopen(id, 'first-send-confirmation');
+  f.views.push(view);
+  const state = view.snapshot().cloudHandoff;
+  assert.equal(state.phase, 'prepared');
+  assert.equal(state.canAbort, !accepted);
+  assert.equal(state.outputPending, false);
+  assert.equal(state.confirmationGeneration, origin && !accepted ? row.receipt.confirmationGeneration : undefined);
+  return { cloud, view, state, requests: route => f.calls.filter(call => call.route === route).length, startRoute, abortRoute,
+    publishConfirmation: async confirmationGeneration => {
+      row.receipt = { ...row.receipt, confirmationGeneration };
+      assert.equal((await cloud.synchronization.tick()).ok, true);
+    },
+  };
+}
+
+test('explicit retry after syncing a model conflict resends the frozen first message once', async t => {
+  const f = await firstSendConfirmation(t);
+  assert.equal(f.requests(f.startRoute), 1, 'background sync must not issue a first-send POST');
+  const retry = f.cloud.recover(f.view, { confirmationGeneration: f.state.confirmationGeneration });
+  await assert.rejects(f.cloud.recover(f.view, { confirmationGeneration: f.state.confirmationGeneration }), /正在处理这条会话的云端交接/);
+  assert.equal((await retry).handoff.phase, 'committed');
+  assert.equal((await f.cloud.recover(f.view)).handoff.phase, 'committed');
+  assert.equal(f.requests(f.startRoute), 2);
+});
+
+test('a replaced model confirmation waits for another explicit click before resubmission', async t => {
+  const f = await firstSendConfirmation(t, { replaceConfirmation: true });
+  const pending = await f.cloud.recover(f.view, { confirmationGeneration: f.state.confirmationGeneration });
+  assert.equal(pending.handoff.phase, 'prepared');
+  assert.equal(pending.handoff.accepted, false);
+  assert.equal(f.requests(f.startRoute), 2, 'the same click cannot submit the new generation');
+  assert.notEqual(pending.handoff.confirmationGeneration, f.state.confirmationGeneration);
+  assert.equal((await f.cloud.recover(f.view, { confirmationGeneration: pending.handoff.confirmationGeneration })).handoff.phase, 'committed');
+  assert.equal(f.requests(f.startRoute), 3);
+});
+
+test('an open dialog can only confirm the generation it displayed before account sync', async t => {
+  const f = await firstSendConfirmation(t);
+  const replacement = 'c'.repeat(32);
+  await f.publishConfirmation(replacement);
+  const reviewed = await f.cloud.recover(f.view, { confirmationGeneration: f.state.confirmationGeneration });
+  assert.equal(reviewed.handoff.confirmationGeneration, replacement);
+  assert.equal((await f.cloud.recover(f.view)).handoff.phase, 'prepared');
+  assert.equal(f.requests(f.startRoute), 1, 'stale or missing dialog acknowledgement must not POST');
+  assert.equal((await f.cloud.recover(f.view, { confirmationGeneration: replacement })).handoff.phase, 'committed');
+  assert.equal(f.requests(f.startRoute), 2);
+});
+
+test('a synced model conflict can be aborted without resending the first message', async t => {
+  const f = await firstSendConfirmation(t);
+  assert.equal((await f.cloud.abort(f.view)).handoff.phase, 'aborted');
+  assert.equal((await f.cloud.recover(f.view)).handoff, null);
+  assert.equal(f.requests(f.abortRoute), 1);
+  assert.equal(f.requests(f.startRoute), 1);
+});
+
+for (const [title, state, posts] of [
+  ['accepted', { accepted: true }, 1], ['without an original first message', { origin: false }, 0],
+]) test('sync-only recovery leaves a prepared cloud session ' + title + ' without resubmission', async t => {
+  const f = await firstSendConfirmation(t, state);
+  assert.equal((await f.cloud.recover(f.view)).handoff.phase, 'prepared');
+  assert.equal(f.requests(f.startRoute), posts);
 });
 
 test('an empty local taskId cannot claim a cloud row with a different request or an unbound frozen start', async t => {

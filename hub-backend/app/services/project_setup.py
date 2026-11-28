@@ -346,7 +346,7 @@ async def preflight(session: AsyncSession, project: models.Project,
                 ai_remote.git_probe_sync,
                 {"provider": "runner", "runnerId": runner.id},
                 {"gitUrl": repo.git_url, "target": target,
-                 "git": code_creds.resolve(credential_client) if credential_client else {},
+                 "git": code_creds.for_repo(credential_client, repo.git_url) if credential_client else {},
                  "taskId": f"preflight-{repo.id}"})
         summary = str(result.get("error") or (
             f"已从 {runner.host} 读取 {target}" if result.get("ok") and runner else

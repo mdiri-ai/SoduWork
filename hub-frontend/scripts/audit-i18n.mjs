@@ -12,10 +12,44 @@ const han = /[\u3400-\u9fff]/
 const ui = [], unmarked = []
 const isCall = (p, name) => p?.isCallExpression() && p.node.callee.name === name
 function isTranslatedLiteral(p) {
+  if (p.parentPath?.isArrayExpression() && isDestructuredIntoTranslation(p)) return true
   // Only value branches reach tx. Conditions and nested data-building calls
   // remain subject to their normal literal review rules.
   while (p.parentPath?.isConditionalExpression() && ['consequent', 'alternate'].includes(p.key)) p = p.parentPath
   return isCall(p.parentPath, 'tx') && p.key === 0
+}
+
+// Limit inference to literal rows consumed directly by for-of or map. A filter
+// returns the original rows, and a map callback's third argument can read them raw.
+function rowPattern(rows) {
+  const consumer = rows.parentPath
+  if (consumer.isForOfStatement() && rows.key === 'right') {
+    const left = consumer.get('left')
+    if (left.isVariableDeclaration()) return left.get('declarations')[0].get('id')
+  }
+  if (consumer.isMemberExpression() && rows.key === 'object' &&
+      !consumer.node.computed && consumer.get('property').isIdentifier({ name: 'map' })) {
+    const call = consumer.parentPath
+    if (!call.isCallExpression() || consumer.key !== 'callee') return null
+    const callback = call.get('arguments')[0]
+    if (callback?.isArrowFunctionExpression() && callback.node.params.length === 1) {
+      return callback.get('params')[0]
+    }
+  }
+  return null
+}
+
+function isDestructuredIntoTranslation(p) {
+  const row = p.parentPath
+  const rows = row.parentPath
+  if (!rows.isArrayExpression() || row.node.elements.some(element => element?.type === 'SpreadElement')) return false
+  const pattern = rowPattern(rows)
+  if (!pattern?.isArrayPattern()) return false
+  const slot = pattern.get('elements')[p.key]
+  if (!slot?.isIdentifier()) return false
+  const binding = slot.scope.getBinding(slot.node.name)
+  return Boolean(binding?.constant && binding.referencePaths.length &&
+    binding.referencePaths.every(ref => isCall(ref.parentPath, 'tx') && ref.key === 0))
 }
 const files = [path.join(root, 'src'), path.join(root, 'src/screens')].flatMap(dir =>
   fs.readdirSync(dir).filter(name => /\.(jsx|js)$/.test(name) && name !== 'i18n.js').map(name => path.join(dir, name)))
@@ -37,6 +71,9 @@ for (const file of files) {
       const name = p.findParent(q => q.isVariableDeclarator())?.node.id.name
       const property = p.findParent(q => q.isObjectProperty())?.node.key.name
       if (['STARTER', 'defaults', 'blank'].includes(name)) return
+      // The clause-number formatter keeps Chinese numeral tables in `digits`/`units`.
+      // They are algorithm data rather than display copy, so they stay untranslated.
+      if (file.endsWith('legal-docx-layout.js') && ['digits', 'units'].includes(name)) return
       if (['title', 'name'].includes(property) && ['新的一步', '新分类'].includes(value)) return
       record(unmarked, p.node, value, 'literal-review')
     },

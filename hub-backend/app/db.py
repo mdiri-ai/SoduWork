@@ -108,6 +108,7 @@ async def init_db() -> None:
 # Compatibility columns used only during adoption of pre-Alembic databases.
 # Existing columns are unchanged; normal versioned upgrades use Alembic.
 _WANT_COLUMNS = {
+    "model_def": [("advertised_ctx_window", "INTEGER")],
     "ai_usage_event": [("reported_chat_session_id", "VARCHAR(180)")],
     "attachment": [
         # Associate new evidence with its execution and workflow node while retaining legacy compatibility.
@@ -428,12 +429,15 @@ def _ensure_columns(conn) -> None:
 
 
 def _backfill_data(conn) -> None:
-    """Backfill missing start_at from creation time and completed-task actual_end_at from update
-    time. Preserve existing schedules and keep repeated execution idempotent.
+    """Backfill missing schedules and completion times from recorded task facts.
+    Preserve existing timestamps and keep repeated execution idempotent.
     """
     import hashlib
+    import json
+    from datetime import datetime, timezone
     from importlib import import_module
-    from sqlalchemy import text
+
+    from sqlalchemy import DateTime, bindparam, text
 
     # Legacy adoption is stamped at head; preserve the same usage baseline as
     # the versioned migration before accepting new cumulative reports.
@@ -465,6 +469,35 @@ def _backfill_data(conn) -> None:
             "THEN COALESCE(activated_at,CURRENT_TIMESTAMP) ELSE NULL END "
             "WHERE id=:id"
         ), {"digest": digest, "state": state, "activate": state == "active", "id": row["id"]})
+    # An explicit completion predates later metadata edits. Prefer the latest
+    # recorded done entry before falling back to updated_at for older tasks.
+    completion_update = text(
+        "UPDATE task SET actual_end_at=:completed WHERE id=:id AND actual_end_at IS NULL"
+    ).bindparams(bindparam("completed", type_=DateTime(timezone=True)))
+    for row in conn.execute(text(
+        "SELECT id, progress FROM task WHERE actual_end_at IS NULL AND status = 'done'"
+    )).mappings().all():
+        progress = row["progress"]
+        if isinstance(progress, str):
+            try:
+                progress = json.loads(progress)
+            except ValueError:
+                continue
+        completed = None
+        for entry in progress if isinstance(progress, list) else []:
+            if not isinstance(entry, dict) or entry.get("status") != "done":
+                continue
+            at = entry.get("at")
+            if isinstance(at, bool) or not isinstance(at, (int, float)):
+                continue
+            try:
+                recorded = datetime.fromtimestamp(at / 1000, tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                continue
+            if completed is None or recorded > completed:
+                completed = recorded
+        if completed is not None:
+            conn.execute(completion_update, {"id": row["id"], "completed": completed})
     for sql in (
         "UPDATE task SET start_at = created_at WHERE start_at IS NULL AND created_at IS NOT NULL",
         "UPDATE task SET actual_end_at = updated_at WHERE actual_end_at IS NULL AND status = 'done' AND updated_at IS NOT NULL",

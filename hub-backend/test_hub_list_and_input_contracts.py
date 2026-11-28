@@ -68,6 +68,19 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, expected, (method, path, response.status_code))
         return response.json()
 
+    async def test_create_task_rejects_missing_or_blank_title(self):
+        schemas = self.app.openapi()["components"]["schemas"]
+        self.assertIn("title", schemas["TaskCreate"]["required"])
+        self.assertNotIn("default", schemas["TaskCreate"]["properties"]["title"])
+        self.assertNotIn("title", schemas["TaskSyncCreate"].get("required", []))
+        for body in ({}, {"title": ""}, {"title": "  "}, {"assigneeUserId": "missing"}):
+            with self.subTest(body=body):
+                result = await self.request("POST", "tasks", 400, json=body)
+                self.assertEqual(result["detail"], "请填写需求标题")
+        await self.request("POST", "tasks", 422, json={"due": True})
+        async with self.sessions() as session:
+            self.assertEqual(await session.scalar(select(func.count()).select_from(models.Task)), 0)
+
     async def test_invalid_team_scope_preserves_setting_and_audit(self):
         path = "admin/team-module-scope"
         await self.request("PUT", path, json={"scope": " EVERYONE "})
@@ -472,6 +485,11 @@ class HubContractTests(unittest.IsolatedAsyncioTestCase):
                            json={"key": "testing", "tier": "unlisted"})
         env = await self.request("POST", "admin/environments", json={"key": "testing", "name": ""})
         self.assertEqual(env["name"], "testing")
+        endpoint = f"admin/environments/{env['id']}"
+        for body in ({"name": ""}, {"name": "  "}, {"orgId": "row-1", "name": "Changed"}):
+            await self.request("PATCH", endpoint, 422, json=body)
+        saved = await self.request("PATCH", endpoint, json={"orgId": env.get("orgId")})
+        self.assertEqual((saved["name"], saved.get("orgId")), ("testing", env.get("orgId")))
         await self.request("PATCH", f"admin/environments/{env['id']}", 400, json={"tier": "unlisted"})
         await self.request("POST", "admin/work-catalog/professions", 400,
                            json={"orgId": "row-0", "name": "Analyst", "category": "unlisted"})

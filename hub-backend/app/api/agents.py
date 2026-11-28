@@ -313,13 +313,18 @@ async def get_my_git(
     """Return the client's Git identity, masked credential metadata, and configured repository URLs
     suitable for a connection probe.
     """
+    from ..services import code_creds
+    return {"git": code_creds.api_view(client), "repos": await _visible_git_repos(client, session)}
+
+
+async def _visible_git_repos(client: Client, session: AsyncSession) -> list[dict]:
     from sqlalchemy import or_, select
 
     from ..models import Project, Repo, User
-    from ..services import code_creds, rbac
+    from ..services import rbac
     from ..services.repo_urls import git_probe_url
 
-    result = {"git": code_creds.api_view(client), "repos": []}
+    result = []
     user = await session.get(User, client.user_ref) if client.user_ref else None
     if not user or not user.is_active or user.account_deleted_at:
         return result
@@ -335,7 +340,7 @@ async def get_my_git(
     for repo in await session.execute(query):
         url = git_probe_url(repo.git_url)
         if url:
-            result["repos"].append({"id": repo.id, "name": repo.name, "url": url})
+            result.append({"id": repo.id, "name": repo.name, "url": url})
     return result
 
 
@@ -373,6 +378,12 @@ async def test_my_git(
     git = code_creds.resolve(client)
     if not git:
         raise HTTPException(status_code=400, detail="还什么都没配")
+    host = code_creds.https_host(url)
+    if host:
+        repos = await _visible_git_repos(client, session)
+        match = next((repo for repo in repos if code_creds.https_host(repo["url"]) == host), None)
+        if match:
+            git = code_creds.for_repo(client, match["url"])
     return await _aio.to_thread(code_creds.probe_sync, git, url)
 
 

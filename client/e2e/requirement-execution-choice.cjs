@@ -151,6 +151,12 @@ if (typeof electron === 'string') {
           availability:{agentReason:'本次未发现后台 Runner'}};
       };
       window.SoduWorkAPI={clientId:'fixture-client',getTask:async()=>clone(taskFixture),getTasksSnapshot:async()=>({online:true,items:[clone(taskFixture)]}),
+        pluginCatalog:async()=>({items:fixture.mode==='local-catalog' ? [
+          {pluginId:'local:personal-method',personal:true,name:'个人方法'},
+          {pluginId:'enterprise-method',installed:true,name:'企业方法',inputs:[{key:'region',label:'区域',required:true}]},
+          {pluginId:'local:disabled-method',personal:true,enabled:false,name:'停用方法'},
+          {pluginId:'uninstalled-method',name:'未安装方法'},
+        ] : []}),
         listAttachments:async()=>[{name:'需求原文.txt',byAgent:false}],listTeammates:async()=>({mates:fixture.mode==='mates'?
           [{id:'fixture-colleague',name:'测试同事',org:'体验组',canReceive:true,deviceCount:2},
             {id:'fixture-offline',name:'尚未启用同事',org:'体验组',canReceive:false}]:[]}),taskStorageKey:()=> 'isolated-executor',
@@ -182,6 +188,8 @@ if (typeof electron === 'string') {
       window.RequirementsBoard={refresh:async()=>{}};void 0;`);
     const scripts = ['components/panels/panels-icons.js', 'core/requirement-session-context.js',
       'components/panels/task-execution-context.js', 'components/panels/task-execution-client.js',
+      'components/panels/chat-plugin-mention-model.js', 'components/panels/plugin-ui-host.js',
+      'components/panels/plugin-input-sheet.js',
       'components/panels/panels-forward-select.js',
       'components/panels/panels-forward-plugin.js', 'components/panels/panels-forward-picker.js',
       'components/panels/panels-forward-options.js', 'components/panels/panels-forward.js',
@@ -242,6 +250,29 @@ if (typeof electron === 'string') {
       await open('filter');row.state=await state();const ids=row.state.plugins.map(o=>o.value);
       assert(ids.includes('flow-office'));assert(ids.includes('installed-method'));assert(ids.includes('fixed-method'));
       assert(ids.includes('legacy-builtin'));assert(!ids.includes('market-method'));assert(!ids.includes('org-method'));assert.equal(row.state.plugins.find(o=>o.value==='blocked').disabled,true);
+    });
+    await run('个人和已安装企业插件同列，确认后携带插件 ID 和必填参数派发',async row=>{
+      await open('local-catalog');
+      await until(`Boolean(document.querySelector('#fwdPluginSelect option[value="conversation:enterprise-method"]:not(:disabled)')) && !_fwdLocalLoading`);
+      row.state=await state();
+      const option=id=>row.state.plugins.find(o=>o.value==='conversation:'+id);
+      assert.equal(option('local:personal-method').disabled,false);
+      assert.equal(option('enterprise-method').disabled,false);
+      assert.equal(option('local:disabled-method').disabled,true);
+      assert.equal(option('uninstalled-method'),undefined);
+      await choosePopup('fwdPluginSelect','conversation:enterprise-method');
+      assert(!((await state()).calls.some(c=>['plugin','direct','native'].includes(c.kind))));
+      await click('#fwdConfirm');
+      await until(`Boolean(document.querySelector('.pis-form [name="region"]'))`);
+      await click('.pis-form [type="submit"]');
+      assert(!((await state()).calls.some(c=>['plugin','direct','native'].includes(c.kind))));
+      await js(`document.querySelector('.pis-form [name="region"]').value='华东';void 0;`);
+      await click('.pis-form [type="submit"]');
+      await until(`calls.some(c=>c.kind==='direct')`);
+      row.dispatched=await js(`calls.find(c=>c.kind==='direct').args.at(-1)`);
+      assert.deepEqual(row.dispatched.inputValues,{region:'华东'});
+      assert.equal(row.dispatched.pluginId,'enterprise-method');
+      assert.equal(await js(`calls.filter(c=>['plugin','direct','native'].includes(c.kind)).length`),1);
     });
     await run('主题选择器支持真实鼠标和键盘，选择本身不派发',async row=>{
       await open('multi');await openPicker('fwdAgentSelect');await key('End');await key('Enter');

@@ -276,11 +276,11 @@
           const result = options.state().draftOnly ? options.draft.selectRuntime(selectedId)
             : await api().selectAgent(activeRef, selectedId);
           if (token !== generation || !currentScope(identity)) return false;
-          if (!result?.ok) throw Error(result?.reason || tx('切换未完成，原会话已保留'));
+          if (!result?.ok) throw Error(result?.reason || '切换未完成，原会话已保留');
           checkingId = ''; options.runtimeSelected?.(result); close(); return true;
         } catch (error) {
           if (token === generation && currentScope(identity)) {
-            checkingId = ''; if (status) status.textContent = error.message;
+            checkingId = ''; if (status) status.textContent = tx(error.message);
             pop.querySelectorAll('[data-runtime]').forEach(b => { b.disabled = false; });
           }
           return false;

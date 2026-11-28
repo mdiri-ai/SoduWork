@@ -70,20 +70,96 @@ test('the provider form tests current draft credentials and discards results aft
   const current = testConnection()
   requests[1].resolve({ ok: true, models: ['fixture-a', 'fixture-b'] })
   await current
-  const result = () => React.Children.toArray(status()[0].props.children.props.children).join('')
+  const result = () => renderToStaticMarkup(status()[0])
   assert.match(result(), /2 个模型/)
   assert.match(result(), /0 个声明支持对话，2 个用途未确认/)
   assert.match(result(), /fixture-a, fixture-b/)
   assert.match(result(), /确认额度/)
   const classified = testConnection()
-  requests[2].resolve({ ok: true, models: ['chat', 'decision', 'unknown'], counts: { total: 3, chat: 1, unknown: 1 } })
+  requests[2].resolve({ ok: true, path: '/v1/models', models: ['chat', 'decision', 'unknown'], counts: { total: 3, chat: 1, unknown: 1 } })
   await classified
   assert.match(result(), /3 个模型/)
   assert.match(result(), /1 个声明支持对话，1 个用途未确认/)
+  assert.match(result(), /备用路径 \/v1\/models/)
+  assert.doesNotMatch(result(), /\/v1\/v1/)
   change(node => node.type?.name === 'SelectMenu', 'anthropic')
   assert.equal(status().length, 0)
   assert.equal(form.nodes(node => node.props.placeholder === 'https://api.anthropic.com').length, 1)
   assert.equal(form.nodes(node => node.type === 'label' && node.props.children === 'Anthropic 服务根地址').length, 1)
+})
+
+async function providerEditor(t, initial) {
+  const writes = []
+  const form = await mount(t, {}, {
+    privateExports: ['ProviderForm'], exportName: 'ProviderForm',
+    props: { initial, onSaved() {} },
+    api: { saveModelProvider: async (id, body) => writes.push({ id, ...body }) },
+  })
+  const field = select => form.nodes(select)[0]
+  const change = (select, value) => form.act(() => field(select).props.onChange({ target: { value } }))
+  if (!initial) {
+    change(n => n.props.placeholder === '如 my-gateway', 'test')
+    change(n => n.props.placeholder?.includes('研发网关'), 'Test')
+  }
+  return {
+    writes, form,
+    address: value => change(n => n.props['aria-invalid'] !== undefined, value),
+    kind: value => change(n => n.type?.name === 'SelectMenu', value),
+    root: () => field(n => n.props.type === 'checkbox'),
+    error: () => field(n => n.props.role === 'alert'),
+    save: () => buttons(form, form.render().props.foot).find(n => n.props.className === 'btn btn-primary').props.onClick(),
+  }
+}
+
+test('openai root consent belongs to this address and protocol, with an actionable inline error', async t => {
+  const f = await providerEditor(t)
+  f.address('https://gateway.example.com/')
+  await f.save()
+  const input = f.form.nodes(n => n.props['aria-invalid'] === true)[0]
+  assert.equal(input.props['aria-describedby'], f.error().props.id)
+  assert.match(f.error().props.children, /https:\/\/gateway.example.com\/v1/)
+  assert.equal(f.writes.length, 0)
+  f.form.act(() => f.root().props.onChange({ target: { checked: true } }))
+  await f.save()
+  assert.equal(f.writes.at(-1).allowRootBaseUrl, true)
+  assert.equal(f.writes.at(-1).baseUrl, 'https://gateway.example.com/')
+  f.address('https://other.example.com')
+  assert.equal(f.root().props.checked, false)
+  await f.save()
+  assert.equal(f.writes.length, 1)
+  f.form.act(() => f.root().props.onChange({ target: { checked: true } }))
+  f.kind('anthropic')
+  assert.equal(f.root(), undefined)
+  await f.save()
+  assert.equal(f.writes.at(-1).kind, 'anthropic')
+  assert.equal(f.writes.at(-1).allowRootBaseUrl, undefined)
+  f.kind('openai-compat')
+  assert.equal(f.root().props.checked, false)
+})
+
+test('provider edits preserve stored roots, empty drafts and vendor prefixes; reject malformed or operation URLs', async t => {
+  const initial = { id: 'existing', name: 'Existing', kind: 'openai-compat', baseUrl: 'https://gateway.example', note: '', revision: 'r1' }
+  const f = await providerEditor(t, initial)
+  assert.equal(f.root(), undefined)
+  await f.save()
+  assert.equal(f.writes[0].expectedRevision, 'r1')
+  assert.equal(f.writes[0].allowRootBaseUrl, undefined)
+  const valid = ['', '/v1/', '/api/v3', '/api/paas/v4', '/v1beta/openai', '/models', '/teams/messages', '/responses']
+    .map(path => path && initial.baseUrl + path)
+  for (const url of valid) {
+    f.address(url)
+    await f.save()
+    assert.equal(f.writes.at(-1).baseUrl, url)
+    assert.equal(f.writes.at(-1).allowRootBaseUrl, undefined)
+  }
+  for (const url of ['gateway.example', 'https:///path', 'https://host:bad/v1', 'https://host:/v1',
+    'https://user@host/v1', 'https://host:0/v1', 'https://host/v1?', 'https://host/v1#', 'https://host/xy/../',
+    'https://host/v1/models/', 'https://host/v1/chat/completions', 'https://host/v1/messages', 'https://host/v1/responses']) {
+    f.address(url)
+    await f.save()
+    assert.ok(f.error(), url)
+    assert.equal(f.writes.length, valid.length + 1, url)
+  }
 })
 
 async function discovery(t, result) {
@@ -134,6 +210,16 @@ test('discovery filters by purpose and preserves only explicitly selected models
   assert.deepEqual(form.saved.map(({ name, modality, enabled }) => [name, modality, enabled]), [
     ['alpha-media', 'video', true], ['alpha-unknown', 'video', true],
   ])
+})
+
+test('batch chat imports forward the discovered window and provider revision with one discovery', async t => {
+  const form = await discovery(t, { ok: true, models: ['alpha'], providerRevision: 'p1',
+    candidates: [{ id: 'alpha', status: 'declared', purposes: ['chat'], advertisedContextWindow: 1048576 }] })
+  form.selectVisible()
+  await form.submit().onClick()
+  assert.equal(form.saved[0].advertisedContextWindow, 1048576)
+  assert.equal(form.saved[0].discoveryProviderRevision, 'p1')
+  assert.equal(form.saved[0].ctxWindow, undefined)
 })
 
 test('name-only discovery requires a separate confirmation for each unknown model', async t => {

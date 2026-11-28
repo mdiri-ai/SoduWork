@@ -404,17 +404,38 @@ function ProviderMoreActions({ provider, onToggle, onDelete }) {
 }
 
 
+function providerAddressIssue(address, kind) {
+  if (!address) return ''
+  const authority = /^https?:\/\/([^/]+)/.exec(address)?.[1]
+  if (!authority || authority.includes('@') || authority.endsWith(':') || [...address].length > 400 ||
+      /[\s\\?#\x00-\x1f\x7f]/.test(address) || /\/(?:\.|%2e){1,2}(?:\/|$)/i.test(address)) return 'invalid'
+  let url
+  try { url = new URL(address) } catch { return 'invalid' }
+  if (url.port === '0') return 'invalid'
+  const path = url.pathname.replace(/\/+$/, '')
+  if (/\/(?:chat\/completions|v1\/(?:responses|models|messages))$/.test(path)) return 'operation'
+  return !path && kind !== 'anthropic' ? 'root' : ''
+}
+
 function ProviderForm({ initial, onClose, onSaved }) {
   const uiLocale = useLocale();
   const editing = !!initial
   const [id, setId] = useState(initial ? initial.id : '')
   const [name, setName] = useState(initial ? initial.name : '')
-  const [kind, setKind] = useState(initial ? initial.kind : 'openai-compat')
+  const [kind, setKind] = useState(initial?.kind || 'openai-compat')
   const [baseUrl, setBaseUrl] = useState(initial ? initial.baseUrl : '')
   const [note, setNote] = useState(initial ? initial.note : '')
   const [apiKey, setApiKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [connection, setConnection] = useState(null)
+  const [allowRoot, setAllowRoot] = useState(false)
+  const [addressError, setAddressError] = useState('')
+  const addressId = useId()
+  const addressRef = useRef(null)
+  const address = baseUrl.trim()
+  const unchanged = editing && kind === (initial.kind || 'openai-compat') && address === (initial.baseUrl || '').trim()
+  const issue = unchanged ? '' : providerAddressIssue(address, kind)
+  const example = kind === 'anthropic' ? 'https://api.anthropic.com' : 'https://gateway.example.com/v1'
   const activeTest = useRef(null)
   useEffect(() => () => { activeTest.current = null }, [])
 
@@ -422,6 +443,17 @@ function ProviderForm({ initial, onClose, onSaved }) {
     activeTest.current = null
     setConnection(null)
     setValue(value)
+  }
+
+  function changeAddress(setValue, value) {
+    setAllowRoot(false)
+    setAddressError('')
+    changeConnection(setValue, value)
+  }
+
+  function showAddressError(code) {
+    setAddressError(code)
+    addressRef.current?.focus()
   }
 
   async function testConnection() {
@@ -443,22 +475,26 @@ function ProviderForm({ initial, onClose, onSaved }) {
     const pid = (editing ? initial.id : id).trim()
     if (!pid) { toast(tx("给这个服务起一个英文标识（如 my-gateway）")); return }
     if (!name.trim()) { toast(tx("填一个给人看的名字")); return }
-    if (baseUrl && !/^https?:\/\//.test(baseUrl.trim())) { toast(tx("接口地址要以 http(s):// 开头")); return }
+    if (issue && !(issue === 'root' && allowRoot)) { showAddressError(issue); return }
     setBusy(true)
     try {
       await api.saveModelProvider(pid, {
         expectedRevision: initial?.revision || 'new',
-        name: name.trim(), kind, baseUrl: baseUrl.trim(), note: note.trim(),
+        name: name.trim(), kind, baseUrl: address, note: note.trim(),
+        ...(issue === 'root' && allowRoot ? { allowRootBaseUrl: true } : {}),
         ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
       })
       toast(apiKey.trim() ? tx("已保存，密钥已更新") : tx("已保存（密钥未改动）"))
       onSaved(pid)
-    } catch (e) { toast(tx("保存失败：") + (e.message || e)) }
+    } catch (e) {
+      if (e.code?.startsWith('model.provider.base-url.')) showAddressError(e.code.split('.').pop())
+      else toast(tx("保存失败：") + (e.message || e))
+    }
     setBusy(false)
   }
 
   return (
-    <Modal draft={{ id, name, kind, baseUrl, note, apiKey }} title={editing ? tx("配置「{0}」", [initial.name]) : tx("接一个模型服务")} icon="plug" busy={busy} onClose={onClose}
+    <Modal draft={{ id, name, kind, baseUrl, note, apiKey, allowRoot }} title={editing ? tx("配置「{0}」", [initial.name]) : tx("接一个模型服务")} icon="plug" busy={busy} onClose={onClose}
       foot={dismiss => <><button className="btn btn-ghost" disabled={busy} onClick={dismiss}>{tx("取消")}</button>
         <button className="btn" disabled={busy || connection?.pending} onClick={testConnection}>
           {connection?.pending ? tx("测试中…") : tx("测试连接")}</button>
@@ -473,14 +509,24 @@ function ProviderForm({ initial, onClose, onSaved }) {
           placeholder={tx("给人看的名字，如「研发网关」")} autoFocus={editing} /></div>
       <div style={{ marginTop: 12 }}><label className="f-lbl">{tx("接口协议")}</label>
         <SelectMenu className="f-in" value={kind} disabled={editing && initial.builtin}
-          onChange={(e) => changeConnection(setKind, e.target.value)}>
+          onChange={(e) => changeAddress(setKind, e.target.value)}>
           {KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </SelectMenu>
         <div className="muted" style={{ fontSize: 14.5, marginTop: 6, lineHeight: 1.7 }}>{tx("绝大多数都选「OpenAI 兼容」：自建网关、vLLM、Ollama、各家中转、以及国内几家的兼容端点都走这一档。")}</div></div>
-      <div style={{ marginTop: 12 }}><label className="f-lbl">
-        {kind === 'anthropic' ? tx("Anthropic 服务根地址") : tx("接口地址（含 /v1）")}</label>
-        <input className="f-in" value={baseUrl} onChange={(e) => changeConnection(setBaseUrl, e.target.value)}
-          placeholder={kind === 'anthropic' ? 'https://api.anthropic.com' : 'https://gateway.example.com/v1'} /></div>
+      <div style={{ marginTop: 12 }}><label className="f-lbl" htmlFor={addressId}>
+        {kind === 'anthropic' ? tx("Anthropic 服务根地址") : tx("OpenAI 兼容接口基础地址")}</label>
+        <input className="f-in" id={addressId} ref={addressRef} value={baseUrl} placeholder={example}
+          aria-invalid={!!addressError} aria-describedby={addressError ? addressId + '-error' : undefined}
+          onChange={(e) => changeAddress(setBaseUrl, e.target.value)} />
+        {addressError && <div className="hintline" style={{ color: 'var(--crit)' }} id={addressId + '-error'} role="alert">
+          {addressError === 'root' ? tx("当前地址缺少版本路径。若服务使用 /v1，请填写 {0}。", [address.replace(/\/+$/, '') + '/v1'])
+            : addressError === 'operation' ? tx("请填写基础地址，去掉末尾的具体接口路径。例如 {0}。", [example])
+            : tx("请输入有效的 HTTP(S) 基础地址，省略账号、密码、查询参数和片段。例如 {0}。", [example])}
+        </div>}
+        {issue === 'root' && <label className="hintline">
+          <input type="checkbox" checked={allowRoot} onChange={e => { setAllowRoot(e.target.checked); setAddressError('') }} />
+          {tx("此网关直接在根地址提供接口，保留根地址")}
+        </label>}</div>
       <div style={{ marginTop: 12 }}>
         <label className="f-lbl">API Key（{initial && initial.keySet ? tx("已配置 · {0} 位，留空则不改", [initial.keyLen]) : tx("未配置")}）</label>
         <input className="f-in" type="password" value={apiKey} onChange={(e) => changeConnection(setApiKey, e.target.value)}
@@ -496,6 +542,8 @@ function ProviderForm({ initial, onClose, onSaved }) {
           {tx("其中 {0} 个声明支持对话，{1} 个用途未确认。", [connection.counts?.chat ?? 0, connection.counts?.unknown ?? connection.models.length])}
           {connection.models.length > 0 && tx("示例：{0}。", [connection.models.slice(0, 3).join(', ')])}
           {tx("发消息前还需添加模型并确认额度。")}
+          {kind !== 'anthropic' && connection.path === '/v1/models' &&
+            <div>{tx("模型列表通过备用路径 /v1/models 读取。请按服务商文档核对对话接口的基础地址。")}</div>}
         </> : serverMessage({ key: connection.code, params: connection.params, fallback: connection.detail })}
       </div>}
     </Modal>
@@ -526,7 +574,9 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
   const [thinkingFormat, setThinkingFormat] = useState(initial?.config?.thinkingFormat || '')
   const [imageRouting, setImageRouting] = useState(initial?.config?.imageRouting || 'auto')
   const [capabilities, setCapabilities] = useState(initial?.config?.capabilities || {})
-  const [ctxWindow, setCtxWindow] = useState(initial?.contextWindowKnown === false ? '' : initial?.ctxWindow || '')
+  const configuredWindow = initial?.configuredContextWindow ??
+    (initial?.contextWindowEstimated || initial?.contextWindowKnown === false ? 0 : initial?.ctxWindow)
+  const [ctxWindow, setCtxWindow] = useState(configuredWindow || '')
   const [maxOutputTokens, setMaxOutputTokens] = useState(initial?.config?.maxOutputTokens || '')
   const [supportsReasoningEffort, setSupportsReasoningEffort] = useState(
     initial?.config?.supportsReasoningEffort !== false
@@ -606,7 +656,18 @@ function ModelForm({ providerId, initial, onClose, onSaved }) {
     }
     setBusy(true)
     try {
+      let discovered = {}
+      if (modality === 'chat' && !Number(ctxWindow) && (!initial?.advertisedContextWindow || configuredWindow)) {
+        // Discovery is optional and runs outside the catalog write transaction.
+        const result = await api.discoverModels(providerId, name.trim()).catch(() => null)
+        const candidate = result?.candidates?.find(row => row.id === name.trim())
+        if (result?.ok && candidate && result.providerRevision) {
+          discovered = { advertisedContextWindow: candidate.advertisedContextWindow || 0,
+            discoveryProviderRevision: result.providerRevision }
+        }
+      }
       const saved = await api.saveModelDef({
+        ...discovered,
         expectedRevision: initial?.revision || 'new',
         providerId,
         name: name.trim(),
@@ -757,7 +818,8 @@ function DiscoverForm({ provider, onClose, onSaved }) {
         const metadata = new Map((r.candidates || []).map(item => [item.id, item]))
         const list = (r.models || []).map(name => {
           const candidate = metadata.get(name)
-          return { name, status: candidate?.status || 'unknown', purposes: candidate?.purposes || [], checked: false }
+          return { name, status: candidate?.status || 'unknown', purposes: candidate?.purposes || [], checked: false,
+            advertisedContextWindow: candidate?.advertisedContextWindow, providerRevision: r.providerRevision }
         })
         if (list.length === 0) { setPhase('empty'); return }
         setRows(list); setPhase('ready')
@@ -791,7 +853,9 @@ function DiscoverForm({ provider, onClose, onSaved }) {
     for (const row of picked) {
       try {
         const saved = await api.saveModelDef({ providerId: provider.id, name: row.name,
-          label: row.name, modality: purpose, expectedRevision: 'new', enabled: true })
+          label: row.name, modality: purpose, expectedRevision: 'new', enabled: true,
+          ...(purpose === 'chat' && row.advertisedContextWindow && row.providerRevision
+            ? { advertisedContextWindow: row.advertisedContextWindow, discoveryProviderRevision: row.providerRevision } : {}) })
         added.push(saved)
       } catch (e) { failed += 1 }
     }

@@ -46,6 +46,8 @@ function _fwdReset(tid, force) {
   const key = _fwdId(tid);
   if (!force && _fwdTaskId === key) return;
   _fwdTaskId = key;
+  const preview = document.getElementById('fwdPrev');
+  if (preview) delete preview.confirmedInputs;
   _fwdLoadSeq++;
   _fwdOptions = null;
   _fwdLocalAgents = [];
@@ -191,6 +193,7 @@ async function _loadAIPickList(tid, repoId) {
   _fwdSyncConfirm(tid);
   box.innerHTML = '<div class="fwd-loading"><i></i><span>正在核对需求、插件与本机 Agent…</span></div>';
   _fwdSetStatus('');
+  const catalogRequest = Promise.resolve().then(() => SoduWorkAPI.pluginCatalog?.()).catch(() => null);
   let result;
   try {
     const selectedRepo = repoId === undefined
@@ -219,6 +222,8 @@ async function _loadAIPickList(tid, repoId) {
   const normalizedResult = result || {};
   _fwdOptions = {
     ...normalizedResult,
+    conversationPlugins: _fwdOptions?.conversationPlugins || [],
+    conversationPluginsLoading: true,
     substrates: window.TaskExecutionClient?.targets
       ? TaskExecutionClient.targets(normalizedResult)
       : (normalizedResult.substrates || []),
@@ -238,32 +243,42 @@ async function _loadAIPickList(tid, repoId) {
   _fwdRenderAIPickers(tid, box);
   _fwdSyncConfirm(tid);
   _fwdCarry(tid);
+  void catalogRequest.then(catalog => {
+    if (seq !== _fwdLoadSeq || document.getElementById('fwdList') !== box || _fwdTab !== 'ai') return;
+    _fwdOptions.conversationPluginsLoading = false;
+    _fwdOptions.conversationPlugins = _fwdCatalogMethods(catalog, _fwdOptions);
+    if (_fwdOptions.conversationPlugins.length || _fwdConversationPluginId) _fwdRepaintAI(tid, box);
+  });
   if (_fwdLocalLoading) void _fwdLoadLocalAgents(tid, task, box, seq);
+}
+
+function _fwdRepaintAI(tid, box) {
+  if (document.getElementById('fwdConfirm')?.dataset.idleLabel != null) {
+    _fwdLocalPaintPending = true;
+    return;
+  }
+  const pop = document.getElementById('fwdPop');
+  const menu = window.ForwardSelect?.capture(pop);
+  const focused = document.activeElement?.dataset?.selectId || document.activeElement?.id;
+  _fwdRestoreAIChoice();
+  _fwdRenderAIPickers(tid, box);
+  _fwdSyncConfirm(tid);
+  if (menu) { window.ForwardSelect?.restore(menu, pop); return; }
+  if (focused === 'fwdAgentSelect' || focused === 'fwdPluginSelect') {
+    const select = document.getElementById(focused);
+    if (window.ForwardSelect?.focus) window.ForwardSelect.focus(select); else select?.focus();
+  }
 }
 
 async function _fwdLoadLocalAgents(tid, task, box, seq) {
   const current = () => seq === _fwdLoadSeq && document.getElementById('fwdList') === box && _fwdTab === 'ai';
-  const paint = () => {
-    const pop = document.getElementById('fwdPop');
-    const menu = window.ForwardSelect?.capture(pop);
-    const focused = document.activeElement?.dataset?.selectId || document.activeElement?.id;
-    _fwdRestoreAIChoice();
-    _fwdRenderAIPickers(tid, box);
-    _fwdSyncConfirm(tid);
-    if (menu) { window.ForwardSelect?.restore(menu, pop); return; }
-    if (focused === 'fwdAgentSelect' || focused === 'fwdPluginSelect') {
-      const select = document.getElementById(focused);
-      if (window.ForwardSelect?.focus) window.ForwardSelect.focus(select); else select?.focus();
-    }
-  };
   const localModels = _fwdLocalModelChoices();
   try {
     const result = await window.RequirementSessionChoice.localAgents(task, _fwdOptions, agent => {
       if (!current()) return;
       if (!_fwdLocalAgents.some(row => _fwdSameId(row.key, agent.key))) _fwdLocalAgents.push(agent);
       // A late directory result must never replace controls during submission.
-      if (document.getElementById('fwdConfirm')?.dataset.idleLabel == null) paint();
-      else _fwdLocalPaintPending = true;
+      _fwdRepaintAI(tid, box);
     });
     if (current()) _fwdLocalFailures = result?.failures || [];
   } catch (_) { /* The Hub directory remains usable when local detection fails. */ }
@@ -272,8 +287,7 @@ async function _fwdLoadLocalAgents(tid, task, box, seq) {
   if (!current()) return;
   _fwdMergeLocalModelChoices(modelRows);
   _fwdLocalLoading = false;
-  if (document.getElementById('fwdConfirm')?.dataset.idleLabel == null) paint();
-  else _fwdLocalPaintPending = true;
+  _fwdRepaintAI(tid, box);
 }
 
 async function _loadMateList(tid) {
@@ -315,7 +329,7 @@ async function _loadMateList(tid) {
   _fwdCarry(tid);
 }
 
-function _fwdChoose(tid, choice) {
+function _fwdChoose(tid, choice, methodChanged = false) {
   if (document.getElementById('fwdConfirm')?.dataset.idleLabel != null) return;
   const previous = _fwdSelection[_fwdTab];
   if (_fwdTab === 'ai') {
@@ -332,7 +346,7 @@ function _fwdChoose(tid, choice) {
     id: _fwdId(choice.id),
   }) : null;
   if (choice) _fwdSetStatus('');
-  if (_fwdTab === 'ai' && (previous?.type !== choice?.type || previous?.id !== choice?.id)) {
+  if (_fwdTab === 'ai' && (methodChanged || previous?.type !== choice?.type || previous?.id !== choice?.id)) {
     _fwpOpen = '';
     _fwdRenderAIPickers(tid, document.getElementById('fwdList'));
   }
@@ -365,7 +379,10 @@ function _fwdChoiceIsCurrent(choice) {
   }
   if (choice.type === 'direct') {
     const agent = _fwdSubstrateOf(id);
-    return !!agent && _fwdAvailable(agent);
+    if (!agent || !_fwdAvailable(agent)) return false;
+    if (!_fwdConversationPluginId) return true;
+    const plugin = _fwdConversationPluginOf(_fwdConversationPluginId);
+    return Boolean(plugin && !plugin.blocker && _fwdConversationAgent(agent));
   }
   return false;
 }
@@ -442,6 +459,14 @@ function _fwdSyncConfirm(tid) {
   const button = document.getElementById('fwdConfirm');
   if (!decision || !button) return;
   const busy = !!button.dataset.idleLabel;
+  const previewButton = document.getElementById('fwdPreviewInputs');
+  if (previewButton) {
+    previewButton.hidden = _fwdTab !== 'ai' || _fwdSelection.ai?.type !== 'direct';
+    previewButton.disabled = busy;
+    previewButton.onclick = () => _fwdPreview(tid);
+    const preview = document.getElementById('fwdPrev');
+    if (previewButton.hidden && preview) preview.style.display = 'none';
+  }
   window.ForwardSelect?.destroy(decision);
   if (_fwdLoading[_fwdTab]) {
     decision.innerHTML = '';
@@ -498,7 +523,8 @@ function _fwdSyncConfirm(tid) {
   });
   const validAgent = choice.type !== 'workflow' || !document.getElementById('fwdAgentSelect') ||
     _fwpPayload(document.getElementById('fwdList'), choice.id, false).ok;
-  button.disabled = busy || !_fwdChoiceIsCurrent(choice) || !validAgent || modelState.stale;
+  button.disabled = busy || !_fwdChoiceIsCurrent(choice) || !validAgent || modelState.stale ||
+    Boolean(_fwdConversationPluginId && _fwdOptions?.conversationPluginsLoading);
   if (modelState.stale) _fwdSetStatus(modelState.catalogError
     ? '本地模型配置暂时无法读取，请刷新后重试' : '原模型已不可用，请重新选择', true);
   button.textContent = choice.type === 'workflow' ? '按这套方法开始' :
@@ -517,7 +543,7 @@ function _fwdSetBusy(on, label) {
   const button = document.getElementById('fwdConfirm');
   if (!button) return;
   const controls = document.getElementById('fwdPop')?.querySelectorAll(
-    '#fwdPluginSelect,#fwdAgentSelect,#fwdRepoSel,#fwdModel,#fwdSubmissionMode,#fwdNote,[data-fwp-model],[data-fwp-kind],.fwd-tab,[data-fwp-toggle],[data-fwd-recheck],[data-material-add],.rq-session-controls') || [];
+    '#fwdPluginSelect,#fwdAgentSelect,#fwdRepoSel,#fwdModel,#fwdSubmissionMode,#fwdNote,#fwdPreviewInputs,[data-fwp-model],[data-fwp-kind],.fwd-tab,[data-fwp-toggle],[data-fwd-recheck],[data-material-add],.rq-session-controls') || [];
   controls.forEach(control => {
     if (on) {
       if (control.dataset.fwdWasDisabled == null) control.dataset.fwdWasDisabled = control.disabled ? '1' : '0';
@@ -790,6 +816,8 @@ window.addEventListener('soduwork-data-scope-changed', () => {
 });
 
 async function _fwdConfirm(tid) {
+  if (document.getElementById('fwdConfirm')?.dataset.idleLabel != null ||
+      (_fwdTab === 'ai' && _fwdConversationPluginId && _fwdOptions?.conversationPluginsLoading)) return;
   const scope = window.RequirementAssignment.scope();
   let choice = _fwdSelection[_fwdTab];
   if (!choice) return;
@@ -811,7 +839,10 @@ async function _fwdConfirm(tid) {
       return;
     }
     _fwdModel = modelState.value;
-    return _dispatchAITo(tid, { id: choice.id, type: 'agent', cliName: choice.cli || '' }, choice.name);
+    const who = { id: choice.id, type: 'agent', cliName: choice.cli || '' };
+    const plugin = _fwdConversationPluginOf(_fwdConversationPluginId);
+    if (plugin) return _fwdDispatchConversationPlugin(tid, who, choice.name, plugin);
+    return _dispatchAITo(tid, who, choice.name, null);
   }
   const box = document.getElementById('fwdList');
   const payload = typeof _fwpPayload === 'function' ? _fwpPayload(box, choice.id, true) :
@@ -893,19 +924,41 @@ async function _fwdCarry(tid) {
 
 async function _fwdPreview(tid) {
   const box = document.getElementById('fwdPrev');
-  if (!box) return;
-  if (box.style.display !== 'none') { box.style.display = 'none'; box.innerHTML = ''; return; }
+  if (!box || _fwdTaskId !== _fwdId(tid)) return;
+  const previous = box.confirmedInputs;
+  const snapshot = { taskId: _fwdTaskId, previous: Array.isArray(previous?.manifest) ? previous : previous?.previous };
+  box.confirmedInputs = snapshot;
+  const current = () => document.getElementById('fwdPrev') === box && box.confirmedInputs === snapshot;
   box.style.display = 'block';
   box.innerHTML = '<div class="fwd-loading"><i></i><span>正在整理派活原文…</span></div>';
   try {
     const brief = (document.getElementById('fwdNote') || {}).value || '';
     const result = await SoduWorkAPI.aiPreview(tid, brief.trim(), _pickedRepo());
-    if (document.getElementById('fwdPrev') !== box) return;
+    if (!current()) return;
+    const carried = result?.carried;
+    if (Array.isArray(carried?.files) && carried.confirmedDispatch !== true) {
+      // A legacy Hub may dispatch without confirmation. Never offer to use a
+      // saved manifest when the current Hub cannot enforce it.
+      const message = snapshot.previous
+        ? '当前 Hub 版本不支持附件清单校验，请升级 Hub 后重新预览，或关闭弹窗重新选择直接派发。'
+        : '当前 Hub 版本不支持附件清单校验。你可以直接派发，或升级 Hub 后重新预览。';
+      if (snapshot.previous) snapshot.error = message;
+      else delete box.confirmedInputs;
+      box.innerHTML = '<div class="fwd-msg is-err">' + esc(message) + '</div>';
+      return;
+    }
+    if (carried?.confirmedDispatch !== true || !Array.isArray(carried.inputManifest))
+      throw new Error('Attachment preview unavailable');
+    delete snapshot.previous;
+    snapshot.manifest = carried.inputManifest;
+    const omitted = Array.isArray(carried.omittedFiles) ? carried.omittedFiles : [];
     box.innerHTML = '<div class="fwd-prev-h">将发送给 Agent 的完整内容</div>' +
       "<div class=\"fwd-prev-t\"" + ((result || {}).title ? ' data-user-content' : '') + '>' + esc((result || {}).title || '') + '</div>' +
-      "<pre class=\"fwd-prev-b\"" + ((result || {}).description ? ' data-user-content' : '') + '>' + esc((result || {}).description || '') + '</pre>';
+      "<pre class=\"fwd-prev-b\"" + ((result || {}).description ? ' data-user-content' : '') + '>' + esc((result || {}).description || '') + '</pre>' +
+      (omitted.length ? '<p><span>未纳入派发的附件</span> <span data-user-content>' +
+        esc(omitted.slice(0, 5).join('、') + (omitted.length > 5 ? '…' : '')) + '</span></p>' : '');
   } catch (error) {
-    box.innerHTML = '<div class="fwd-msg is-err">派活原文暂时无法预览</div>';
+    if (current()) box.innerHTML = '<div class="fwd-msg is-err">派活原文暂时无法预览</div>';
   }
 }
 

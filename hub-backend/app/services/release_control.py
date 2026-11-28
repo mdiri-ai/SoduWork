@@ -726,6 +726,12 @@ async def revoke_approval(session: AsyncSession, task: models.Task, actor,
     req = await session.get(am.ApprovalRequest, str(request_id or ""))
     if req is None or req.task_id != task.id:
         return {"ok": False, "reason": "not_found", "error": "审批不存在"}
+    if req.action == "review":
+        # Serialize against a new delivery or review decision, including on SQLite.
+        from . import artifact_version_guard
+        await artifact_version_guard.lock_task(session, task.id)
+        await session.refresh(req)
+        await session.refresh(task)
     if req.status != "approved":
         return {"ok": False, "reason": "status",
                 "error": "只有已批准的审批可以撤回（当前：%s）" % req.status}
@@ -788,13 +794,25 @@ async def revoke_approval(session: AsyncSession, task: models.Task, actor,
                 return {"ok": False, "reason": "irreversible",
                         "error": "发布链已经启动，撤回救不回来；需要下线请走环境回滚"}
 
+    if req.action == "review" and artifact is not None:
+        from . import task_rework, workflow_runs
+        latest = await latest_artifact(session, task.id)
+        if (latest is not None and latest.id == artifact.id and not task.archived_at
+                and task.status != "cancel" and (task.reviewed_at or task.status == "done")
+                and not any(run.state in workflow_runs._ACTIVE_RUN_STATES for run in runs)):
+            if not await task_rework.return_to_rework(session, task, why="验收批准已撤回，待重新验收"):
+                return {"ok": False, "reason": "status", "error": "需求状态已变化，请刷新后再撤回验收"}
+            task.reviewed_at = None
+            task.reviewed_by = None
+            task.reviewed_by_name = ""
+
     # Mark the request revoked while preserving decisions and updating the derived artifact state.
     req.status = "revoked"
     req.resolved_at = _now()
     if artifact is not None:
         rollback_state = {"baseline": "candidate", "review": "candidate",
                           "merge": "reviewed"}.get(req.action)
-        if rollback_state:
+        if rollback_state and not (req.action == "review" and artifact.state == "superseded"):
             artifact.state = rollback_state
     # Revoking review also cancels any automatically created merge request still pending.
     if req.action == "review" and artifact is not None:

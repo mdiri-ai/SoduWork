@@ -355,14 +355,22 @@ def _delete_objects(refs):
         delete(key, backend)
 
 
+def _temporary_object_prefix(destination):
+    return ".upload-" + os.path.basename(destination) + "-"
+
+
 def _put_local(key: str, source) -> None:
     destination = _local_path(key)
     os.makedirs(_extended(os.path.dirname(destination), directory=True), exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=".upload-", dir=os.path.dirname(destination))
+    descriptor, temporary = tempfile.mkstemp(prefix=_temporary_object_prefix(destination),
+                                              dir=os.path.dirname(destination))
     try:
         with os.fdopen(descriptor, "wb") as output:
             shutil.copyfileobj(source, output, 1024 * 1024)
+            output.flush()
+            os.fsync(output.fileno())
         os.replace(temporary, destination)
+        _sync_directory(os.path.dirname(destination))
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
@@ -437,12 +445,38 @@ def iter_stream(handle, chunk_size: int = 1024 * 1024):
                 release()
 
 
-def delete(key: str, backend: str) -> None:
+def delete(key: str, backend: str) -> bool:
     try:
         if backend == "minio":
             s = get_settings()
             _client().remove_object(s.minio_bucket, key)
         else:
             os.remove(_local_path(key))
+        return True
+    except FileNotFoundError:
+        return backend == "local"
     except Exception:
-        pass  # Storage deletion failure must not block metadata removal.
+        # Existing metadata deletion remains best-effort. Journaled writes
+        # retain their manifests until cleanup has succeeded.
+        return False
+
+
+def delete_staged(key: str, backend: str) -> bool:
+    """Remove an unreferenced journaled object and any interrupted local write."""
+    if not delete(key, backend):
+        return False
+    if backend != "local":
+        return True
+    destination = _local_path(key)
+    directory = os.path.dirname(destination)
+    prefix = _temporary_object_prefix(destination)
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name.startswith(prefix):
+                    os.remove(entry.path)
+        _sync_directory(directory)
+    except FileNotFoundError:
+        # No object directory was created before the failed write.
+        pass
+    return True

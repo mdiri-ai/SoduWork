@@ -14,6 +14,10 @@ A completion with a requester produces one stored receipt. Retrying that complet
 
 Creating or editing a task through the tasks API accepts up to 200 characters for the title, 64 for the requester name, 200 for contact details and 36 for the requester ID. An over-limit field returns HTTP 422 with its name. When an existing task exceeds these limits, the receipt and notice show shortened titles and names with an ellipsis. They omit over-limit contacts and IDs to avoid directing a reply to the wrong recipient. The optional `fieldWarnings` object identifies each affected field with `truncated` or `omitted`. The completion response exposes the same warnings under `receiptFieldWarnings` and retains the original task values.
 
+## Personal Git credentials
+
+The personal Git connection test sends an HTTPS token only to a host and port from an HTTPS repository visible to the current account in the Hub. A manually entered repository on that origin is supported. Use the final HTTPS URL for the test. Tasks use their assigned repository and SSH uses its separate key. Update both Hub and Runner to apply the credential-helper change on remote runs.
+
 ## Register client installers
 
 With `client.update`, send one `installer` multipart file to
@@ -85,6 +89,12 @@ Older Hubs could keep a handoff receipt after deleting its task and archive. An 
 
 For a missing active object, use the reported key to locate its database record and a trusted backup from the same deployment. Early Windows installations may have stored bytes in an NTFS named stream. Check ownership and verify the recovered ordinary file against the recorded length and SHA-256 where available. With Hub stopped, place that verified copy at the v2 path for the exact key in the restore copy, preserving the original backup. If ownership or content cannot be established, keep the originals for review. A successful startup and a download matching the original bytes verify recovery. To roll back, stop Hub and restore the old database and uploads volume together before restarting the old version.
 
+### Task attachment quotas and crash recovery
+
+Set `ATTACH_OWNER_QUOTA_BYTES` or `ATTACH_ORG_QUOTA_BYTES` to cap the total size of ordinary task attachments uploaded by a device or administrator. An unset limit is unlimited. Zero disables uploads in that scope. Account uploads count toward the original uploader and their current organization. Unaffiliated and device-only uploads share the unassigned organization pool.
+
+The Hub records pending object writes before uploading them. After a restart it checks the attachment database and removes unfinished objects. The records default to `uploads/.ingest` and use the same durable storage requirement with MinIO. For a read-only Hub filesystem, set `ARTIFACT_STAGING_DIR` to an absolute path on a writable persistent volume. Hub workers that share a database and object store should share this volume.
+
 ### Read-only automation
 
 Use the configured Hub address. The local development example below uses port 9080. The health check is public. To list the projects visible to an account, obtain its bearer token through `POST /api/v1/admin/login` and provide it in `HUB_TOKEN` through your environment or CI secret store. The account needs the `task.view` permission.
@@ -103,6 +113,9 @@ When the Runner first accepts a dispatch, its log records the execution referenc
 While it is queued, `GET /api/v1/tasks/{tid}/ai-status` can return `runner.waitReason`.
 `resource_pressure` means the Runner's resource budget is blocking new starts.
 `execution_slot` means all slots available to this work are occupied.
+Under normal load, independent desktop chats can start while earlier chats are still generating replies.
+The Runner reserves 768 MiB of available memory and budgets 512 MiB per concurrent chat startup, up to its configured ceiling.
+Starts that stage attachments, plugins or workspaces also share the adaptive preparation budget. They release it once the native Agent starts.
 The Runner pauses new starts when memory use reaches 92% or reported available memory falls below 768 MiB.
 With enough reported memory, CPU readings at or above 95% spanning at least one second allow one task at a time.
 A reading below 95% resets that interval. Memory pressure takes precedence even while CPU use stays high.
@@ -149,6 +162,8 @@ Recognized npm JavaScript Agents use the same validated Node and package entry f
 DeepSeek native packages follow the selected Node's platform, architecture and Linux libc, including Rosetta and mixed-runtime installations. Unknown Node identities fail closed. Launch and version-probe child processes inherit the selected Node directory without modifying the Runner's global PATH; quoted Windows PATH entries retain their priority.
 
 Model capability report v3 tests streaming continuation after a synthetic tool result, with tools retained and no extra user message. Existing v2 tool successes require rechecking; independent evidence remains available. Deploy the matching desktop update. Model refusals include an opaque `soduwork-trace` marker shared by JSON and SSE errors and the transport log; validated upstream request IDs remain correlation metadata, never error-classification input. Generic 403 guidance does not infer credential permissions from the status alone.
+
+Hub capability reports include optional `checks.<check>.durationMs` values, shown beside each item in the admin console's **Test results**. Measured with a monotonic clock, each value covers that check's preparation, runtime admission, upstream response reading, compatibility retries, tool-result continuation and response cleanup. It is elapsed check time, not an upstream-only or database-only measurement. Failed and inconclusive attempts also have durations; untested protocols and older reports have none. A partial recheck retains other checks' results and their original durations. Timings do not change capability verdicts or the existing shared request and timeout budgets.
 
 Reading older model configurations preserves valid manual capability declarations when another field is incompatible, without rewriting the database. Saving still validates configuration fields and rejects arrays, strings and other non-object values; explicit `config: null` retains its existing reset behavior. Unknown capabilities are not promoted to supported during reads or upgrades, and an inconclusive capability check does not replace manual declarations.
 

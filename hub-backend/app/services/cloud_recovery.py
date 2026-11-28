@@ -129,6 +129,8 @@ async def _submission(row_id):
             # Legacy committing transfers may reconcile receipts but cannot authorize a retry.
             return "pending"
         latest = await _latest_dispatch(session, row.task_id)
+        if handoffs.failure_precedes_claim(row, latest):
+            latest = None
         if latest and (latest.detail or {}).get("attemptId") != handoffs.dispatch_id(row):
             return "blocked"
         replay = (latest is not None and latest.kind == ai_exec.EV_DISPATCH_STARTED
@@ -146,6 +148,10 @@ async def _submission(row_id):
             # recorded. The original pipeline records it before touching Runner.
             if latest or not row.commit_started_at or _utc(row.commit_started_at) > now - timedelta(minutes=2):
                 return "waiting"
+            await handoffs.lock_claim_task(session, row)
+            latest = await _latest_dispatch(session, row.task_id)
+            if latest and not handoffs.failure_precedes_claim(row, latest):
+                return "waiting"
             changed = await session.execute(update(Handoff).where(
                 Handoff.id == row.id, Handoff.phase == "committing",
                 Handoff.commit_started_at == row.commit_started_at,
@@ -156,7 +162,7 @@ async def _submission(row_id):
             await session.commit()
             if not changed.rowcount:
                 return "stale"
-        result = await handoffs.commit(session, client, row.transfer_id, row.sha256)
+        result = await handoffs.commit(session, client, row.transfer_id, row.sha256, accepted_only=True)
         return "dispatched" if result.get("phase") == "committed" else "pending"
 
 
@@ -179,12 +185,15 @@ async def recover_submissions(limit=BATCH_SIZE):
             raise
         except Exception as exc:
             state = "errors"
-            log.warning("Cloud submission recovery %s: %s", row_id, type(exc).__name__)
             async with SessionLocal() as session:
                 row = await session.get(Handoff, row_id)
-                if row is not None and row.phase in {"prepared", "committing"}:
-                    row.error = "云端受理请求正在等待恢复：" + type(exc).__name__
-                    await session.commit()
+                if row is not None and row.phase == "prepared" and row.submitted_at is None:
+                    state = "awaitingConfirmation"
+                else:
+                    log.warning("Cloud submission recovery %s: %s", row_id, type(exc).__name__)
+                    if row is not None and row.phase in {"prepared", "committing"}:
+                        row.error = "云端受理请求正在等待恢复：" + type(exc).__name__
+                        await session.commit()
         counts[state] = counts.get(state, 0) + 1
     await asyncio.gather(*(recover_one(row_id) for row_id in ids))
     return counts

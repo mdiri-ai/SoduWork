@@ -4,7 +4,6 @@ or local storage.
 import asyncio
 import logging
 import os
-import uuid
 
 from fastapi import (
     APIRouter,
@@ -31,9 +30,9 @@ from ..services import (
     resource_access,
     storage,
     task_access,
+    task_attachment_uploads,
     task_requirements,
 )
-from ..services.library_conversation_save import stream_digest
 
 router = APIRouter(prefix="/api/v1", tags=["attachments"])
 
@@ -45,11 +44,6 @@ def _task_attachment_api(attachment: Attachment, task: Task, client: Client) -> 
     out["canDelete"] = bool(
         task_access.is_owner(task, client) or attachment_ownership.owns_attachment(attachment, client))
     return out
-
-
-def _safe_name(name: str) -> str:
-    name = (name or "file").replace("/", "_").replace("\\", "_").strip()
-    return name[:200] or "file"
 
 
 def _upload_size(file: UploadFile) -> int:
@@ -70,31 +64,9 @@ def _upload_size(file: UploadFile) -> int:
 async def _save_attachment(session: AsyncSession, client: Client, target_id: str,
                            file: UploadFile, *, source_ref: str = "",
                            evidence_meta: dict | None = None) -> Attachment:
-    max_bytes = get_settings().attach_max_mb * 1024 * 1024
-    size = _upload_size(file)
-    if size > max_bytes:
-        raise HTTPException(status_code=413, detail=f"文件超过 {get_settings().attach_max_mb}MB 上限")
-    if size <= 0:
-        raise HTTPException(status_code=400, detail="空文件")
-    fn = _safe_name(file.filename)
-    ct = file.content_type or "application/octet-stream"
-    attachment = Attachment(
-        id=str(uuid.uuid4()), task_id=target_id, filename=fn, content_type=ct,
-        size=size, uploaded_by=client.id, role="input", source_ref=source_ref,
-        evidence_meta=attachment_ownership.metadata(client, evidence_meta))
-    key = f"att/{target_id}/{attachment.id}/{fn}"
-    attachment.storage_key = key
-    # Stream storage writes on a worker thread so large uploads do not block the event loop.
-    # Avoid copying the entire upload into memory.
-    file.file.seek(0)
-    digest = await asyncio.to_thread(stream_digest, file.file)
-    attachment.evidence_meta = {**attachment.evidence_meta, "sha256": digest}
-    attachment.backend = await asyncio.to_thread(
-        storage.put_stream, key, file.file, size, ct)
-    session.add(attachment)
-    await session.commit()
-    await session.refresh(attachment)
-    return attachment
+    return await task_attachment_uploads.save(
+        session, target_id, file, settings=get_settings(), account_id=str(client.user_ref or ""),
+        uploader=client.id, metadata=attachment_ownership.metadata(client, evidence_meta), source_ref=source_ref)
 
 
 @router.get("/tasks/{tid}/attachments")

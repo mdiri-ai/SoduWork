@@ -202,7 +202,7 @@ def _repo_env(repo, git_creds: dict | None = None) -> dict:
     _git_host_no_proxy(env, url)
     if git_creds:
         from .code_creds import env_for
-        env_for(env, git_creds)
+        env_for(env, git_creds, url=url)
     else:
         env["GIT_TERMINAL_PROMPT"] = "0"
     return env

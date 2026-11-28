@@ -161,7 +161,8 @@
         if (record.error) fail(record.error);
         abort.hidden = record.accepted === true || (record.canAbort !== undefined
           ? record.canAbort !== true : ['committed', 'aborted', 'committing'].includes(phase));
-        submit.textContent = phase === 'committed' ? '刷新状态' : '核对并继续交接';
+        submit.textContent = phase === 'committed' ? '刷新状态'
+          : record.confirmationGeneration ? '确认模型变更并继续' : '核对并继续交接';
         submit.hidden = phase === 'aborted'; submit.disabled = false;
         return;
       }
@@ -202,7 +203,8 @@
         const value = action === 'confirm' ? await api.confirm(ref, { previewId: preview.previewId,
           ...(selectedTargetId ? { assigneeId: selectedTargetId } : {}),
           ...(preview.fallback ? { agentFallback: { ...preview.fallback, accepted: true } } : {}),
-          instruction: body.querySelector('[data-cloud-instruction]').value }) : await api[action](ref);
+          instruction: body.querySelector('[data-cloud-instruction]').value }) : await api[action](ref,
+          action === 'recover' ? { confirmationGeneration: preview?.handoff?.confirmationGeneration } : undefined);
         if (!current()) return;
         if (!value?.ok) throw Error(value?.reason || '交接没有完成，请重试');
         display(value.handoff || action === 'preview' ? value : await api.preview(ref));

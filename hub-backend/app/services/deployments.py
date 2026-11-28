@@ -619,7 +619,7 @@ async def _spec(session: AsyncSession, run: am.DeploymentRun,
         "environmentKey": env.key, "commit": run.commit_sha,
         "argv": list(cfg.get("argv") or []), "timeoutSeconds": cfg.get("timeoutSeconds") or 900,
         "env": runtime_env, "checks": checks, "rollback": rollback, "redact": redact,
-        "secrets": descriptors, "git": code_creds.resolve(owner) if owner else {},
+        "secrets": descriptors, "git": code_creds.for_repo(owner, repo.git_url) if owner else {},
     }
 
 

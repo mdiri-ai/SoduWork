@@ -2,8 +2,8 @@
 from alembic import op
 import sqlalchemy as sa
 
-revision = "0093_schedule_session_mode"
-down_revision = "0096_usage_chat_source"
+revision = "0098_schedule_session_mode"
+down_revision = "0097_model_advertised_window"
 branch_labels = None
 depends_on = None
 

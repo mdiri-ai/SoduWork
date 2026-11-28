@@ -12,6 +12,7 @@ import threading
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from fastapi import HTTPException
 import test_conversation_handoffs as fixture
 from app import db, models
 from app.api import attachments, cloud_conversations, deliveries
@@ -23,6 +24,67 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class CloudConversationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_expired_caller_cannot_use_replacement_dispatch_claim(self):
+        from app.services import cloud_recovery, task_dispatch
+
+        request_id = "reclaimed-cloud-start"
+        row_id = handoffs.identity(self.fixture.client.id, request_id)
+        first_entered, replacement_entered = asyncio.Event(), asyncio.Event()
+        release_first, release_replacement = asyncio.Event(), asyncio.Event()
+        claims = []
+        real_dispatch = task_dispatch.dispatch
+
+        async def delay_dispatch(*args, handoff_claim):
+            claims.append(handoff_claim)
+            if len(claims) == 1:
+                first_entered.set()
+                await release_first.wait()
+            else:
+                replacement_entered.set()
+                await release_replacement.wait()
+            return await real_dispatch(*args, handoff_claim=handoff_claim)
+
+        before = self.fixture.peer.calls.count("job.dispatch")
+        requests = []
+        with patch.object(task_dispatch, "dispatch", new=delay_dispatch):
+            try:
+                first = asyncio.create_task(self.create(request_id))
+                requests.append(first)
+                await asyncio.wait_for(first_entered.wait(), 20)
+                async with db.SessionLocal() as session:
+                    row = await session.get(ConversationHandoff, row_id)
+                    self.assertEqual(row.receipt[handoffs._CLAIM_ID], claims[0])
+                    row.commit_started_at = datetime.now(timezone.utc) - timedelta(minutes=3)
+                    task_id = row.task_id
+                    await session.commit()
+                replacement = asyncio.create_task(cloud_recovery.recover_submissions())
+                requests.append(replacement)
+                await asyncio.wait_for(replacement_entered.wait(), 20)
+                self.assertNotEqual(claims[0], claims[1])
+                async with db.SessionLocal() as session:
+                    client = await session.get(models.Client, self.fixture.client.id)
+                    with self.assertRaises(HTTPException) as generic_dispatch:
+                        await real_dispatch(task_id, {}, client, session)
+                    self.assertEqual(generic_dispatch.exception.status_code, 409)
+                release_first.set()
+                obsolete = await asyncio.wait_for(first, 20)
+                self.assertEqual(obsolete.json()["phase"], "committing", obsolete.text)
+                self.assertEqual(self.fixture.peer.calls.count("job.dispatch"), before)
+                async with db.SessionLocal() as session:
+                    row = await session.get(ConversationHandoff, row_id)
+                    self.assertEqual(row.receipt[handoffs._CLAIM_ID], claims[1])
+                    self.assertEqual(row.error, "")
+                release_replacement.set()
+                self.assertEqual((await asyncio.wait_for(replacement, 40)).get("dispatched"), 1)
+                duplicate = await self.create(request_id)
+                self.assertEqual(duplicate.json()["phase"], "committed", duplicate.text)
+                self.assertEqual(self.fixture.peer.calls.count("job.dispatch"), before + 1)
+                await self.fixture.complete(duplicate.json()["ref"])
+            finally:
+                release_first.set()
+                release_replacement.set()
+                await asyncio.gather(*requests, return_exceptions=True)
+
     async def test_concurrent_submissions_keep_one_input_object(self):
         payload = b"same request bytes"
         files = (("one.txt", payload, "text/plain"),)

@@ -82,6 +82,22 @@ def _entry(path, size=0, directory=False):
             "isDirectory": directory}
 
 
+def _is_cjk_text(text: str) -> bool:
+    """True when the text carries Chinese characters or Chinese punctuation.
+
+    A legacy Chinese ZIP may hold only fullwidth punctuation (【1】.txt) and no
+    Han character at all, so punctuation counts too. Private-use code points,
+    Western European letters and Japanese kana do not: those are what a cp437
+    name decodes to when the bytes happen to be valid gb18030 too.
+    """
+    for ch in text:
+        if "\u3400" <= ch <= "\u9fff" or "\uf900" <= ch <= "\ufaff":
+            return True
+        if unicodedata.category(ch).startswith("P") and ord(ch) > 0x2000:
+            return True
+    return False
+
+
 def _display_name(info):
     """Honor Unicode ZIP names and recover common Windows Chinese filenames.
 
@@ -110,8 +126,20 @@ def _display_name(info):
             decoded = raw.decode(encoding)
         except UnicodeError:
             continue
-        if encoding == "utf-8" or re.search(r"[\u3400-\u9fff\uf900-\ufaff]", decoded):
+        if encoding == "utf-8":
             return decoded
+        # A legacy Chinese ZIP is not required to contain a Han character: a name
+        # like 【1】.txt or （2026）.csv is entirely CJK punctuation and fullwidth
+        # forms, yet it round-trips through gb18030 exactly. Round-tripping alone
+        # is not enough to tell it apart from cp437: the cp437 byte for "ñ" is
+        # also valid gb18030 and decodes to a private-use character, so a name
+        # that was perfectly readable becomes unreadable. Accept the decode only
+        # when the result carries Chinese characters or Chinese punctuation.
+        try:
+            if decoded.encode("gb18030") == raw and _is_cjk_text(decoded):
+                return decoded
+        except UnicodeError:
+            continue
     return info.orig_filename
 
 

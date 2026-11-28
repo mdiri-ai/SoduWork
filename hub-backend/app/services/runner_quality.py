@@ -572,7 +572,7 @@ def _immutable_checkout(spec: dict, run_id: str) -> tuple[str, str, str]:
         # Fetch the exact ref and verify the fixed revision through FETCH_HEAD.
         from .code_creds import env_for as _cred_env
         env = _cred_env(dict(os.environ), dict(source.get("git") or {}),
-                        ref=str(source.get("taskId") or run_id))
+                        ref=str(source.get("taskId") or run_id), url=str(source["gitUrl"]))
         proc = subprocess.run(
             ["git", "-c", "http.proxy=", "-c", "https.proxy=",
              "fetch", "origin", branch],

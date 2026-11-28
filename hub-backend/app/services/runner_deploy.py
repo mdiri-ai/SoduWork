@@ -270,7 +270,7 @@ def _worker(spec: dict, work_root: str, secret_values: list[str]) -> None:
             _REDACT[run_id] = list(secret_values)
         if git:
             from . import code_creds
-            code_creds.env_for(env, git, ref=run_id)
+            code_creds.env_for(env, git, ref=run_id, url=str(spec.get("gitUrl") or ""))
         cwd = _prepare(spec, work_root, env, run_id)
         argv = _argv(spec.get("argv"), "部署命令", spec)
         state["stage"] = "deploy"

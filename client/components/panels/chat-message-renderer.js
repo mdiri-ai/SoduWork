@@ -373,24 +373,10 @@
     const open = ctx._openTool.has(t.id);
     const hydrate = open;
     const kind = (global.ChatTools && global.ChatTools.render) ? global.ChatTools.render(t) : null;
-    if (kind?.summaryOnly) {
-      /* Command rows expand inline like the thinking block;点开才看命令和输出。
-         Other summary-only kinds stay click-through. */
-      if (kind.commandOnly) {
-        return '<div class="ntool ' + t.state + (open ? ' open' : '') + '" data-tool-node="' + ctx.esc(t.id) + '">' +
-          '<div class="ntool-head ntool-summary" data-tool="' + ctx.esc(t.id) + '" role="button" aria-expanded="' + open + '">' +
-          (global.ChatTools?.icon ? ChatTools.icon(t) : '') +
-          '<span class="ntool-name">' + ctx.esc(kind.title) + '</span>' +
-          '<span class="ntool-args"' + (kind.localizedSub ? '' : ' data-user-content') + '>' + (kind.subHtml || ctx.esc(kind.sub || '')) + '</span>' +
-          '<svg class="ntool-caret" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>' + '</div>' +
-          '<div class="ntool-body">' + (open ? (global.ChatToolDetails?.bodyHtml(ctx, t, kind) ?? (kind.body || _toolBody(t))) : '') + '</div></div>';
-      }
-      return '<div class="ntool ' + t.state + '" data-tool-node="' + ctx.esc(t.id) + '">' +
-        '<div class="ntool-head ntool-summary">' + (global.ChatTools?.icon ? ChatTools.icon(t) : '') +
-        '<span class="ntool-name">' + ctx.esc(kind.title) + '</span>' +
-        '<span class="ntool-args"' + (kind.localizedSub ? '' : ' data-user-content') + '>' + (kind.subHtml || ctx.esc(kind.sub || '')) + '</span>' +
-        '</div></div>';
-    }
+    if (kind?.summaryOnly) return '<div class="ntool ' + t.state + '" data-tool-node="' + ctx.esc(t.id) + '">' +
+      '<div class="ntool-head ntool-summary">' + (global.ChatTools?.icon ? ChatTools.icon(t) : '') +
+      '<span class="ntool-name">' + ctx.esc(kind.title) + '</span>' +
+      '<span class="ntool-args"' + (kind.localizedSub ? '' : ' data-user-content') + '>' + (kind.subHtml || ctx.esc(kind.sub || '')) + '</span></div></div>';
     if (kind) {
       /* Open write/edit cards in the data-tool-side pane rather than inline. */
       return '<div class="ntool ' + t.state + (open && !kind.readSnapshot ? ' open' : '') + '"' + (kind.side ? ' data-tool-side="1"' : '') + ' data-tool-node="' + ctx.esc(t.id) + '">' +
@@ -715,7 +701,7 @@
       while (end < priorTools.length && turnAt(priorTools[end].after || 0) === turn) end++;
       agents?.breakRun();
       (agents ? agents.appendTools.bind(null, ChatTools.appendTimeline) : ChatTools.appendTimeline)(parts,
-        priorTools.slice(start, end), seenTools, 'message:' + (tool.after || 0), goalMode, _toolHtml, ctx._openToolGroup, progressRows, progressState, _render);
+        priorTools.slice(start, end), seenTools, 'message:' + (tool.after || 0), goalMode, _toolHtml, ctx._openToolGroup, progressRows, progressState);
       start = end;
     }
     if (priorTools.length) agents?.breakRun();
@@ -741,7 +727,7 @@
       /* Tools may anchor to the previous visible user after internal review messages are hidden; preserve their chronological placement. */
       const mine = toolsByMessage.get(mi) || [];
       (agents ? agents.appendTools.bind(null, ChatTools.appendTimeline) : ChatTools.appendTimeline)(parts, mine, seenTools, 'message:' + mi, goalMode, _toolHtml, ctx._openToolGroup,
-        progressRows, progressState, _render);
+        progressRows, progressState);
       const taskAtMessage = anchoredTaskByMessage.get(mi);
       if (taskAtMessage && taskStreams.has(taskAtMessage)) {
         parts.push(taskStreams.get(taskAtMessage)); taskStreams.delete(taskAtMessage);
@@ -756,7 +742,7 @@
     const tail = renderTools.filter((t) => !priorTools.includes(t) && ((t.after || 0) >= allMessages.length ||
       (t.state === 'running' && (t.after || 0) < messageStart)));
     (agents ? agents.appendTools.bind(null, ChatTools.appendTimeline) : ChatTools.appendTimeline)(parts, tail, seenTools, 'tail', goalMode, _toolHtml, ctx._openToolGroup,
-      progressRows, progressState, _render);
+      progressRows, progressState);
     ChatTools.appendGoalProgress(parts, progressRows, progressState, Infinity);
 
     // Task runs use the existing task/chat renderer and the same message list.

@@ -145,8 +145,11 @@ function create({ raw: initial, options, restored, openNative, disposeNative, pr
       if (!ready?.ok) throw Error(ready?.reason || '此 Agent 尚不可用');
       const policy = before.nextAccessPolicy || before.accessPolicy;
       const support = ready.accessControl || catalog.runtime(agentId).accessControl;
-      if (policy && (!support?.supported || !support.modes?.includes(policy.mode)))
-        throw Error('目标 Agent 不支持当前权限模式，请先选择兼容的权限');
+      if (policy && (!support?.supported || !support.modes?.includes(policy.mode))) {
+        throw Error(support?.supported === false
+          ? '目标 Agent 不支持统一权限，请在新会话中选择该 Agent'
+          : '目标 Agent 不支持当前权限模式，请先选择兼容的权限');
+      }
       let modelName = typeof selection.modelName === 'string' ? selection.modelName :
         catalog.runtime(agentId).modelMode !== 'account' &&
           catalog.runtime(agentId).modelMode === catalog.runtime(raw.adapterId)?.modelMode ? before.modelSelection?.name || '' : '';

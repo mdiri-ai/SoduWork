@@ -100,6 +100,70 @@ class ModelIdentifierBoundaryTests(unittest.IsolatedAsyncioTestCase):
         replay = await self.request("PUT", "/model-providers/once", json=body)
         self.assertEqual(replay.status_code, 409, replay.text)
 
+    async def test_provider_base_url_distinguishes_roots_prefixes_and_operations(self):
+        path = "/model-providers/url-check"
+        draft = {"expectedRevision": "new", "name": "Test"}
+        for url, code in [
+            ("https://gateway.example", "root"),
+            ("https://gateway.example///", "root"),
+            ("https://gateway.example/v1/chat/completions/", "operation"),
+            ("https://gateway.example/v1/responses", "operation"),
+            ("https://gateway.example/v1/models", "operation"),
+            ("https://gateway.example/v1/messages", "operation"),
+            ("https://gateway.example/v1?", "invalid"),
+            ("https://gateway.example/v1#fragment", "invalid"),
+            ("https://user:private@gateway.example/v1", "invalid"),
+            ("https://gateway.example:99999/v1", "invalid"),
+            ("https://[::1]extra/v1", "invalid"),
+            ("https:///v1", "invalid"),
+            ("https://gateway.example/" + "a" * 400, "invalid"),
+            ("ftp://gateway.example/v1", "invalid"),
+        ]:
+            with self.subTest(url=url):
+                response = await self.request("PUT", path, json={**draft, "baseUrl": url, "allowRootBaseUrl": "true"})
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertEqual(response.headers.get("x-error-code"), "model.provider.base-url." + code)
+                self.assertNotIn("private", response.text)
+        for i, (kind, url) in enumerate([
+            ("openai-compat", ""), ("openai-compat", "https://gateway.example/v1/"),
+            ("openai-compat", "https://gateway.example/api/v3"), ("openai-compat", "https://gateway.example/api/paas/v4"),
+            ("openai-compat", "https://gateway.example/models"),
+            ("openai-compat", "https://gateway.example/v1beta/openai"), ("anthropic", "http://[::1]:9080"),
+        ]):
+            with self.subTest(kind=kind, url=url):
+                response = await self.request("PUT", f"{path}-{i}", json={**draft, "kind": kind, "baseUrl": url})
+                self.assertEqual(response.status_code, 200, response.text)
+        confirmed = await self.request("PUT", path, json={
+            **draft, "baseUrl": "https://gateway.example/", "allowRootBaseUrl": True})
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+
+    async def test_legacy_url_survives_unrelated_edits_and_protocol_change_revalidates(self):
+        from app.services.model_config_guard import revision
+        async with self.sessions() as session:
+            provider = models.ModelProvider(id="legacy", kind="anthropic", base_url="https://gateway.example")
+            session.add(provider)
+            await session.commit()
+            expected = revision(provider)
+        path = "/model-providers/legacy"
+        change = {"kind": "openai-compat", "name": "Changed", "expectedRevision": expected}
+        refused = await self.request("PUT", path, json=change)
+        self.assertEqual(refused.status_code, 400, refused.text)
+        self.assertEqual(refused.headers.get("x-error-code"), "model.provider.base-url.root")
+        accepted = await self.request("PUT", path, json={**change, "allowRootBaseUrl": True})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        async with self.sessions() as session:
+            expected = revision(await session.get(models.ModelProvider, "legacy"))
+        edit = await self.request("PUT", path, json={
+            "expectedRevision": expected, "baseUrl": "https://gateway.example", "note": "Updated"})
+        self.assertEqual(edit.status_code, 200, edit.text)
+        async with self.sessions() as session:
+            existing = await session.get(models.ModelProvider, "legacy")
+            existing.base_url = "https://gateway.example/v1/models"
+            await session.commit()
+            expected = revision(existing)
+        edit = await self.request("PUT", path, json={"expectedRevision": expected, "enabled": False})
+        self.assertEqual(edit.status_code, 200, edit.text)
+
     async def test_model_composite_identifier_is_within_column_limit(self):
         provider = await self.request("PUT", "/model-providers/edge", json={
             "expectedRevision": "new", "name": "Edge", "kind": "openai-compat",

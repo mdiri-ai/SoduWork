@@ -250,6 +250,50 @@ class LibraryArchiveTests(LibraryHttpTestCase):
                 self.assertEqual(response.json()["archive"]["files"][0]["filename"], display)
                 self.assertEqual((await self.member(item, display)).content, b"content")
 
+    async def test_legacy_names_keep_their_original_spelling(self):
+        # The cp437 byte for "ñ" is also a valid gb18030 sequence that decodes to
+        # a private-use character, so a round-trip check alone would turn a
+        # readable name into one that can no longer be fetched by that name.
+        # Chinese names need no Han character at all: fullwidth punctuation is
+        # enough to identify them.
+        cases = (("cp437", "café.txt"), ("cp437", "ño.txt"), ("cp437", "mañana.txt"),
+                 ("cp437", "señor.txt"), ("gb18030", "报告.txt"),
+                 ("gb18030", "（2026）.csv"), ("gb18030", "【1】.txt"),
+                 ("gb18030", "——.md"), ("gb18030", "？!.log"),
+                 ("gb18030", "“说明”.doc"), ("gb18030", "﨑.txt"), ("cp437", "año.txt"))
+        for encoding, display in cases:
+            raw_name = display.encode(encoding)
+            name = "x" * len(raw_name)
+            info = ZipInfo(name)
+            data = bytearray(zip_bytes([(info, b"content")]))
+            for signature, offset in ((b"PK\x03\x04", 30), (b"PK\x01\x02", 46)):
+                start = data.index(signature) + offset
+                data[start:start + len(raw_name)] = raw_name
+            item = await self.upload_zip(data=bytes(data))
+            with self.subTest(encoding=encoding, display=display):
+                response = await self.listing(item)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["archive"]["files"][0]["filename"], display)
+                self.assertEqual((await self.member(item, display)).content, b"content")
+
+    async def test_legacy_gb18030_names_without_han_characters_stay_readable(self):
+        # A legacy Chinese ZIP needs no Han character to be Chinese: names made
+        # only of CJK punctuation or fullwidth forms (【1】.txt, （2026）.csv)
+        # are still gb18030 and must not fall back to cp437 mojibake.
+        for display in ("（2026）.csv", "【1】.txt", "——.md", "？!.log"):
+            raw_name = display.encode("gb18030")
+            name = "x" * len(raw_name)
+            data = bytearray(zip_bytes([(ZipInfo(name), b"content")]))
+            for signature, offset in ((b"PK\x03\x04", 30), (b"PK\x01\x02", 46)):
+                start = data.index(signature) + offset
+                data[start:start + len(raw_name)] = raw_name
+            item = await self.upload_zip(data=bytes(data))
+            with self.subTest(display=display):
+                response = await self.listing(item)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["archive"]["files"][0]["filename"], display)
+                self.assertEqual((await self.member(item, display)).content, b"content")
+
     async def test_unsupported_compression_returns_an_actionable_error(self):
         item = await self.upload_zip(data=zip_bytes([("a.txt", b"compressed")], ZIP_BZIP2))
         await self.assert_error(await self.listing(item), 415, "LIBRARY_ARCHIVE_UNSUPPORTED_ENTRY")

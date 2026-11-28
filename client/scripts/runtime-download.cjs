@@ -137,6 +137,15 @@ async function downloadFile(url, target, { environment = process.env, timeoutMs 
       await pipeline(body, fs.createWriteStream(partial, { flags: status === 206 ? 'a' : 'w' }),
         { signal: controller.signal });
       body = null;
+      if (status === 206) {
+        if (bytes !== Number(interval[2]) + 1) {
+          fs.truncateSync(partial, offset);
+          throw new DownloadError('Runtime download body does not match its byte range');
+        }
+        // A server may cap a Range response before the end of the archive.
+        const totalBytes = interval[3] === '*' ? expectedBytes : Number(interval[3]);
+        if (totalBytes === undefined || bytes < totalBytes) continue;
+      }
       if (expectedBytes !== undefined && bytes !== expectedBytes) {
         throw new DownloadError('Runtime download ended before the expected archive size');
       }

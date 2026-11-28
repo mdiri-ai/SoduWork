@@ -379,24 +379,6 @@
     paint();
     return true;
   }
-  function openCommandRecord(tool) {
-    if (!WB.root || !global.ChatTools?.render(tool)?.recordAvailable) return false;
-    const args = tool.args || {};
-    const raw = args.command ?? args.cmd ?? args.script ?? args.argv ?? args.code ?? args.chars;
-    // Keep both the beginning and the exit diagnostics, even for a single very long line.
-    const bound = value => {
-      const text = typeof value === 'string' ? value : '';
-      return text.length <= 32768 ? text : text.slice(0, 16384) + '\n…\n' + text.slice(-16384);
-    };
-    const input = Array.isArray(raw) ? raw.slice(0, 128).map(bound).join(' ') + (raw.length > 128 ? ' …' : '') : raw;
-    const record = { input: bound(input), output: bound(tool.result || tool.partial) };
-    WB.manualClosed = false;
-    if (!WB.open) resetSplit(WB.root);
-    addTab({ key: 'command:' + workScope() + ':' + tool.id, kind: 'command-record',
-      label: '执行记录', record, autoPreview: false }, true);
-    paint();
-    return true;
-  }
   function openService(item, activate) {
     // item.title is already the translated display string; the label source
     // must stay the original Chinese so a later switch back can re-translate.
@@ -604,19 +586,13 @@
   }
   function filesHtml() {
     const rows = WB.files.slice().sort((left, right) => Number(right.at || 0) - Number(left.at || 0));
-    // The index may contain only historical files while this turn has tool receipts.
-    const fallbackChanges = WB.summaryFiles.length ? [] : WB.changes;
-    return '<section class="ncw-files" aria-label="会话文件"><header><div><b>工作区文件</b>' +
-      (rows.length ? '<span>点击打开，或直接引用到对话</span>' : '') +
-      '</div><button type="button" data-wb-new title="新建浏览页签">＋ 浏览</button></header>' +
+    return '<section class="ncw-files" aria-label="会话文件"><header><div><b>工作区文件</b><span>点击打开，或直接引用到对话</span></div><button type="button" data-wb-new title="新建浏览页签">＋ 浏览</button></header>' +
       (rows.length ? '<div class="ncw-file-list">' + rows.map((file) => {
         const id = fileKey(file), name = file.name || baseName(file.path || file.relative) || '文件';
         return '<article class="ncw-file-row"><button type="button" data-wb-file="' + esc(id || file.path) + '" title="打开 ' + esc(name) + '">' + ICONS.file + '<span><b data-user-content>' + esc(name) + '</b><small>' + esc(size(file.size)) + '</small></span></button>' + libraryUploadButton(file) +
           '<button type="button" data-wb-reference-file="' + esc(id || file.path) + '" title="引用到对话">' + ICONS.quote + '</button>' +
           '<button type="button" data-wb-copy-file="' + esc(id || file.path) + '" title="复制文件位置">' + ICONS.copy + '</button></article>';
-      }).join('') + '</div>' : '') +
-      (fallbackChanges.length ? '<div class="ncw-file-list ncw-change-list"><b>本轮修改</b>' + info.changeRows(fallbackChanges) + '</div>' : '') +
-      (!rows.length && !fallbackChanges.length ? '<div class="ncw-files-empty">本次对话还没有可查看的文件。</div>' : '') + '</section>';
+      }).join('') + '</div>' : '<div class="ncw-files-empty">本次对话还没有可查看的文件。</div>') + '</section>';
   }
   function libraryUploadButton(file) {
     return global.LibraryTransfer?.button(file, context().ref, 'data-wb-library-upload') || '';
@@ -957,7 +933,10 @@
     _hasVisibleTabs: hasVisibleTabs, _outputMentions: outputMentions, linkifyOutputs,
   });
   function toggleWorkbench() {
-    if (!hasVisibleTabs(WB.tabs)) return;
+    if (!hasVisibleTabs(WB.tabs)) {
+      if (openFiles()) paint();
+      return;
+    }
     WB.open = !WB.open;
     if (!WB.open) WB.maximized = false;
     WB.manualClosed = !WB.open;
@@ -989,7 +968,7 @@
   }
   global.ChatWorkbench = { bind: bindWorkbench, render: renderWorkbench, reset: resetWorkbench,
                            toggle: toggleWorkbench, maximize: maximizeWorkbench,
-                           openOutput, openInput, openLink, openPath, openCommandRecord, openSavedDelivery, state: workbenchState, syncAnnotations };
+                           openOutput, openInput, openLink, openPath, openSavedDelivery, state: workbenchState, syncAnnotations };
   global.addEventListener?.('soduwork-data-scope-changed', resetWorkbench);
   // Re-translate the cached, protected labels when the client language changes
   // mid-session; the DOM adapter never touches them (user content).

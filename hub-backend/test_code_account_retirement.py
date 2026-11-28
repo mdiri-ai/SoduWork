@@ -23,7 +23,7 @@ class CodeAccountRetirementTests(unittest.TestCase):
         active = code_creds.resolve(client)
         self.assertEqual(active["token"], "fixture-active-token")
         self.assertNotIn("gerrit_user", active)
-        env = code_creds.env_for({}, active)
+        env = code_creds.env_for({}, code_creds.for_repo(client, "https://git.example.test/team/repo.git"))
         self.assertEqual(env["SODUWORK_GIT_USER"], "gitlab-owner")
         self.assertEqual(env["SODUWORK_GIT_TOKEN"], "fixture-active-token")
         self.assertNotIn("SODUWORK_GERRIT_TOKEN", env)

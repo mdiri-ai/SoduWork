@@ -70,6 +70,43 @@ test('runtime metadata hot registration does not mutate existing descriptors or 
   assert.throws(() => catalog.runtime('custom-test').accessControl.modes.push('full'));
 });
 
+test('switch guidance distinguishes an unsupported custom Agent from an incompatible mode', async t => {
+  const { create: createSwitchableConversation } = require('../main/agent-runtime/switchable-conversation');
+  const { create: createAccessPolicy } = require('../main/access-control/policy');
+  const f = fixture(t), catalog = mutableCatalog(createRuntimeCatalog(source));
+  await f.controller.add(input());
+  const custom = f.rows.get(input().id);
+  catalog.addRuntime(custom);
+  const now = Math.floor(Date.now() / 1000);
+  const identity = { hub: 'http://127.0.0.1:9', clientId: 'fixture-device', session: Buffer.from(JSON.stringify({
+    typ: 'device', uid: 'fixture-user', cid: 'fixture-device', iat: now - 10, exp: now + 60,
+  })).toString('base64url') + '.' + 'a'.repeat(64) };
+  const history = [{ role: 'user', text: 'Existing turn' }];
+  const cases = ['standard', 'full', 'readonly'].map(mode => ({
+    mode, id: custom.id, support: custom.accessControl, reason: /请在新会话中选择该 Agent/,
+  }));
+  cases.push({ mode: 'readonly', id: 'qwen',
+    support: { ...catalog.runtime('qwen').accessControl, modes: ['standard'] },
+    reason: /请先选择兼容的权限/ });
+  for (const { mode, id, support, reason } of cases) {
+    const accessPolicy = createAccessPolicy(mode, f.root);
+    const handle = createSwitchableConversation({
+      raw: { adapterId: 'pi', ref: 'existing-chat', sessionId: 'existing-session', cwd: f.root,
+        snapshot: () => ({ status: 'idle', accessPolicy, messages: history, tools: [] }) },
+      catalog, options: { app: f.app, identity },
+      probe: async () => ({ ok: true, accessControl: support }),
+      openNative: async () => assert.fail('Rejected switches cannot open a native session'),
+    });
+    t.after(() => handle.close());
+    const rejection = await handle.selectAgent(id);
+    assert.equal(rejection.ok, false);
+    assert.match(rejection.reason, reason, mode);
+    assert.equal(handle.adapterId, 'pi');
+    assert.deepEqual(handle.snapshot().accessPolicy, accessPolicy);
+    assert.deepEqual(handle.snapshot().messages, history);
+  }
+});
+
 test('only a registered managed Agent uses the shared model selector; unsupported servers do not fall back to Pi', async () => {
   const catalog = require('../main/agent-runtime/runtime-catalog');
   const runtimeApi = require('../main/agent-runtime');

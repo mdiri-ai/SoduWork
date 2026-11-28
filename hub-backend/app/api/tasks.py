@@ -17,7 +17,7 @@ from fastapi import (
     Request,
     UploadFile,
 )
-from pydantic import Json
+from pydantic import Json, ValidationError, WrapValidator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -151,9 +151,22 @@ async def get_tasks(client: Client = Depends(current_client), session: AsyncSess
     return await svc.list_tasks(session, client.id, include_related=True, page=window)
 
 
+def _validate_task_create(data, handler):
+    try:
+        return handler(data)
+    except ValidationError as exc:
+        # Preserve the existing 400 for an omitted title. Other invalid fields
+        # still receive FastAPI's normal validation response.
+        errors = exc.errors()
+        if len(errors) == 1 and errors[0]["loc"] == ("title",) and errors[0]["type"] == "missing":
+            raise HTTPException(status_code=400, detail="请填写需求标题") from None
+        raise
+
+
 @router.post("/tasks")
 async def create_task(
-    body: TaskCreate, client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)
+    body: Annotated[TaskCreate, WrapValidator(_validate_task_create)],
+    client: Client = Depends(current_client), session: AsyncSession = Depends(get_session),
 ):
     return await svc.create_task(session, client.id, body.model_dump(), origin="local")
 
@@ -215,14 +228,6 @@ async def get_task(
         if can_assign or r.get("canViewExecution"):
             r["reviewSubmission"] = await _review_submission(session, task, can_assign)
     return r
-
-
-@router.post("/tasks/{tid}/prepare-execution")
-async def prepare_requirement_execution(
-    tid: str, client: Client = Depends(current_client), session: AsyncSession = Depends(get_session)
-):
-    from ..services import task_execution_claim
-    return await task_execution_claim.prepare(session, client, tid)
 
 
 @router.get("/tasks/{tid}/delivery-state")
@@ -585,7 +590,13 @@ async def ai_dispatch_preview(
     if t is None or not _task_access.is_owner(t, client):
         raise HTTPException(status_code=404, detail="需求不存在")
     ctx = await ai_exec.load(session)
-    names = await ai_exec.list_task_file_names(session, tid)
+    try:
+        manifest, omitted = await ai_exec.preview_task_files(session, tid)
+        if "inputManifest" in body:
+            ai_exec.check_task_file_manifest(body["inputManifest"], manifest)
+    except ai_exec.TaskAttachmentError as error:
+        raise HTTPException(409, str(error)) from error
+    names = [entry["name"] for entry in manifest]
     extra = await ai_exec.collect_task_context(session, tid)
     extra["brief"] = str(body.get("brief") or "")[:2000]
     extra["files"] = names
@@ -602,7 +613,8 @@ async def ai_dispatch_preview(
             "provider": ai_exec.provider_name(ctx),
             "carried": {"note": bool((t.note or "").strip()), "tags": len(getattr(t, "tags", None) or []),
                         "progress": len(prog), "comments": len(extra.get("comments") or []),
-                        "files": names, "brief": bool(extra["brief"].strip())}}
+                        "files": names, "inputManifest": manifest, "confirmedDispatch": True, "omittedFiles": omitted,
+                        "brief": bool(extra["brief"].strip())}}
 
 
 @router.post("/tasks/{tid}/conversation-turn")
@@ -734,6 +746,19 @@ async def ai_dispatch_task(
     return await dispatch(tid, body, client, session)
 
 
+@router.post("/tasks/{tid}/ai-dispatch-confirmed")
+async def ai_dispatch_confirmed(
+    tid: str,
+    body: dict = Body(default_factory=dict),
+    client: Client = Depends(current_client),
+    session: AsyncSession = Depends(get_session),
+):
+    """Dispatch from a confirmed preview on a Hub that enforces its manifest."""
+    if not isinstance(body.get("inputManifest"), list):
+        raise HTTPException(409, "请先重新预览需求附件")
+    return await ai_dispatch_task(tid, body, client, session)
+
+
 # Long tasks: plan first, then execute one milestone per round.
 # The milestone workflow has three actions; see models.Milestone and services.ai_exec.
 # ai-plan creates a plan without changing code.
@@ -770,12 +795,14 @@ def _ms_api(m) -> dict:
             "model": getattr(m, "model", "") or ""}
 
 
-async def _load_milestones(session: AsyncSession, tid: str) -> list:
+async def _load_milestones(session: AsyncSession, tid: str, *, for_update: bool = False) -> list:
     from sqlalchemy import select as _sel
 
     from ..models import Milestone
-    rows = (await session.execute(
-        _sel(Milestone).where(Milestone.task_id == tid).order_by(Milestone.seq))).scalars().all()
+    query = _sel(Milestone).where(Milestone.task_id == tid).order_by(Milestone.seq)
+    if for_update:
+        query = query.with_for_update()
+    rows = (await session.execute(query)).scalars().all()
     return list(rows)
 
 
@@ -890,42 +917,53 @@ async def batch_dispatch(
     import asyncio as _aio
 
     from ..models import Milestone
-    from ..services import ai_exec
+    from ..services import ai_exec, task_assignment, task_requirements
+    from ..services import batch_dispatch as batches
     from ..services import task_events as ev
-    from ..services import tasks as tsvc
 
-    ids = [str(x) for x in (body.get("taskIds") or []) if str(x).strip()][:20]
+    requested_ids = body.get("taskIds") or []
+    if not isinstance(requested_ids, list):
+        raise HTTPException(status_code=400, detail="需求列表格式无效")
+    ids = list(dict.fromkeys(str(x).strip() for x in requested_ids if str(x).strip()))[:20]
     if len(ids) < 2:
         raise HTTPException(status_code=400, detail="至少选两条才谈得上合并")
-    locked = {}
-    for tid in sorted(set(ids)):
-        await task_access.reserve_task_write(session, tid, client.id)
-        t = await session.get(Task, tid, with_for_update=True, populate_existing=True)
-        if t is None or not task_access.is_owner(t, client):
-            raise HTTPException(status_code=404, detail="Task is not owned by this account: " + tid)
+    rows = await batches.lock_members(session, ids, client)
+    repo_context = _repo_ctx(body)
+    request_key = batches.request_key(client, ids, body, repo_context)
+    existing = await batches.receipt(session, client, rows, request_key)
+    if existing is not None:
+        await session.commit()
+        return existing
+    await batches.require_unassigned(session, ids)
+    for t in rows:
         if t.status in ("done", "cancel"):
             raise HTTPException(status_code=400, detail=f"Task {t.title!r} is already closed")
-        locked[tid] = t
-    rows = [locked[tid] for tid in ids]
+        try:
+            task_requirements.ensure_executable(t)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
     # Merge only within one project because execution and parallel work are scoped to a repository.
     # Combining separate repositories would force one agent to switch between unrelated workspaces.
     pids = {getattr(t, "project_id", None) for t in rows}
     if len(pids) > 1:
         raise HTTPException(status_code=400, detail="这些活不在同一个项目里，跨工程合并只会互相干扰")
 
-    ctx = await ai_exec.load(session, force=True)
+    ctx = ai_exec.with_client_runner_scope(await ai_exec.load(session, force=True), client.id)
     aid = str(body.get("assigneeId") or "").strip()
     atype = str(body.get("assigneeType") or "").strip().lower()
     if atype not in ("agent", "squad"):
         atype = ""
-    if not aid and not ai_exec.enabled(ctx):
-        raise HTTPException(status_code=409, detail="AI 执行还没配好")
-    picked = None
     if aid:
         picked = await _aio.to_thread(
             ai_exec.resolve_requested_sync, ctx, aid, atype, client.id)
         if picked is None:
             raise HTTPException(status_code=400, detail="选中的 AI 已经不在了")
+    else:
+        project_defaults = await task_assignment.project_route(session, rows[0].project_id)
+        picked = await _aio.to_thread(ai_exec.resolve_default_sync, ctx, client.id,
+                                      project_defaults.get("agentKind") or "")
+        if picked is None:
+            raise HTTPException(409, "当前电脑没有可接这批需求的在线 Agent")
 
     me = await _actor_user(session, client)
     who = (me.display_name or me.username) if me else "承办人"
@@ -933,7 +971,7 @@ async def batch_dispatch(
     # Retain original tasks, which may be externally owned and read-only.
     title = str(body.get("title") or "").strip()[:200] or \
         f"合并处理 {len(rows)} 条：{rows[0].title[:20]}…"
-    batch = Task(owner_client_id=client.id, title=title, status="doing")   # Use the model's default UUID.
+    batch = Task(owner_client_id=client.id, owner_user_id=client.user_ref, title=title, status="doing")
     batch.project_id = rows[0].project_id
     # Include every source task's description, not only its title, in dispatch instructions.
     # The composed task title and note must carry reproduction steps and acceptance criteria to the AI.
@@ -960,7 +998,7 @@ async def batch_dispatch(
 
     extra = await ai_exec.collect_task_context(session, batch.id)
     extra["brief"] = str(body.get("brief") or "")[:2000]
-    extra["repo"] = _repo_ctx(body)
+    extra["repo"] = repo_context
     _repo = await _resolve_repo(session, extra["repo"])
     # Use the client's configured workspace; clone the repository on first use.
     _remote = str((picked or {}).get("id") or "").startswith(ai_exec.REMOTE_PREFIX)
@@ -980,43 +1018,42 @@ async def batch_dispatch(
     from ..services import task_execution_model
     try:
         ctx, extra["agentExecution"] = await task_execution_model.prepare(
-            session, client, ctx, picked or ai_exec.default_assignee(ctx),
+            session, client, ctx, picked,
             str(body.get("model") or ""), str(body.get("reasoningEffort") or ""))
     except ValueError as error:
         raise HTTPException(409, str(error)) from error
     # Source-task milestones already define the batch plan; do not generate a second decomposition.
-    r = await _aio.to_thread(ai_exec.dispatch_sync, ctx, batch, None, picked, extra)
-    if not r.get("ok"):
-        raise HTTPException(status_code=502, detail="批量安排执行失败：" + str(r.get("error"))[:120])
-    ev.record(session, batch.id, ai_exec.EV_DISPATCHED,
-               {"ref": r.get("issueId", ""), "issueId": r.get("issueId", ""),
-                "identifier": r.get("identifier", ""), "url": r.get("url", ""), "by": who,
-                "provider": r.get("provider", ""), "batch": len(rows),
-                "runnerId": r.get("runnerId", ""), "host": r.get("host", ""),
-                "assigneeId": r.get("assigneeId", "") or aid,
-                "assigneeType": r.get("assigneeType", "agent"),
-               "assigneeName": r.get("assigneeName", ""), "assigneeCli": r.get("assigneeCli", "")},
-              actor=who)
-    from ..services import execution_sessions as _es
-    await _es.record_dispatch(session, batch, r)
     ev.record(session, batch.id, "ai.plan_set",
               {"count": len(rows), "skipped": 0, "titles": [t.title for t in rows][:12],
                "batch": True}, actor=who)
-    # Record the batch association on each source task for traceability.
-    for t in rows:
-        ev.record(session, t.id, "ai.batched",
-                  {"batchId": batch.id, "batchTitle": title, "n": len(rows)}, actor=who)
-        if t.status == "todo":
-            from ..services import task_status
-            await task_status.mark(session, t, "doing", why="并入合并批次")
+    attempt_id = await batches.reserve(session, batch, rows, request_key, who, aid, atype,
+                                       str(body.get("model") or ""), picked)
+    extra["dispatchId"] = attempt_id
+    try:
+        r = await _aio.to_thread(ai_exec.dispatch_sync, ctx, batch, None, picked, extra)
+    except Exception as error:
+        r = {"ok": False, "uncertain": True, "error": type(error).__name__}
+    if not isinstance(r, dict) or not isinstance(r.get("ok"), bool):
+        r = {"ok": False, "uncertain": True}
+    await task_access.reserve_task_write(session, batch.id, client.id)
+    batch = await session.get(Task, batch.id, with_for_update=True, populate_existing=True)
+    rejection = await batches.settle(session, batch, len(rows), who, aid, picked, r)
+    outcome = await batches.current_receipt(session, batch) if rejection is None else None
     await session.commit()
     # Push both the server-created batch task and changed source tasks to clients.
     # Clients must observe authoritative changes rather than retaining stale task status.
-    await _push_task(session, batch, created=True)
-    for t in rows:
-        await _push_task(session, t, created=False)
-    return {"ok": True, "batchId": batch.id, "count": len(rows),
-            "identifier": r.get("identifier", "")}
+    batch_id = batch.id
+    for tid in [batch_id, *ids]:
+        try:
+            updated = await session.get(Task, tid, populate_existing=True)
+            if updated is not None and task_access.is_owner(updated, client):
+                await _push_task(session, updated, created=tid == batch_id)
+        except Exception as error:  # noqa: BLE001 - A peer's delivery cannot invalidate the committed batch.
+            log.warning("Batch task update failed task=%s error=%s", tid[:8], type(error).__name__)
+    if rejection is not None:
+        raise HTTPException(502, rejection)
+    return {"ok": True, "batchId": batch.id, "count": len(rows), "attemptId": attempt_id,
+            "pending": outcome["pending"], "state": outcome["state"], "identifier": outcome["identifier"]}
 
 
 @router.get("/tasks/{tid}/milestones")
@@ -1093,51 +1130,64 @@ async def put_milestones(
     """
     from ..models import Milestone
     from ..services import task_events as ev
-    t = await _my_task(session, client, tid)
+    await task_access.reserve_task_write(session, tid, client.id)
+    t = await session.get(Task, tid, with_for_update=True, populate_existing=True)
+    if t is None or not task_access.is_owner(t, client):
+        raise HTTPException(status_code=404, detail="需求不存在")
+    # The plan is part of the requirement definition: rewriting it after acceptance left the review
+    # record describing a scope that no longer existed. ai-plan already refuses the same task.
+    if t.status in ("done", "cancel"):
+        raise HTTPException(status_code=409, detail="需求已关闭，先重新打开再改里程碑")
     items = body.get("items")
     if not isinstance(items, list):
         raise HTTPException(status_code=400, detail="items 要是一个列表")
     if len(items) > 30:
         raise HTTPException(status_code=400, detail="里程碑太多了（最多 30 个），先拆成几条需求吧")
     await _milestone_selections(session, client, t, items)
-    old = {m.id: m for m in await _load_milestones(session, tid)}
+    old = {m.id: m for m in await _load_milestones(session, tid, for_update=True)}
     keep: set[str] = set()
     for i, it in enumerate(items):
         if not isinstance(it, dict):
-            continue
+            # A skipped entry never reached ``keep``, so the cleanup pass below deleted stored
+            # milestones the caller never mentioned while still answering 200.
+            raise HTTPException(status_code=400, detail=f"第 {i + 1} 个里程碑格式不正确")
         title = str(it.get("title") or "").strip()[:300]
         if not title:
             continue
         mid = str(it.get("id") or "").strip()
         m = old.get(mid)
+        st = str(it["status"]).strip() if it.get("status") is not None else ""
+        accept = str(it.get("accept") or "").strip()[:2000]
+        if m is not None and m.status == "done":
+            if st and st != "done":
+                raise HTTPException(status_code=400, detail=f"「{m.title}」已经验收通过，不能修改状态")
+            if "accept" not in it:
+                accept = m.accept
+            if title != m.title or accept != m.accept:
+                raise HTTPException(status_code=400, detail=f"「{m.title}」已经验收通过，不能修改标题或验收条件")
+        if st not in ("", "planned", "skipped") and (m is None or st != m.status):
+            raise HTTPException(status_code=400, detail="里程碑执行状态只能由执行或验收操作设置")
         if m is None:
             m = Milestone(task_id=tid)
             session.add(m)
         m.seq = i
         m.title = title
-        m.accept = str(it.get("accept") or "").strip()[:2000]
+        m.accept = accept
         m.repo_id = str(it.get("repoId") or "").strip()
         m.parallel_ok = bool(it.get("parallelOk"))
         # Each stage may override its executor and model.
         m.agent_id = str(it.get("agentId") or "").strip()
         m.agent_type = str(it.get("agentType") or "").strip()
         m.model = str(it.get("model") or "").strip()
-        st = str(it.get("status") or "").strip()
-        # #664: skipped里程碑不可验收
-        # #665: skipped里程碑不可重新规划为doing/done
-        if m.status == "done" and st == "skipped":
-            # 已验收的里程碑不能被降级为skipped
-            raise HTTPException(status_code=400, detail=f"「{m.title}」已经验收通过，不能标记为不做")
-        # Accept only user-editable states: skipped or planned.
-        # Execution determines doing, done, and failed; clients cannot assign those results directly.
-        # Preserve current state for other values instead of defaulting to planned.
-        # Editing a title must not silently unskip a milestone.
+        # Clients may echo an existing execution result when saving the plan.
         if st in ("planned", "skipped"):
             m.status = st
         elif not m.status:          # Assign default state only to newly created milestones.
             m.status = "planned"
         await session.flush()
         keep.add(m.id)
+    if items and not keep:
+        raise HTTPException(status_code=400, detail="里程碑标题不能全部为空")
     for mid, m in old.items():
         if mid not in keep:
             # #662: 已验收(done)里程碑不可删除

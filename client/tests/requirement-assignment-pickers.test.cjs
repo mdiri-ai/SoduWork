@@ -24,6 +24,48 @@ const agent = (key, extra = {}) => ({key, name: key, available: true, ...extra})
 const flow = (bindingId, extra = {}) => ({bindingId, name: bindingId, runnable: true,
   selectionSource: 'installed', workflow: [{type: 'ai', route: {agentSource: 'runtime'}}], ...extra});
 
+test('a previously confirmed preview blocks direct dispatch when a fallback Hub cannot verify it', async () => {
+  const manifest = [{id: 'a', name: 'brief.txt', size: 0, sha256: 'fixture'}];
+  const h = fixture({}, {SoduWorkAPI: {aiPreview: async () => ({
+    carried: {files: [], inputManifest: manifest, confirmedDispatch: true}})}});
+  const box = {style: {}};
+  h.nodes.set('fwdPrev', box);
+  h.run("_fwdTaskId = 'task'");
+  h.ctx._pickedRepo = () => null;
+
+  await h.ctx._fwdPreview('task');
+  assert.equal(box.confirmedInputs.manifest, manifest);
+  h.ctx.SoduWorkAPI.aiPreview = async () => ({carried: {files: ['brief.txt']}});
+  await h.ctx._fwdPreview('task');
+  assert.equal(box.confirmedInputs.manifest, undefined);
+  assert.match(box.confirmedInputs.error, /重新预览/);
+
+  delete box.confirmedInputs;
+  h.ctx.SoduWorkAPI.aiPreview = async () => ({carried: {files: ['brief.txt'], inputManifest: manifest}});
+  await h.ctx._fwdPreview('task');
+  assert.equal(box.confirmedInputs, undefined);
+  assert.match(box.innerHTML, /你可以直接派发/);
+});
+
+test('a delayed attachment preview cannot overwrite a newer confirmation', async () => {
+  let finishFirst;
+  const before = new Promise(resolve => { finishFirst = resolve; });
+  const h = fixture({}, {SoduWorkAPI: {aiPreview: () => before}});
+  const box = {style: {}};
+  h.nodes.set('fwdPrev', box);
+  h.run("_fwdTaskId = 'task'");
+  h.ctx._pickedRepo = () => null;
+  const first = h.ctx._fwdPreview('task');
+  const manifest = [];
+  h.ctx.SoduWorkAPI.aiPreview = async () => ({carried: {files: [], inputManifest: manifest, confirmedDispatch: true}});
+  await h.ctx._fwdPreview('task');
+  const rendered = box.innerHTML;
+  finishFirst({carried: {files: ['stale']}});
+  await first;
+  assert.equal(box.confirmedInputs.manifest, manifest);
+  assert.equal(box.innerHTML, rendered);
+});
+
 test('assignment picker renders untrusted catalog names, identifiers and diagnostics as escaped text', () => {
   const definition = fs.readFileSync(path.join(__dirname, '../core/store.js'), 'utf8')
     .split(/\r?\n/).find(line => line.startsWith('const esc='));
@@ -74,6 +116,51 @@ test('assignment methods require builtin or installed provenance plus a binding'
     [{bindingId: 'unknown', runnable: true, approved: true}, false],
     [{bindingId: 'legacy-installed', sourceKind: 'installed'}, false],
   ]) assert.equal(h.ctx._fwdInstalledMethod(item), expected, JSON.stringify(item));
+});
+
+test('assignment merges personal and installed enterprise plugins alongside authorized workflows', () => {
+  const h = fixture();
+  h.ctx.window.ChatPluginMentionModel = require('../components/panels/chat-plugin-mention-model.js');
+  const catalog = {items: [
+    {pluginId: 'local:note', personal: true, name: 'Personal'},
+    {pluginId: 'company-note', installed: true, name: 'Enterprise', conversationName: 'Installed version'},
+    {pluginId: 'company-note', installed: true, name: 'Duplicate record'},
+    {pluginId: 'company-flow', installed: true},
+    {pluginId: 'market'},
+    {pluginId: 'edit-only', installed: true, permissions: {canUse: false}},
+    {pluginId: 'app', personal: true, ui: {contributions: [{slot: 'workspace.navigation'}]}},
+    {pluginId: 'local:disabled', personal: true, enabled: false},
+    {pluginId: 'local:flow', personal: true, capabilities: {executionMode: 'workflow'}},
+  ]};
+  const workflows = [flow('binding', {pluginId: 'company-flow'})];
+  const methods = h.ctx._fwdCatalogMethods(catalog, {workflows});
+  assert.deepEqual(Array.from(methods, m => m.pluginId), ['local:note', 'company-note', 'local:disabled', 'local:flow']);
+  assert.equal(methods[0].blocker, '');
+  assert.equal(methods[1].blocker, '');
+  assert.equal(methods[1].name, 'Installed version');
+  assert.match(methods[2].blocker, /停用/);
+  assert.match(methods[3].blocker, /企业工作流/);
+});
+
+test('conversation plugin choice stays explicit if the eligible local agent or plugin disappears', () => {
+  const local = agent('local:pi', {executionSource: 'conversation'});
+  const remote = agent('runner:remote:pi', {locationMode: 'remote', remote: true});
+  const plugin = {pluginId: 'local:method'};
+  const choice = {type: 'direct', id: local.key, available: true};
+  const h = fixture({substrates: [local, remote], conversationPlugins: [plugin]});
+  h.run('_fwdConversationPluginId = "local:method"');
+  h.ctx._fwdChoose('task', choice);
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), true);
+  assert.equal(h.ctx._fwdChoiceIsCurrent({...choice, id: remote.key}), false);
+  h.update({substrates: [remote], conversationPlugins: [plugin]});
+  h.ctx._fwdRestoreAIChoice();
+  assert.equal(h.run('_fwdSelection.ai'), null);
+  assert.equal(h.run('_fwdConversationPluginId'), 'local:method');
+  h.update({substrates: [local, remote], conversationPlugins: []});
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), false);
+  h.ctx._fwdChooseNoPlugin('task');
+  assert.equal(h.run('_fwdConversationPluginId'), '');
+  assert.equal(h.ctx._fwdChoiceIsCurrent(choice), true);
 });
 
 test('plain execution defaults to a currently available Agent and never to a native conversation', () => {
