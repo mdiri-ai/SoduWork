@@ -65,3 +65,9 @@ Check your subscription, API key category, endpoint and model against the provid
 When the provider returns error code `1113` or a recognized insufficient-balance/quota category, SoduWork reports a billing problem and retains only the allowlisted diagnostic code. Automatic retries stop because retrying cannot replenish a balance or change a subscription. Check the provider’s billing console and API key type before trying again. An ordinary rate-limit `429` without a recognized billing code remains eligible for bounded retries.
 
 SoduWork does not display raw upstream error bodies, credentials or internal addresses in these diagnostics. A passing local regression with a simulated provider verifies this behavior; it does not verify a particular paid account’s balance or entitlement.
+
+## Troubleshooting upstream errors: an opt-in diagnostic
+
+When a model call fails, the UI and the default logs keep only the status code and byte count; the raw upstream error body never reaches the log because it can contain credentials or internal addresses. For deeper investigation, set `SODUWORK_AI_PROXY_DEBUG=1` before starting the Hub (`$env:SODUWORK_AI_PROXY_DEBUG = '1'` in Windows PowerShell, `export SODUWORK_AI_PROXY_DEBUG=1` on macOS/Linux).
+
+With the flag on, the Hub appends a redacted upstream `error.message` (at most 200 characters) after the existing `upstream error suppressed` line. The flag affects server logs only; it does not change the error returned to clients, and leaving it unset keeps the previous behavior exactly.
