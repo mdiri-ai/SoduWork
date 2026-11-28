@@ -284,7 +284,7 @@
     "本机 AI 内核用不了": "Local AI runtime unavailable",
     "执行底座响应超时": "Execution runtime timed out",
     "打开对话超时": "Opening chat timed out",
-    "执行底座超过 30 秒没有响应，请重试": "Execution runtime did not respond within 30 seconds. Try again.",
+    "执行底座超过 45 秒没有响应，请重试": "Execution runtime did not respond within 45 seconds. Try again.",
     "开不了对话": "Could not open chat",
     "执行底座没有返回有效的会话标识": "Execution runtime did not return a valid session ID",
     "找到的会话没有绑定这项任务": "The found chat is not linked to this issue",
