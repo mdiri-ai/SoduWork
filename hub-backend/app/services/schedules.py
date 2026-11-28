@@ -35,7 +35,6 @@ from .schedule_run_contracts import (
     clean_personal_plugin_checksum, clean_personal_plugin_key,
     clean_personal_plugin_version, clean_personal_plugin_version_policy,
     clean_plugin_inputs, clean_required_capabilities, is_local_model_reference,
-    latest_run_active,
     sanitize_schedule_model_payload, schedule_model_source,
     error_text, normalize_personal_plugin_snapshot, personal_plugin_spec,
 )
@@ -371,6 +370,8 @@ async def execute_one(session: AsyncSession, s, trigger: str = "timer",
     # so manual endpoints return it as a successful no-op, not a dispatch
     # failure; the timer loop ignores the response either way.
     if str(getattr(s, "session_mode", "") or "fresh") == "reuse":
+        from .schedule_run_contracts import latest_run_active
+
         if await latest_run_active(session, s.id):
             return {"ok": True, "skipped": True,
                     "skipReason": "上一轮自动化仍在执行，本次已跳过",
