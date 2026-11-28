@@ -71,6 +71,36 @@ python3 quality_gate.py --profile release --scope backend
 
 完整离线门禁耗时较长；日常修改先运行清单中对应的检查。`live` 检查连接真实服务或模型，需要自行准备隔离环境，不包含在默认离线验证中。
 
+### 观察 Runner 事件留存
+
+阅读事件传输实现时，可以先用下面的例子观察本地 Outbox。它直接调用真实模块，只使用标准库、临时目录和模拟事件，不需要启动 Hub 或配置模型。将代码保存为 `hub-backend/outbox_demo.py`，在该目录用 Python 3.12+ 运行 `python3 outbox_demo.py`（Windows 使用 `py -3 outbox_demo.py`），完成后删除这个本地示例文件，不要提交它。
+
+```python
+from tempfile import TemporaryDirectory
+from app.services.runner_event_outbox import Outbox
+
+with TemporaryDirectory() as directory:
+    box = Outbox(directory, "demo-hub|demo-runner")
+    snapshot = {"ref": "demo-ref", "taskId": "demo-task", "round": 1,
+                "seq": 1, "state": "running",
+                "items": [{"seq": 1, "kind": "text", "text": "demo event"}]}
+    box.append(snapshot, ("demo-ref", 1, "running"))
+    packet = box.pending()[0]
+    reopened = Outbox(directory, "demo-hub|demo-runner")
+    assert reopened.pending() == [packet]
+    print("Reopen: packet retained")
+    assert not reopened.acknowledge({**packet, "digest": "wrong"})
+    assert reopened.pending() == [packet]
+    print("Mismatched ACK: packet retained")
+    assert reopened.acknowledge(packet)
+    assert reopened.pending() == []
+    print("Exact ACK: packet removed")
+```
+
+预期输出是上面三行提示。对照 [`Outbox.append()` 和 `acknowledge()`](../hub-backend/app/services/runner_event_outbox.py) 阅读写入事务与准确匹配删除；[`runner_main.py`](../hub-backend/runner_main.py) 的 `_capture_sessions()`、`_deliver_sessions()` 负责采集与发送，Hub 在 [`_ingest_delivery()`](../hub-backend/app/api/runner_ws.py) 中提交数据库事务后才发送确认。
+
+这个例子只验证本地模块行为：重新打开存储、拒绝不匹配的确认、按准确确认删除。它不验证真实 WebSocket 传输、Agent 执行、模型回答或断电恢复。更完整的故障和容量用例见 [`test_runner_event_delivery.py`](../hub-backend/test_runner_event_delivery.py)，应在后端测试环境中运行。
+
 ## 桌面客户端
 
 桌面是 Electron + 原生 HTML/CSS/JavaScript，管理页面是独立的 React 应用。主进程位于 `main.js` 和 `main/`，受限 IPC 桥位于 `preload.js`，界面主要位于 `desk.html`、`core/` 和 `components/`。
