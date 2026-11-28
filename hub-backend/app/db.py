@@ -315,6 +315,9 @@ def _ensure_columns(conn) -> None:
     # Legacy adoption stamps the latest head instead of replaying its revisions.
     # create_all leaves existing VARCHAR columns unchanged on PostgreSQL.
     import_module("migrations.versions.0092_task_text_storage").migrate_schema(conn)
+    # The same reconciliation applies to the widened provider keys, which the
+    # pre-Alembic schema capped at 400 characters.
+    import_module("migrations.versions.0098_model_key_length").migrate_schema(conn)
     for table, cols in _WANT_COLUMNS.items():
         try:
             existing = {c["name"] for c in insp.get_columns(table)}
