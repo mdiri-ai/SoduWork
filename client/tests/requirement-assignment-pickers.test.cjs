@@ -66,6 +66,47 @@ test('a delayed attachment preview cannot overwrite a newer confirmation', async
   assert.equal(box.innerHTML, rendered);
 });
 
+for (const change of ['brief', 'repository']) {
+  for (const timing of ['pending', 'visible']) {
+    test(`editing the ${change} hides a ${timing} preview without discarding attachment confirmation`, async () => {
+      let settle;
+      const response = new Promise(resolve => { settle = resolve; });
+      const repos = [{id: 'first', name: 'First'}, {id: 'second', name: 'Second'}];
+      const options = {repos, selection: {repoId: 'first'}};
+      const h = fixture(options, {SoduWorkAPI: {aiPreview: () => response}});
+      h.ctx.document.querySelectorAll = () => [];
+      h.ctx.document.querySelector = () => null;
+      h.ctx._loadAIPickList = () => {};
+      const note = {value: 'original brief'};
+      const handlers = {};
+      const select = {dataset: {}, addEventListener: (name, handler) => { handlers[name] = handler; }};
+      const box = {style: {}};
+      for (const [id, node] of Object.entries({fwdNote: note, fwdPrev: box, fwdRepo: {style: {}}, fwdRepoSel: select})) {
+        h.nodes.set(id, node);
+      }
+      h.ctx._fwdSwitch('task', 'ai');
+      h.ctx._fillRepoPicker(options);
+      const preview = h.ctx._fwdPreview('task');
+      const manifest = [];
+      const finish = () => settle({description: 'original brief', carried: {
+        files: [], inputManifest: manifest, confirmedDispatch: true,
+      }});
+      if (timing === 'visible') { finish(); await preview; }
+      assert.equal(box.style.display, 'block');
+      if (change === 'brief') {
+        note.value = 'updated brief';
+        note.oninput?.();
+      } else {
+        select.value = 'second';
+        handlers.change();
+      }
+      if (timing === 'pending') { finish(); await preview; }
+      assert.equal(box.style.display, 'none');
+      assert.equal(box.confirmedInputs.manifest, manifest);
+    });
+  }
+}
+
 test('assignment picker renders untrusted catalog names, identifiers and diagnostics as escaped text', () => {
   const definition = fs.readFileSync(path.join(__dirname, '../core/store.js'), 'utf8')
     .split(/\r?\n/).find(line => line.startsWith('const esc='));

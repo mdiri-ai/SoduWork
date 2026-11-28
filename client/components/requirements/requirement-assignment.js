@@ -44,6 +44,7 @@
       const files = Array.from(input.files);
       input.value = '';
       if (!files.length || !valid() || root.querySelector('#fwdConfirm').dataset.idleLabel != null) return;
+      _fwdHidePreview();
       revision++;
       _fwdSetBusy(true, '正在上传材料…');
       status.textContent = '正在上传材料…';

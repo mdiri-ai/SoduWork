@@ -17,6 +17,7 @@ function fixture(overrides = {}) {
     '[data-material-add]': {},
   };
   const materials = {querySelector:selector => materialNodes[selector] || null};
+  const confirmation = {dataset:{}};
   const window = {Requirements, addEventListener:(name, listener) => {events[name] = listener;},
     SoduWorkAPI:{getTask:async () => assigned(), listAttachments:async id => {
       attachmentReads.push(id); return [];
@@ -29,10 +30,12 @@ function fixture(overrides = {}) {
   const context = vm.createContext({window, SoduWorkAPI:window.SoduWorkAPI, tasks:[],
     document:{activeElement:null, createElement:() => {
       const node={innerHTML:'',remove(){},addEventListener(){},querySelector:selector =>
-        selector === '.fwd-materials' ? materials : ({setAttribute(){},focus(){}})};
+        selector === '.fwd-materials' ? materials :
+          selector === '#fwdConfirm' ? confirmation : ({setAttribute(){},focus(){}})};
       return node;
     }, body:{appendChild:node=>roots.push(node)}},
     esc:text=>text, _svg:()=>'', _fwdSwitch:()=>calls.push(['show-assignment']),
+    _fwdSetBusy:busy=>calls.push(['busy',busy]), _fwdHidePreview:()=>calls.push(['hide-preview']),
   });
   for(const file of ['panels/chat-task-start.js','requirements/requirement-assignment.js','requirements/requirements-view.js'])
     vm.runInContext(fs.readFileSync(path.join(__dirname,'../components',file),'utf8'),context);
@@ -63,6 +66,23 @@ test('explicit assignment click claims once before showing choices and never dis
   await new Promise(done=>setImmediate(done));
   assert.deepEqual(f.attachmentReads,['assigned']);
   assert.equal(f.materialNodes['[data-material-status]'].textContent,'暂无输入材料');
+});
+
+test('choosing new materials hides the preview before the upload response', async () => {
+  let finish;
+  const f=fixture({uploadAttachment:()=>new Promise(resolve=>{finish=resolve;})});
+  assert.equal(await f.api.open('assigned'),true);
+  const input = f.materialNodes['input[type=file]'];
+  input.files = [{name:'notes.txt'}];
+  const uploading = input.onchange();
+  try {
+    assert.deepEqual(f.calls.slice(-2), [['hide-preview'], ['busy',true]]);
+    assert.equal(f.materialNodes['[data-material-status]'].textContent,'正在上传材料…');
+  } finally {
+    finish({ok:true});
+    await uploading;
+  }
+  assert.deepEqual(f.calls.at(-1), ['busy',false]);
 });
 
 test('denied claims remain visible and can be retried without opening execution choices', async () => {

@@ -82,15 +82,17 @@ function _fwdSwitch(tid, tab, options) {
   const searchEmpty = document.getElementById('fwdSearchEmpty');
   if (searchEmpty) searchEmpty.hidden = true;
   const note = document.getElementById('fwdNote');
-  if (note) note.placeholder = _fwdTab === 'ai'
-    ? '补充验收标准、口径或参考资料（选填）'
-    : '给同事补充一句交代（选填）';
+  if (note) {
+    note.placeholder = _fwdTab === 'ai'
+      ? '补充验收标准、口径或参考资料（选填）'
+      : '给同事补充一句交代（选填）';
+    note.oninput = _fwdHidePreview;
+  }
   const submission = document.getElementById('fwdSubmissionMode')?.closest('label');
   if (submission) submission.hidden = _fwdTab !== 'ai';
   const repo = document.getElementById('fwdRepo');
   if (repo) repo.style.display = _fwdTab === 'ai' ? '' : 'none';
-  const preview = document.getElementById('fwdPrev');
-  if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
+  _fwdHidePreview();
   const confirm = document.getElementById('fwdConfirm');
   if (confirm) confirm.onclick = () => _fwdConfirm(tid);
   window.ForwardSelect?.closeAll();
@@ -130,6 +132,7 @@ function _fillRepoPicker(options) {
   const select = document.getElementById('fwdRepoSel');
   const hint = document.getElementById('fwdRepoHint');
   if (!box || !select) return;
+  const previousRepo = select.value;
   _repoCache = Array.isArray(options && options.repos) ? options.repos : [];
   box.style.display = _fwdTab === 'ai' ? '' : 'none';
   select.innerHTML = '<option value="">不关联工程 · 通用办公</option>' + _repoCache.map(row =>
@@ -137,6 +140,7 @@ function _fillRepoPicker(options) {
       esc((row.projectName ? row.projectName + ' · ' : '') + row.name +
         (row.branch ? ' · ' + row.branch : '')) + '</option>').join('');
   select.value = String(((options || {}).selection || {}).repoId || '');
+  if (select.value !== previousRepo) _fwdHidePreview();
   select.disabled = !_repoCache.length;
   if (hint) hint.textContent = !_repoCache.length
     ? (((options || {}).selection || {}).projectLocked ? '需求所属项目暂无可关联工程。' : '当前账号暂无可关联工程，可选择不关联工程执行。')
@@ -144,7 +148,10 @@ function _fillRepoPicker(options) {
       ? '需求所属项目已锁定，只显示该项目的可用工程。' : '选择工程后会重新识别适用插件和交付路径。';
   if (!select.dataset.fwdWired) {
     select.dataset.fwdWired = '1';
-    select.addEventListener('change', () => _loadAIPickList(_fwdTaskId, select.value));
+    select.addEventListener('change', () => {
+      _fwdHidePreview();
+      _loadAIPickList(_fwdTaskId, select.value);
+    });
   }
   window.ForwardSelect?.enhance(box);
 }
@@ -464,8 +471,7 @@ function _fwdSyncConfirm(tid) {
     previewButton.hidden = _fwdTab !== 'ai' || _fwdSelection.ai?.type !== 'direct';
     previewButton.disabled = busy;
     previewButton.onclick = () => _fwdPreview(tid);
-    const preview = document.getElementById('fwdPrev');
-    if (previewButton.hidden && preview) preview.style.display = 'none';
+    if (previewButton.hidden) _fwdHidePreview();
   }
   window.ForwardSelect?.destroy(decision);
   if (_fwdLoading[_fwdTab]) {
@@ -922,6 +928,14 @@ async function _fwdCarry(tid) {
   }
 }
 
+function _fwdHidePreview() {
+  const box = document.getElementById('fwdPrev');
+  if (!box) return;
+  // Editing the prompt does not waive the attachment confirmation.
+  box.style.display = 'none';
+  box.innerHTML = '';
+}
+
 async function _fwdPreview(tid) {
   const box = document.getElementById('fwdPrev');
   if (!box || _fwdTaskId !== _fwdId(tid)) return;
@@ -929,6 +943,7 @@ async function _fwdPreview(tid) {
   const snapshot = { taskId: _fwdTaskId, previous: Array.isArray(previous?.manifest) ? previous : previous?.previous };
   box.confirmedInputs = snapshot;
   const current = () => document.getElementById('fwdPrev') === box && box.confirmedInputs === snapshot;
+  const visible = () => box.style.display !== 'none';
   box.style.display = 'block';
   box.innerHTML = '<div class="fwd-loading"><i></i><span>正在整理派活原文…</span></div>';
   try {
@@ -944,13 +959,14 @@ async function _fwdPreview(tid) {
         : '当前 Hub 版本不支持附件清单校验。你可以直接派发，或升级 Hub 后重新预览。';
       if (snapshot.previous) snapshot.error = message;
       else delete box.confirmedInputs;
-      box.innerHTML = '<div class="fwd-msg is-err">' + esc(message) + '</div>';
+      if (visible()) box.innerHTML = '<div class="fwd-msg is-err">' + esc(message) + '</div>';
       return;
     }
     if (carried?.confirmedDispatch !== true || !Array.isArray(carried.inputManifest))
       throw new Error('Attachment preview unavailable');
     delete snapshot.previous;
     snapshot.manifest = carried.inputManifest;
+    if (!visible()) return;
     const omitted = Array.isArray(carried.omittedFiles) ? carried.omittedFiles : [];
     box.innerHTML = '<div class="fwd-prev-h">将发送给 Agent 的完整内容</div>' +
       "<div class=\"fwd-prev-t\"" + ((result || {}).title ? ' data-user-content' : '') + '>' + esc((result || {}).title || '') + '</div>' +
@@ -958,7 +974,7 @@ async function _fwdPreview(tid) {
       (omitted.length ? '<p><span>未纳入派发的附件</span> <span data-user-content>' +
         esc(omitted.slice(0, 5).join('、') + (omitted.length > 5 ? '…' : '')) + '</span></p>' : '');
   } catch (error) {
-    if (current()) box.innerHTML = '<div class="fwd-msg is-err">派活原文暂时无法预览</div>';
+    if (current() && visible()) box.innerHTML = '<div class="fwd-msg is-err">派活原文暂时无法预览</div>';
   }
 }
 
